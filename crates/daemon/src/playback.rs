@@ -14,8 +14,8 @@ use crate::session::Session;
 use crate::streams::Resolver;
 use crate::tracking::Watch;
 use formalmusic_api::{
-    ApiError, Continuation, EnqueuePosition, Event, PlaySource, PlayerState, QueueState, Repeat,
-    Status, Track,
+    ApiError, Continuation, EnqueuePosition, Event, PlaySource, PlayerState, QueueState, Rating,
+    Repeat, Status, Track,
 };
 use formalmusic_innertube::PlaybackTracking;
 use formalmusic_player::{Player, PlayerError, PlayerEvent, StreamSource, TrackId};
@@ -272,7 +272,12 @@ impl Playback {
                 }
             },
             PlaySource::Radio { video_id } => {
-                let next = client.radio(&video_id).await?;
+                let mut next = client.radio(&video_id).await?;
+                if let Some(like) = next.like {
+                    for track in next.tracks.iter_mut().filter(|t| t.video_id == video_id) {
+                        track.like = Some(like);
+                    }
+                }
                 let radio = Radio {
                     playlist_id: next.playlist_id,
                     continuation: next.continuation,
@@ -453,6 +458,15 @@ impl Playback {
         st.queue.set_shuffle(shuffle, &mut self.rng.lock());
         self.emit_player(&st);
         self.queue_changed(&mut st);
+    }
+
+    /// A rating landed on YouTube; queued entries of the video show it too.
+    pub fn rated(&self, video_id: &str, rating: Rating) {
+        let mut st = self.state.lock();
+        if st.queue.set_like(video_id, rating) {
+            self.emit_player(&st);
+            self.emit_queue(&st);
+        }
     }
 
     /// Cached streams and radio tokens belong to the previous account.
@@ -989,6 +1003,11 @@ impl Playback {
             }
             if let Ok(next) = next {
                 st.related_browse_id = next.related_browse_id;
+                if let Some(like) = next.like
+                    && st.queue.set_like(&video_id, like)
+                {
+                    this.emit_queue(&st);
+                }
                 this.emit_player(&st);
             }
             if let Some(tracking) = tracking {

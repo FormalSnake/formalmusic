@@ -279,6 +279,7 @@ fn album() {
             Some(BrowseTarget::Album("MPREb_K8qWMWVqXGi".into()))
         );
         assert!(t.set_video_id.is_some() && !t.artists.is_empty());
+        assert_eq!(t.like, Some(Rating::Indifferent));
         // Every row here links a music video; the album still lists songs.
         assert_eq!(t.kind, TrackKind::Song, "{}", t.title);
     }
@@ -578,6 +579,10 @@ fn next_radio() {
             .all(|t| !t.artists.is_empty() && t.duration_ms.is_some())
     );
     assert_eq!(next.playlist_id.as_deref(), Some("RDAMVMIluRBvnYMoY"));
+    // The rating of the requested track sits in the player's action bar; the
+    // queue rows have none.
+    assert_eq!(next.like, Some(Rating::Indifferent));
+    assert!(next.tracks.iter().all(|t| t.like.is_none()));
     assert!(
         next.lyrics_browse_id
             .as_deref()
@@ -807,7 +812,7 @@ fn liked_songs() {
     assert!(
         songs
             .iter()
-            .all(|t| t.like == Rating::Like && t.set_video_id.is_some())
+            .all(|t| t.like == Some(Rating::Like) && t.set_video_id.is_some())
     );
 }
 

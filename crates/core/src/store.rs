@@ -126,8 +126,14 @@ pub struct AppState {
     pub animated_covers: HashMap<(String, String), CoverEntry>,
     /// The player's "Related" tab, keyed by its browse id.
     pub related: HashMap<String, PageEntry>,
-    /// Likes made here, ahead of the pages that still carry the old rating.
+    /// Every rating known, by video id: from each page, search, queue and
+    /// player state as it arrives, and from a like made here ahead of
+    /// YouTube's answer. Rows, the player bar and menus all read it through
+    /// [`AppState::rating`], so they cannot disagree.
     pub ratings: HashMap<String, Rating>,
+    /// Likes sent and not answered yet: the sequence of the latest and the
+    /// rating to go back to if it fails. Responses that cross one keep out.
+    rating_sent: HashMap<String, (u64, Option<Rating>)>,
     /// A failure worth a toast, with a counter so the same text twice is two toasts.
     pub notice: Option<(u64, String)>,
     /// `None` until the daemon has said.
@@ -153,7 +159,29 @@ impl AppState {
         self.ratings
             .get(&track.video_id)
             .copied()
-            .unwrap_or(track.like)
+            .or(track.like)
+            .unwrap_or_default()
+    }
+
+    /// Records the ratings `tracks` carry, except for likes still in flight.
+    fn learn_ratings<'a>(
+        &mut self,
+        tracks: impl IntoIterator<Item = &'a Track>,
+        events: &mut Vec<StoreEvent>,
+    ) {
+        let mut changed = false;
+        for track in tracks {
+            let Some(like) = track.like else { continue };
+            if self.rating_sent.contains_key(&track.video_id) {
+                continue;
+            }
+            if self.ratings.insert(track.video_id.clone(), like) != Some(like) {
+                changed = true;
+            }
+        }
+        if changed {
+            events.push(StoreEvent::Ratings);
+        }
     }
 
     pub fn signed_in(&self) -> bool {
@@ -227,6 +255,19 @@ fn cacheable_target(target: &BrowseTarget) -> bool {
         target,
         BrowseTarget::Home | BrowseTarget::Explore | BrowseTarget::Library(_)
     )
+}
+
+fn section_tracks(sections: &[formalmusic_api::Section]) -> impl Iterator<Item = &Track> {
+    sections
+        .iter()
+        .flat_map(|section| item_tracks(&section.items))
+}
+
+fn item_tracks(items: &[Item]) -> impl Iterator<Item = &Track> {
+    items.iter().filter_map(|item| match item {
+        Item::Track(track) => Some(track),
+        _ => None,
+    })
 }
 
 /// The library pages a `LibraryChanged` scope makes stale.
@@ -410,6 +451,7 @@ impl MusicStore {
     fn paint_cached(&self, cached: CachedState) {
         self.inner.update(|state, events| {
             for (target, page) in cached.pages {
+                state.learn_ratings(section_tracks(&page.sections), events);
                 events.push(StoreEvent::Page(target.clone()));
                 state.pages.insert(
                     target,
@@ -425,6 +467,8 @@ impl MusicStore {
             }
             state.position_ms = player.position_ms;
             state.position_at = Some(Instant::now());
+            state.learn_ratings(&cached.queue.tracks, events);
+            state.learn_ratings(&player.track, events);
             state.player = player;
             state.queue = cached.queue;
             state.session = cached.session;
@@ -473,6 +517,7 @@ impl MusicStore {
                 }
                 state.position_ms = player.position_ms;
                 state.position_at = Some(Instant::now());
+                state.learn_ratings(&player.track, events);
                 state.player = player;
                 events.extend([StoreEvent::Player, StoreEvent::Position]);
                 if changed_track {
@@ -493,6 +538,7 @@ impl MusicStore {
                 }
             }),
             Event::Queue(queue) => self.inner.update(|state, events| {
+                state.learn_ratings(&queue.tracks, events);
                 state.queue = Arc::new(queue);
                 events.push(StoreEvent::Queue);
             }),
@@ -524,10 +570,6 @@ impl MusicStore {
                         if scope_covers(scope, target) {
                             entry.fetched_at = None;
                         }
-                    }
-                    if scope == LibraryScope::Likes {
-                        state.ratings.clear();
-                        events.push(StoreEvent::Ratings);
                     }
                     events.push(StoreEvent::Library(scope));
                 });
@@ -566,6 +608,8 @@ impl MusicStore {
             state.searches.clear();
             state.related.clear();
             state.ratings.clear();
+            state.rating_sent.clear();
+            events.push(StoreEvent::Ratings);
         });
         if self.state().signed_in() {
             self.refresh(BrowseTarget::Library(LibraryTab::Playlists));
@@ -653,6 +697,9 @@ impl MusicStore {
                 })
                 .await;
             store.inner.update(|state, events| {
+                if let Ok(Reply::Page(page)) = &result {
+                    state.learn_ratings(section_tracks(&page.sections), events);
+                }
                 let entry = state.pages.entry(target.clone()).or_default();
                 entry.loading = false;
                 match result {
@@ -697,6 +744,12 @@ impl MusicStore {
         self.spawn(async move {
             let result = store.continuation(token).await;
             store.inner.update(|state, events| {
+                if let Ok(more) = &result {
+                    state.learn_ratings(
+                        section_tracks(&more.sections).chain(item_tracks(&more.items)),
+                        events,
+                    );
+                }
                 let Some(entry) = state.pages.get_mut(&target) else {
                     return;
                 };
@@ -749,6 +802,12 @@ impl MusicStore {
         self.spawn(async move {
             let result = store.continuation(token).await;
             store.inner.update(|state, events| {
+                if let Ok(more) = &result {
+                    state.learn_ratings(
+                        section_tracks(&more.sections).chain(item_tracks(&more.items)),
+                        events,
+                    );
+                }
                 let Some(entry) = state.pages.get_mut(&target) else {
                     return;
                 };
@@ -828,6 +887,9 @@ impl MusicStore {
                 })
                 .await;
             store.inner.update(|state, events| {
+                if let Ok(Reply::Search(results)) = &result {
+                    state.learn_ratings(section_tracks(&results.sections), events);
+                }
                 let entry = state.searches.entry(key.clone()).or_default();
                 entry.loading = false;
                 match result {
@@ -860,6 +922,12 @@ impl MusicStore {
         self.spawn(async move {
             let result = store.continuation(token).await;
             store.inner.update(|state, events| {
+                if let Ok(more) = &result {
+                    state.learn_ratings(
+                        section_tracks(&more.sections).chain(item_tracks(&more.items)),
+                        events,
+                    );
+                }
                 let Some(entry) = state.searches.get_mut(&key) else {
                     return;
                 };
@@ -1218,6 +1286,9 @@ impl MusicStore {
                 })
                 .await;
             store.inner.update(|state, events| {
+                if let Ok(Reply::Page(page)) = &result {
+                    state.learn_ratings(section_tracks(&page.sections), events);
+                }
                 let entry = state.related.entry(browse_id.clone()).or_default();
                 entry.loading = false;
                 match result {
@@ -1234,25 +1305,62 @@ impl MusicStore {
     // Library
     // ---------------------------------------------------------------------
 
+    /// Shows the rating at once and puts the previous one back if YouTube
+    /// refuses it.
     pub fn rate(&self, track: &Track, rating: Rating) {
         let video_id = track.video_id.clone();
-        self.inner.update(|state, events| {
+        let seq = self.inner.update(|state, events| {
+            let before = match state.rating_sent.get(&video_id) {
+                Some((_, before)) => *before,
+                None => state.ratings.get(&video_id).copied(),
+            };
+            let seq = state
+                .rating_sent
+                .get(&video_id)
+                .map_or(0, |(seq, _)| seq + 1);
+            state.rating_sent.insert(video_id.clone(), (seq, before));
             state.ratings.insert(video_id.clone(), rating);
-            if let Some(current) = state
-                .player
-                .track
-                .as_mut()
-                .filter(|current| current.video_id == video_id)
-            {
-                current.like = rating;
-                events.push(StoreEvent::Player);
-            }
             events.push(StoreEvent::Ratings);
+            seq
         });
-        self.send(Command::Rate {
-            target: RateTarget::Track { video_id },
-            rating,
+        let store = self.clone();
+        self.spawn(async move {
+            let result = store
+                .inner
+                .transport
+                .call(Command::Rate {
+                    target: RateTarget::Track {
+                        video_id: video_id.clone(),
+                    },
+                    rating,
+                })
+                .await;
+            store.rated(&video_id, seq, result.as_ref().err().map(message));
         });
+    }
+
+    /// Settles the rate `seq` of `video_id`. Only the latest one counts: an
+    /// earlier answer arriving late changes nothing.
+    fn rated(&self, video_id: &str, seq: u64, error: Option<String>) {
+        self.inner.update(|state, events| {
+            let Some(&(latest, before)) = state.rating_sent.get(video_id) else {
+                return;
+            };
+            if latest != seq {
+                return;
+            }
+            state.rating_sent.remove(video_id);
+            if error.is_some() {
+                match before {
+                    Some(before) => state.ratings.insert(video_id.to_owned(), before),
+                    None => state.ratings.remove(video_id),
+                };
+                events.push(StoreEvent::Ratings);
+            }
+        });
+        if let Some(error) = error {
+            self.notice(error);
+        }
     }
 
     pub fn set_subscribed(&self, channel_id: String, subscribed: bool) {
@@ -1899,6 +2007,79 @@ mod tests {
         assert_eq!(store.state().queue.tracks[3].video_id, tracks[1].video_id);
         store.remove_from_queue(0);
         assert_eq!(store.state().queue.current, Some(2));
+    }
+
+    fn rated_track(id: &str, like: Option<Rating>) -> Track {
+        Track {
+            video_id: id.into(),
+            like,
+            ..crate::demo::catalog().albums[0].tracks[0].clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_queue_row_without_a_rating_shows_the_one_its_page_had() {
+        let store = store();
+        store.inner.update(|state, events| {
+            state.learn_ratings([&rated_track("redlight", Some(Rating::Like))], events)
+        });
+        let from_next = rated_track("redlight", None);
+        store.apply(Event::Queue(QueueState {
+            tracks: vec![from_next.clone()],
+            current: Some(0),
+            radio: true,
+        }));
+        store.apply(Event::Player(PlayerState {
+            track: Some(from_next.clone()),
+            status: Status::Playing,
+            ..PlayerState::default()
+        }));
+        assert_eq!(store.state().rating(&from_next), Rating::Like);
+
+        // A response that does say wins, whichever surface it came from.
+        store.apply(Event::Player(PlayerState {
+            track: Some(rated_track("redlight", Some(Rating::Indifferent))),
+            ..PlayerState::default()
+        }));
+        assert_eq!(store.state().rating(&from_next), Rating::Indifferent);
+    }
+
+    #[tokio::test]
+    async fn a_like_shows_at_once_and_goes_back_when_refused() {
+        let store = store();
+        let track = rated_track("t", Some(Rating::Indifferent));
+        store
+            .inner
+            .update(|state, events| state.learn_ratings([&track], events));
+        store.rate(&track, Rating::Like);
+        assert_eq!(store.state().rating(&track), Rating::Like);
+
+        // A page fetched before YouTube took the like still has the old state.
+        store.apply(Event::Queue(QueueState {
+            tracks: vec![track.clone()],
+            current: None,
+            radio: false,
+        }));
+        assert_eq!(store.state().rating(&track), Rating::Like);
+
+        // The test runtime runs one task at a time, so the call spawned above
+        // has not answered yet and this refusal settles it first.
+        store.rated("t", 0, Some("refused".into()));
+        assert_eq!(store.state().rating(&track), Rating::Indifferent);
+        assert!(store.state().rating_sent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_the_latest_like_settles() {
+        let store = store();
+        let track = rated_track("t", None);
+        store.rate(&track, Rating::Like);
+        store.rate(&track, Rating::Dislike);
+        store.rated("t", 0, Some("late".into()));
+        assert_eq!(store.state().rating(&track), Rating::Dislike);
+        store.rated("t", 1, Some("refused".into()));
+        assert_eq!(store.state().rating(&track), Rating::Indifferent);
+        assert!(!store.state().ratings.contains_key("t"));
     }
 
     #[tokio::test]

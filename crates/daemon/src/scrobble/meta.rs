@@ -217,7 +217,7 @@ async fn isrc(http: &reqwest::Client, recording_mbid: &str) -> Option<String> {
 mod tests {
     use super::super::listenbrainz::Mapping;
     use super::*;
-    use formalmusic_api::{Link, Rating};
+    use formalmusic_api::Link;
 
     fn track(title: &str, artist: &str, kind: TrackKind, album: Option<&str>) -> Track {
         Track {
@@ -235,7 +235,7 @@ mod tests {
             thumbnails: vec![],
             explicit: false,
             kind,
-            like: Rating::Indifferent,
+            like: None,
             set_video_id: None,
             plays: None,
             feedback_token: None,

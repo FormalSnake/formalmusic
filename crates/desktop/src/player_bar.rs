@@ -253,7 +253,8 @@ pub struct PlayerBar {
 impl PlayerBar {
     pub fn new(store: MusicStore, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
-        Bridge::watch(cx, Topic::Player, weak.into());
+        Bridge::watch(cx, Topic::Player, weak.clone().into());
+        Bridge::watch(cx, Topic::Ratings, weak.into());
         let seek = cx.new(|cx| SeekBar::new(store.clone(), cx));
         let time = cx.new(|cx| TimeLabel::new(store.clone(), cx));
         let settings = Settings::load(&formalmusic_core::paths::settings_file());

@@ -1,7 +1,7 @@
 //! The play queue as a plain data structure: order, current entry, shuffle and
 //! repeat. No I/O, so every rule here is unit tested.
 
-use formalmusic_api::{EnqueuePosition, Repeat, Track};
+use formalmusic_api::{EnqueuePosition, Rating, Repeat, Track};
 use serde::{Deserialize, Serialize};
 
 /// Radio tops the queue up once fewer than this many tracks follow the current one.
@@ -198,6 +198,18 @@ impl Queue {
         }
     }
 
+    /// Sets the like state of every entry for `video_id`; true when one changed.
+    pub fn set_like(&mut self, video_id: &str, like: Rating) -> bool {
+        let mut changed = false;
+        for entry in self.entries.iter_mut() {
+            if entry.track.video_id == video_id && entry.track.like != Some(like) {
+                entry.track.like = Some(like);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn remove(&mut self, index: usize) -> Option<Removed> {
         if index >= self.entries.len() {
             return None;
@@ -300,7 +312,7 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use formalmusic_api::{Rating, TrackKind};
+    use formalmusic_api::TrackKind;
 
     fn track(id: &str) -> Track {
         Track {
@@ -312,7 +324,7 @@ mod tests {
             thumbnails: Vec::new(),
             explicit: false,
             kind: TrackKind::Song,
-            like: Rating::Indifferent,
+            like: None,
             set_video_id: None,
             plays: None,
             feedback_token: None,
@@ -437,6 +449,15 @@ mod tests {
         assert_eq!(current(&q), "a");
         assert!(!q.enqueue(vec![track("c")], EnqueuePosition::Next));
         assert_eq!(ids(&q), "a c b");
+    }
+
+    #[test]
+    fn a_like_lands_on_every_entry_of_the_video() {
+        let mut q = queue("a b a", 0);
+        assert!(q.set_like("a", Rating::Like));
+        assert!(!q.set_like("a", Rating::Like));
+        let likes: Vec<_> = q.entries().iter().map(|e| e.track.like).collect();
+        assert_eq!(likes, [Some(Rating::Like), None, Some(Rating::Like)]);
     }
 
     #[test]

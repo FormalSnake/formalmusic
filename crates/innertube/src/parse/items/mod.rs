@@ -195,21 +195,28 @@ pub(crate) fn explicit(badges: &Value) -> bool {
     })
 }
 
-/// The like state from a row's menu, as the signed-in user set it.
-pub(crate) fn like_status(menu: &Value) -> Rating {
+/// The like state from a row's menu, as the signed-in user set it. `None`
+/// when the menu has no like button, as in the up-next panel.
+pub(crate) fn like_status(menu: &Value) -> Option<Rating> {
     like_in_buttons(&menu["menuRenderer"]["topLevelButtons"])
 }
 
 /// The first `likeButtonRenderer` state in a list of buttons.
-pub(crate) fn like_in_buttons(buttons: &Value) -> Rating {
-    for button in buttons.as_array().into_iter().flatten() {
-        match button["likeButtonRenderer"]["likeStatus"].as_str() {
-            Some("LIKE") => return Rating::Like,
-            Some("DISLIKE") => return Rating::Dislike,
-            _ => {}
-        }
+pub(crate) fn like_in_buttons(buttons: &Value) -> Option<Rating> {
+    buttons
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|button| rating(button["likeButtonRenderer"]["likeStatus"].as_str()?))
+}
+
+pub(crate) fn rating(like_status: &str) -> Option<Rating> {
+    match like_status {
+        "LIKE" => Some(Rating::Like),
+        "DISLIKE" => Some(Rating::Dislike),
+        "INDIFFERENT" => Some(Rating::Indifferent),
+        _ => None,
     }
-    Rating::Indifferent
 }
 
 /// The "Remove from history" token in a History row's menu.
@@ -249,7 +256,7 @@ pub(crate) fn blank_track(video_id: String, title: String) -> Track {
         thumbnails: Vec::new(),
         explicit: false,
         kind: TrackKind::Song,
-        like: Rating::Indifferent,
+        like: None,
         set_video_id: None,
         plays: None,
         feedback_token: None,

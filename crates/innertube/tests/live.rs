@@ -147,7 +147,8 @@ async fn live_signed_in_pages() {
         .await
         .unwrap();
     assert!(
-        all_items(&liked.sections).all(|i| matches!(i, Item::Track(t) if t.like == Rating::Like))
+        all_items(&liked.sections)
+            .all(|i| matches!(i, Item::Track(t) if t.like == Some(Rating::Like)))
     );
     let tracking = client.playback_tracking("IluRBvnYMoY").await.unwrap();
     assert!(tracking.playback_url.starts_with("https://"));
@@ -266,7 +267,7 @@ async fn live_mutations_round_trip() {
     // Like, on a track that is not liked yet.
     let mut video = None;
     for candidate in ["IluRBvnYMoY", "zhl-Cs1-sG4", "ajGKWk0auOc"] {
-        if client.next(Some(candidate), None).await.unwrap().like == Rating::Indifferent {
+        if client.next(Some(candidate), None).await.unwrap().like == Some(Rating::Indifferent) {
             video = Some(candidate);
             break;
         }
@@ -279,7 +280,7 @@ async fn live_mutations_round_trip() {
         let client = client.clone();
         async move {
             for _ in 0..10 {
-                if client.next(Some(video), None).await.unwrap().like == want {
+                if client.next(Some(video), None).await.unwrap().like == Some(want) {
                     return true;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;

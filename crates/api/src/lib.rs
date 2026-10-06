@@ -19,7 +19,7 @@ use std::path::PathBuf;
 /// Bumped on any breaking change to the types in this crate. The client
 /// refuses to talk to a daemon with a different number, since both ship in
 /// the same package and a mismatch means a stale daemon is still running.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// `$XDG_RUNTIME_DIR/formalmusic/formalmusicd.sock`, or the cache dir on macOS
 /// where there is no runtime dir.
@@ -354,7 +354,7 @@ mod tests {
             thumbnails: vec![],
             explicit: false,
             kind: TrackKind::Video,
-            like: Rating::Like,
+            like: Some(Rating::Like),
             set_video_id: None,
             plays: None,
             feedback_token: None,

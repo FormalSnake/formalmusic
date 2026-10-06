@@ -1,7 +1,9 @@
 //! The `next` endpoint: the player page's up-next queue (`playlistPanelVideoRenderer`
 //! rows) and the browse ids of its Lyrics and Related tabs.
 
-use super::items::{Byline, blank_track, explicit, like_in_buttons, like_status, video_kind};
+use super::items::{
+    Byline, blank_track, explicit, like_in_buttons, like_status, rating, video_kind,
+};
 use super::{continuation, missing, runs, text, thumbnails};
 use crate::Result;
 use formalmusic_api::{Continuation, Rating, Track, TrackKind};
@@ -16,8 +18,9 @@ pub struct NextResult {
     pub related_browse_id: Option<String>,
     /// More queue for radio and long playlists, for [`crate::Client::next_continuation`].
     pub continuation: Option<Continuation>,
-    /// The signed-in user's rating of the requested track.
-    pub like: Rating,
+    /// The signed-in user's rating of the requested track, when the response
+    /// says. Queue rows carry none of their own.
+    pub like: Option<Rating>,
 }
 
 pub fn parse_next(json: &Value) -> Result<NextResult> {
@@ -27,7 +30,7 @@ pub fn parse_next(json: &Value) -> Result<NextResult> {
         .ok_or_else(|| missing("contents.singleColumnMusicWatchNextResultsRenderer...watchNextTabbedResultsRenderer.tabs"))?;
 
     let mut result = NextResult {
-        like: like_in_buttons(&json["playerOverlays"]["playerOverlayRenderer"]["actions"]),
+        like: player_like(&json["playerOverlays"]["playerOverlayRenderer"]),
         ..NextResult::default()
     };
     for tab in tabs {
@@ -60,6 +63,22 @@ pub fn parse_next_continuation(json: &Value) -> Result<NextResult> {
         playlist_id: panel["playlistId"].as_str().map(str::to_owned),
         continuation: continuation(panel),
         ..NextResult::default()
+    })
+}
+
+/// The like button over the player: `actions` in older responses, a view
+/// model in the action bar since.
+fn player_like(overlay: &Value) -> Option<Rating> {
+    like_in_buttons(&overlay["actions"]).or_else(|| {
+        overlay["videoActionBar"]["videoActionBarViewModel"]["buttons"]
+            .as_array()?
+            .iter()
+            .find_map(|button| {
+                let status = &button["buttonViewModel"]["segmentedLikeDislikeButtonViewModel"]
+                    ["likeButtonViewModel"]["likeButtonViewModel"]["likeStatusEntity"]
+                    ["likeStatus"];
+                rating(status.as_str()?)
+            })
     })
 }
 

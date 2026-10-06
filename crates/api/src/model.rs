@@ -104,7 +104,10 @@ pub struct Track {
     /// it would write the key twice.
     #[serde(rename = "track_kind")]
     pub kind: TrackKind,
-    pub like: Rating,
+    /// `None` when the response did not say, as for rows of the `next`
+    /// queue, so a client keeps what another page told it.
+    #[serde(default)]
+    pub like: Option<Rating>,
     /// Present in playlists you own; needed to remove or move the row.
     pub set_video_id: Option<String>,
     /// "1.2M plays" and similar subtitles the page showed.

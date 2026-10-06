@@ -72,8 +72,7 @@ pub async fn open(
     start: usize,
 ) -> Result<Opened, ApiError> {
     if is_mix(playlist_id) {
-        let video_id = known.get(start).map(|t| t.video_id.clone());
-        return open_mix(api, playlist_id, video_id.as_deref()).await;
+        return open_mix(api, playlist_id, &known, start).await;
     }
     let mut rest = Rest::new(playlist_id, known.len());
     if !known.is_empty() {
@@ -89,8 +88,7 @@ pub async fn open(
             break;
         };
         if chunk.mix {
-            let video_id = chunk.tracks.get(start).map(|t| t.video_id.clone());
-            return open_mix(api, playlist_id, video_id.as_deref()).await;
+            return open_mix(api, playlist_id, &chunk.tracks, start).await;
         }
         tracks.extend(chunk.tracks);
     }
@@ -102,17 +100,34 @@ pub async fn open(
 }
 
 /// The watch page for a mix, as the web app opens it from a row or the
-/// Play button, starting at `video_id` when there is one.
+/// Play button, starting at the row `start` of `known` when there is one.
+/// Watch queue rows carry no like state, so they take it from the page's.
 async fn open_mix(
     api: &impl Api,
     playlist_id: &str,
-    video_id: Option<&str>,
+    known: &[Track],
+    start: usize,
 ) -> Result<Opened, ApiError> {
-    let next = api.next(video_id, playlist_id).await?;
+    let video_id = known.get(start).map(|t| t.video_id.as_str());
+    let mut next = api.next(video_id, playlist_id).await?;
+    carry_likes(&mut next.tracks, known);
     let start = video_id
         .and_then(|id| next.tracks.iter().position(|t| t.video_id == id))
         .unwrap_or(0);
+    if let (Some(like), Some(first)) = (next.like, next.tracks.get_mut(start)) {
+        first.like = Some(like);
+    }
     Ok(Opened::Mix { next, start })
+}
+
+/// Fills in the like state `tracks` lack from `known` rows of the same video.
+pub fn carry_likes(tracks: &mut [Track], known: &[Track]) {
+    for track in tracks.iter_mut().filter(|t| t.like.is_none()) {
+        track.like = known
+            .iter()
+            .find(|k| k.video_id == track.video_id)
+            .and_then(|k| k.like);
+    }
 }
 
 /// `RD` lists (`RDTMAK`, `RDCLAK`, `RDAMVM`, `RDEM`, ...) are the ones the web
@@ -269,7 +284,7 @@ mod tests {
             thumbnails: Vec::new(),
             explicit: false,
             kind: TrackKind::Song,
-            like: Rating::Indifferent,
+            like: None,
             set_video_id: None,
             plays: None,
             feedback_token: None,
@@ -438,6 +453,23 @@ mod tests {
         let opened = open(&fake, "PLsupermix", Vec::new(), 0).await.unwrap();
         assert!(matches!(opened, Opened::Mix { .. }));
         assert_eq!(fake.calls(), ["browse PLsupermix", "next a PLsupermix"]);
+    }
+
+    #[tokio::test]
+    async fn a_mix_queue_keeps_the_likes_its_page_showed() {
+        let fake = Fake {
+            queue: "x y z",
+            ..Fake::default()
+        };
+        let mut known = tracks("a y");
+        known[1].like = Some(Rating::Like);
+        let Opened::Mix { next, start } = open(&fake, "RDTMAK5uy_x", known, 1).await.unwrap()
+        else {
+            panic!("not a mix");
+        };
+        assert_eq!(start, 1);
+        let likes: Vec<_> = next.tracks.iter().map(|t| t.like).collect();
+        assert_eq!(likes, [None, Some(Rating::Like), None]);
     }
 
     #[tokio::test]

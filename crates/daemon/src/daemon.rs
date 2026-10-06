@@ -174,6 +174,9 @@ impl Daemon {
 
             Command::Rate { target, rating } => {
                 client.rate(&target, rating).await?;
+                if let RateTarget::Track { video_id } = &target {
+                    playback.rated(video_id, rating);
+                }
                 self.library_changed(match target {
                     RateTarget::Track { .. } => LibraryScope::Likes,
                     RateTarget::Playlist { .. } => LibraryScope::Playlists,

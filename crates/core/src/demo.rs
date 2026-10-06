@@ -251,7 +251,7 @@ fn build_catalog() -> Catalog {
                     thumbnails: art(&format!("album-{n}")),
                     explicit: rng.below(7) == 0,
                     kind: TrackKind::Song,
-                    like: Rating::Indifferent,
+                    like: Some(Rating::Indifferent),
                     set_video_id: None,
                     plays: Some(format!("{}M plays", 1 + rng.below(90))),
                     feedback_token: None,
