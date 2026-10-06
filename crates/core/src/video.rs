@@ -1,12 +1,15 @@
-//! Animated covers: a looping, silent mp4 decoded by the ffmpeg binary into
-//! raw BGRA frames at the size they are drawn, paced on the wall clock and
-//! handed to the UI through a bounded channel. The same approach as the
-//! messages app's `video.rs`, without the sound.
+//! Video decoded by the ffmpeg binary into raw BGRA frames at the size they
+//! are drawn and handed to the UI through a bounded channel. The same
+//! approach as the messages app's `video.rs`, without the sound.
 //!
-//! ffmpeg does the scaling, the square crop and the frame rate cap, so the
-//! pipe carries only what gets painted: a 96 px bar cover at 12 fps is about
-//! 440 KB a second. Stopping is dropping the [`Loop`], which kills ffmpeg;
-//! the next start seeks to where the last one stopped.
+//! Two kinds: animated covers ([`Loop`]), a looping silent mp4 paced on the
+//! wall clock, and music videos ([`Synced`]), a googlevideo stream paced on
+//! the daemon's playback clock so the picture follows the audio.
+//!
+//! ffmpeg does the scaling, the crop and the frame rate cap, so the pipe
+//! carries only what gets painted: a 96 px bar cover at 12 fps is about
+//! 440 KB a second. Stopping is dropping the [`Loop`] or [`Synced`], which
+//! kills ffmpeg.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -14,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use formalmusic_api::VideoStream;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -26,7 +30,8 @@ pub struct VideoInfo {
 }
 
 pub struct VideoFrame {
-    pub side: u32,
+    pub width: u32,
+    pub height: u32,
     pub bgra: Vec<u8>,
 }
 
@@ -203,10 +208,9 @@ async fn run(
     let began = Instant::now();
     let mut index: u32 = 0;
     loop {
-        let mut bgra = vec![0u8; frame_len];
-        if stdout.read_exact(&mut bgra).await.is_err() {
+        let Some(bgra) = read_frame(&mut stdout, frame_len).await else {
             return;
-        }
+        };
         let due = began + frame_time * index;
         index += 1;
         let now = Instant::now();
@@ -218,9 +222,226 @@ async fn run(
         }
         let at = start + (index - 1) as f64 / rate;
         position.store(at.to_bits(), Ordering::Release);
-        match frames.try_send(VideoFrame { side, bgra }) {
+        let frame = VideoFrame {
+            width: side,
+            height: side,
+            bgra,
+        };
+        match frames.try_send(frame) {
             Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
             Err(mpsc::error::TrySendError::Closed(_)) => return,
+        }
+    }
+}
+
+/// One raw frame from ffmpeg. Reads into spare capacity, so the 1-4 MB
+/// buffer each frame needs is not zeroed first only to be overwritten.
+async fn read_frame(stdout: &mut tokio::process::ChildStdout, len: usize) -> Option<Vec<u8>> {
+    let mut frame = Vec::with_capacity(len);
+    stdout.take(len as u64).read_to_end(&mut frame).await.ok()?;
+    (frame.len() == len).then_some(frame)
+}
+
+/// Where the audio is, in seconds into the video, or `None` once it stops
+/// playing this video. Read on the decoder's task for every frame.
+pub type Clock = Arc<dyn Fn() -> Option<f64> + Send + Sync>;
+
+/// Frames this close to the audio's place are shown as they come.
+const SYNC_TOLERANCE: f64 = 0.040;
+/// Further off than this, ffmpeg starts again where the audio is instead of
+/// catching up frame by frame.
+const RESEEK_AFTER: f64 = 1.5;
+/// How far ahead of the audio a fresh ffmpeg starts, to cover opening the
+/// stream. Grows by however late the first frame was when it was not enough.
+const FIRST_LEAD: f64 = 1.0;
+const MAX_LEAD: f64 = 8.;
+/// Past this a player box shows nothing more, and decoding costs double.
+const MAX_SYNCED_FPS: f64 = 30.;
+/// Starts in a row that produced no frame before giving up.
+const MAX_FAILED_STARTS: u32 = 3;
+
+/// A music video decoded muted beside the daemon's audio, held to its clock.
+pub struct Synced {
+    task: JoinHandle<()>,
+}
+
+impl Synced {
+    /// Decodes `stream` at `width` x `height` from wherever `clock` says,
+    /// showing each frame when the audio reaches it, dropping frames that
+    /// come late and starting over after a seek. With `hardware`, ffmpeg
+    /// decodes through VA-API and falls back to software if that fails. The
+    /// channel closes when the stream cannot be read, which usually means
+    /// googlevideo refused the URL.
+    pub fn start(
+        runtime: &tokio::runtime::Handle,
+        stream: &VideoStream,
+        width: u32,
+        height: u32,
+        hardware: bool,
+        clock: Clock,
+        frames: mpsc::Sender<VideoFrame>,
+    ) -> Synced {
+        let size = (width.max(2) & !1, height.max(2) & !1);
+        let task = runtime.spawn(run_synced(stream.clone(), size, hardware, clock, frames));
+        Synced { task }
+    }
+}
+
+impl Drop for Synced {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+enum Ended {
+    /// ffmpeg stopped; whether it got a frame out first.
+    Stopped(bool),
+    /// The audio moved too far from the picture. `late` is how far behind
+    /// the first frame came out, when it was that one.
+    Reseek { late: Option<f64> },
+    /// The clock stopped or the UI went away.
+    Done,
+}
+
+async fn run_synced(
+    stream: VideoStream,
+    size: (u32, u32),
+    mut hardware: bool,
+    clock: Clock,
+    frames: mpsc::Sender<VideoFrame>,
+) {
+    let rate = stream.fps.clamp(1., MAX_SYNCED_FPS);
+    let mut lead = FIRST_LEAD;
+    let mut failed = 0;
+    loop {
+        match decode_from(&stream, lead, rate, size, hardware, &clock, &frames).await {
+            Ended::Done => return,
+            Ended::Stopped(true) => failed = 0,
+            Ended::Stopped(false) if hardware => {
+                tracing::info!("music video: VA-API decode failed, decoding in software");
+                hardware = false;
+            }
+            Ended::Stopped(false) => {
+                failed += 1;
+                if failed >= MAX_FAILED_STARTS {
+                    return;
+                }
+            }
+            Ended::Reseek { late: Some(late) } => lead = (lead + late + 0.25).min(MAX_LEAD),
+            Ended::Reseek { late: None } => {}
+        }
+    }
+}
+
+/// One ffmpeg run, from `lead` seconds past where the audio is now.
+async fn decode_from(
+    stream: &VideoStream,
+    lead: f64,
+    rate: f64,
+    (width, height): (u32, u32),
+    hardware: bool,
+    clock: &Clock,
+    frames: &mpsc::Sender<VideoFrame>,
+) -> Ended {
+    let Some(now) = clock() else {
+        return Ended::Done;
+    };
+    let start = now + lead;
+    let mut command = tokio::process::Command::new("ffmpeg");
+    command.args(["-v", "error", "-nostdin"]);
+    // One decoder thread keeps 480p H.264 well under real time; taller
+    // streams get a second so a slow core does not fall behind the audio.
+    command.args(["-threads", if height > 480 { "2" } else { "1" }]);
+    // Frames stay on the GPU through decode, scaling and the conversion to
+    // BGRA, and the finished picture is mapped rather than downloaded: on
+    // an Intel iGPU that is about half the CPU of decoding in hardware and
+    // converting in software, and a third of decoding in software.
+    let mut filter = if hardware {
+        command.args(["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]);
+        format!("scale_vaapi=w={width}:h={height}:format=bgra,hwmap=mode=read,format=bgra")
+    } else {
+        format!("scale={width}:{height}:flags=bilinear")
+    };
+    let headers: String = stream
+        .headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect();
+    if !headers.is_empty() {
+        command.args(["-headers", &headers]);
+    }
+    if stream.fps > rate + 0.5 {
+        filter = format!("fps={rate:.4},{filter}");
+    }
+    let spawned = command
+        .args(["-ss", &format!("{start:.3}"), "-i", &stream.url])
+        .args([
+            "-map",
+            "0:v:0",
+            "-an",
+            "-filter_threads",
+            "1",
+            "-vf",
+            &filter,
+        ])
+        .args(["-pix_fmt", "bgra", "-f", "rawvideo", "pipe:1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            tracing::warn!("music video: ffmpeg: {error}");
+            return Ended::Done;
+        }
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        return Ended::Stopped(false);
+    };
+    let frame_len = width as usize * height as usize * 4;
+    let mut index: u32 = 0;
+    loop {
+        let Some(bgra) = read_frame(&mut stdout, frame_len).await else {
+            return Ended::Stopped(index > 0);
+        };
+        let at = start + index as f64 / rate;
+        let first_frame = index == 0;
+        index += 1;
+        let ahead = loop {
+            let Some(now) = clock() else {
+                return Ended::Done;
+            };
+            let ahead = at - now;
+            // The first frame is meant to be early, by up to the lead.
+            let early = if first_frame { lead } else { 0. } + RESEEK_AFTER;
+            if ahead > early {
+                return Ended::Reseek { late: None };
+            }
+            if ahead < -RESEEK_AFTER {
+                return Ended::Reseek {
+                    late: first_frame.then_some(-ahead),
+                };
+            }
+            if ahead <= SYNC_TOLERANCE {
+                break ahead;
+            }
+            // Hold the frame, looking at the clock again at least every
+            // 100 ms in case the audio paused or jumped.
+            tokio::time::sleep(Duration::from_secs_f64(ahead.min(0.1))).await;
+        };
+        if ahead < -SYNC_TOLERANCE {
+            continue;
+        }
+        let frame = VideoFrame {
+            width,
+            height,
+            bgra,
+        };
+        match frames.try_send(frame) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => return Ended::Done,
         }
     }
 }
@@ -283,12 +504,71 @@ mod tests {
         let mut count = 0;
         while count < 12 {
             let frame = rx.recv().await.expect("ffmpeg stopped");
-            assert_eq!((frame.side, frame.bgra.len()), (48, 48 * 48 * 4));
+            assert_eq!(
+                (frame.width, frame.height, frame.bgra.len()),
+                (48, 48, 48 * 48 * 4)
+            );
             count += 1;
         }
         let elapsed = started.elapsed().as_secs_f64();
         assert!(elapsed > 0.85, "12 frames at 12 fps came in {elapsed:.2}s");
         // Started 1.5 s into a 2 s file, a second of frames wrapped round.
         assert!(run.position() < 1.5, "at {}", run.position());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn synced_frames_follow_the_clock_and_stop_with_it() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-video");
+        let path = dir.join("long.mp4");
+        if !path.exists() {
+            let made = std::fs::create_dir_all(&dir).is_ok()
+                && std::process::Command::new("ffmpeg")
+                    .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi"])
+                    .args(["-i", "testsrc2=size=160x90:rate=30:duration=8"])
+                    .args(["-c:v", "mpeg4", "-f", "mp4"])
+                    .arg(&path)
+                    .status()
+                    .is_ok_and(|s| s.success());
+            if !made {
+                return;
+            }
+        }
+        let stream = VideoStream {
+            url: path.to_string_lossy().into_owned(),
+            headers: Vec::new(),
+            width: 160,
+            height: 90,
+            fps: 30.,
+            codec: "mp4v".into(),
+        };
+        let began = Instant::now();
+        let stop_at = 3.0;
+        let clock: Clock = Arc::new(move || {
+            let at = 0.5 + began.elapsed().as_secs_f64();
+            (at < 0.5 + stop_at).then_some(at)
+        });
+        let (tx, mut rx) = mpsc::channel(2);
+        let _run = Synced::start(
+            &tokio::runtime::Handle::current(),
+            &stream,
+            80,
+            45,
+            false,
+            clock,
+            tx,
+        );
+        let mut count = 0;
+        while let Some(frame) = rx.recv().await {
+            assert_eq!(
+                (frame.width, frame.height, frame.bgra.len()),
+                (80, 44, 80 * 44 * 4)
+            );
+            count += 1;
+        }
+        let elapsed = began.elapsed().as_secs_f64();
+        // The first second goes to the start lead, then about 30 a second
+        // until the clock stops.
+        assert!((stop_at..stop_at + 0.5).contains(&elapsed), "{elapsed:.2}s");
+        assert!((40..=66).contains(&count), "{count} frames");
     }
 }

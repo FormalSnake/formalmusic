@@ -12,6 +12,7 @@ mod live_theme;
 mod lyrics;
 mod menus;
 mod motion;
+mod music_video;
 mod new_playlist;
 mod now_playing;
 mod page;

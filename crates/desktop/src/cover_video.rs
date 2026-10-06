@@ -210,7 +210,7 @@ impl CoverVideo {
     }
 
     fn show(&mut self, frame: VideoFrame, cx: &mut Context<Self>) {
-        let Some(buffer) = RgbaImage::from_raw(frame.side, frame.side, frame.bgra) else {
+        let Some(buffer) = RgbaImage::from_raw(frame.width, frame.height, frame.bgra) else {
             return;
         };
         let image = Arc::new(RenderImage::new(vec![Frame::new(buffer)]));
@@ -241,14 +241,20 @@ impl Render for CoverVideo {
         }
         self.sync(cx);
         let palette = Theme::get(cx);
-        let thumbnails = self
-            .store
-            .state()
-            .player
-            .track
-            .as_ref()
-            .map(|track| track.thumbnails.clone())
-            .unwrap_or_default();
+        // A music video queued in Song mode plays its album track: show that
+        // track's square cover, not the video's frame grab.
+        let thumbnails = {
+            let state = self.store.state();
+            let player = &state.player;
+            player
+                .track
+                .as_ref()
+                .map(|track| {
+                    let playing = player.playing_id.as_deref().unwrap_or(&track.video_id);
+                    track.thumbnails_of(playing).clone()
+                })
+                .unwrap_or_default()
+        };
         let (size, radius) = (self.size, self.radius);
         let picture = self.frame.clone().map(|frame| {
             let corners = Corners::all(radius);

@@ -18,10 +18,10 @@ use std::time::{Duration, Instant};
 
 use formalmusic_api::{
     Account, BrowseTarget, Browsers, Command, Continuation, EnqueuePosition, Event, Header, Item,
-    LastFmApp, LibraryScope, LibraryTab, ListenBrainzSource, Lyrics, Page, PlaySource, PlayerState,
-    PlaylistEdit, Privacy, ProfileBrowser, QueueState, RateTarget, Rating, Repeat, Reply,
-    ScrobbleService, ScrobbleStatus, SearchFilter, SearchResults, SectionLayout, SessionInfo,
-    Status, Suggestion, Track,
+    LastFmApp, LibraryScope, LibraryTab, ListenBrainzSource, Lyrics, Page, PlaySource,
+    PlaybackMode, PlayerState, PlaylistEdit, Privacy, ProfileBrowser, QueueState, RateTarget,
+    Rating, Repeat, Reply, ScrobbleService, ScrobbleStatus, SearchFilter, SearchResults,
+    SectionLayout, SessionInfo, Status, Suggestion, Track, VideoStream,
 };
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use tokio::sync::{broadcast, mpsc};
@@ -618,7 +618,11 @@ impl MusicStore {
             Event::Player(player) => self.inner.update(|state, events| {
                 let changed_track = state.player.track.as_ref().map(|t| &t.video_id)
                     != player.track.as_ref().map(|t| &t.video_id);
-                if changed_track || state.player.status != player.status {
+                let changed_version = state.player.playing_id != player.playing_id
+                    || state.player.mode != player.mode
+                    || state.player.track.as_ref().map(|t| &t.counterpart)
+                        != player.track.as_ref().map(|t| &t.counterpart);
+                if changed_track || changed_version || state.player.status != player.status {
                     events.push(StoreEvent::NowPlaying);
                 }
                 state.position_ms = player.position_ms;
@@ -1294,6 +1298,47 @@ impl MusicStore {
             state.player.shuffle
         });
         self.send(Command::SetShuffle { shuffle });
+    }
+
+    /// The Song and Video switch. The daemon moves the playing track over to
+    /// the chosen version at the same place in the song.
+    pub fn set_mode(&self, mode: PlaybackMode) {
+        let changed = self.inner.update(|state, events| {
+            let changed = state.player.mode != mode;
+            state.player.mode = mode;
+            events.extend([StoreEvent::Player, StoreEvent::NowPlaying]);
+            changed
+        });
+        if changed {
+            self.send(Command::SetMode { mode });
+        }
+    }
+
+    /// A video-only stream of `video_id` for the player to decode beside
+    /// the daemon's audio. `refresh` asks yt-dlp again after a refused URL.
+    pub async fn video_stream(
+        &self,
+        video_id: String,
+        max_height: u32,
+        refresh: bool,
+    ) -> Option<VideoStream> {
+        let reply = self
+            .inner
+            .transport
+            .call(Command::VideoStream {
+                video_id,
+                max_height,
+                refresh,
+            })
+            .await;
+        match reply {
+            Ok(Reply::VideoStream(stream)) => Some(stream),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!("video stream: {error}");
+                None
+            }
+        }
     }
 
     pub fn enqueue(&self, tracks: Vec<Track>, position: EnqueuePosition) {
