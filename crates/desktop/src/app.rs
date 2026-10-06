@@ -157,6 +157,10 @@ pub struct AppRoot {
     player_bar: Entity<PlayerBar>,
     expanded: Option<Entity<NowPlaying>>,
     expanded_shown: Presence<Entity<NowPlaying>>,
+    /// The expanded player has finished opening over the sidebar, top bar
+    /// and page, so they are left out of the frame: each of its frames would
+    /// otherwise replay every one of their primitives underneath it.
+    covered: bool,
     sign_in: Option<Entity<SignIn>>,
     /// Opened from a menu or a page, as opposed to shown because nobody is signed in.
     sign_in_wanted: bool,
@@ -274,6 +278,7 @@ impl AppRoot {
             player_bar,
             expanded: None,
             expanded_shown: Presence::new(DURATION_BASE),
+            covered: false,
             sign_in: None,
             sign_in_wanted: false,
             sign_in_dismissed: false,
@@ -377,6 +382,7 @@ impl AppRoot {
     }
 
     fn set_expanded(&mut self, tab: Option<Tab>, cx: &mut Context<Self>) {
+        let was_open = self.expanded.is_some();
         match tab {
             Some(tab) => {
                 if self.store.state().player.track.is_none() {
@@ -398,6 +404,21 @@ impl AppRoot {
             .map(|view| view.read(cx).cover().clone());
         self.player_bar
             .update(cx, |bar, cx| bar.set_expanded(cover, cx));
+        if was_open != self.expanded.is_some() {
+            self.covered = false;
+            if self.expanded.is_some() {
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(DURATION_PANEL).await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.expanded.is_some() && !this.covered {
+                            this.covered = true;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+        }
         cx.notify();
     }
 
@@ -734,71 +755,73 @@ impl Render for AppRoot {
                     .flex_row()
                     .flex_grow(1.)
                     .min_h(px(0.))
-                    .child(
-                        AnyView::from(self.sidebar.clone()).cached(
-                            StyleRefinement::default()
-                                .w(if collapsed {
-                                    SIDEBAR_COLLAPSED
-                                } else {
-                                    SIDEBAR_WIDTH
-                                })
-                                .h_full()
-                                .flex_shrink_0(),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .w(px(1.))
-                            .h_full()
-                            .flex_shrink_0()
-                            .bg(palette.sidebar_border),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_grow(1.)
-                            .min_w(px(0.))
-                            .h_full()
-                            .child(
-                                div()
-                                    .h(TITLEBAR_HEIGHT)
-                                    .flex_shrink_0()
-                                    .w_full()
-                                    .when(caption, |el| {
-                                        el.pr(crate::chrome::caption_reserve(window))
+                    .when(!self.covered, |el| {
+                        el.child(
+                            AnyView::from(self.sidebar.clone()).cached(
+                                StyleRefinement::default()
+                                    .w(if collapsed {
+                                        SIDEBAR_COLLAPSED
+                                    } else {
+                                        SIDEBAR_WIDTH
                                     })
-                                    .child(AnyView::from(self.topbar.clone()).cached(
-                                        StyleRefinement::default().w_full().h(TITLEBAR_HEIGHT),
-                                    )),
-                            )
-                            .when_some(offline, |el, reason| {
-                                el.child(
+                                    .h_full()
+                                    .flex_shrink_0(),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .w(px(1.))
+                                .h_full()
+                                .flex_shrink_0()
+                                .bg(palette.sidebar_border),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_grow(1.)
+                                .min_w(px(0.))
+                                .h_full()
+                                .child(
                                     div()
+                                        .h(TITLEBAR_HEIGHT)
                                         .flex_shrink_0()
-                                        .px(crate::theme::PAGE_INSET)
-                                        .py(crate::theme::spacing::X2)
-                                        .bg(palette.danger_soft)
-                                        .text_size(crate::theme::type_scale::CAPTION.font_size)
-                                        .text_color(palette.text)
-                                        .child(format!(
-                                            "{reason} Showing what was cached; retrying."
+                                        .w_full()
+                                        .when(caption, |el| {
+                                            el.pr(crate::chrome::caption_reserve(window))
+                                        })
+                                        .child(AnyView::from(self.topbar.clone()).cached(
+                                            StyleRefinement::default().w_full().h(TITLEBAR_HEIGHT),
                                         )),
                                 )
-                            })
-                            .child(
-                                div()
-                                    .relative()
-                                    .flex_grow(1.)
-                                    .flex_basis(px(0.))
-                                    .min_h(px(0.))
-                                    .w_full()
-                                    .children(page.map(|page| {
-                                        AnyView::from(page)
-                                            .cached(StyleRefinement::default().size_full())
-                                    })),
-                            ),
-                    ),
+                                .when_some(offline, |el, reason| {
+                                    el.child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .px(crate::theme::PAGE_INSET)
+                                            .py(crate::theme::spacing::X2)
+                                            .bg(palette.danger_soft)
+                                            .text_size(crate::theme::type_scale::CAPTION.font_size)
+                                            .text_color(palette.text)
+                                            .child(format!(
+                                                "{reason} Showing what was cached; retrying."
+                                            )),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .relative()
+                                        .flex_grow(1.)
+                                        .flex_basis(px(0.))
+                                        .min_h(px(0.))
+                                        .w_full()
+                                        .children(page.map(|page| {
+                                            AnyView::from(page)
+                                                .cached(StyleRefinement::default().size_full())
+                                        })),
+                                ),
+                        )
+                    }),
             )
             .child(
                 AnyView::from(self.player_bar.clone()).cached(
