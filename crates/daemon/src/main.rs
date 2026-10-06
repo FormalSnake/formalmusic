@@ -11,6 +11,7 @@ mod playback;
 mod queue;
 mod server;
 mod session;
+mod signin;
 mod streams;
 mod tracking;
 

@@ -17,10 +17,10 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use formalmusic_api::{
-    Account, BrowseTarget, Command, Continuation, EnqueuePosition, Event, Item, LibraryScope,
-    LibraryTab, Lyrics, Page, PlaySource, PlayerState, PlaylistEdit, Privacy, QueueState,
-    RateTarget, Rating, Repeat, Reply, SearchFilter, SearchResults, SessionInfo, Status,
-    Suggestion, Track,
+    Account, BrowseTarget, Browsers, Command, Continuation, EnqueuePosition, Event, Item,
+    LibraryScope, LibraryTab, Lyrics, Page, PlaySource, PlayerState, PlaylistEdit, Privacy,
+    QueueState, RateTarget, Rating, Repeat, Reply, SearchFilter, SearchResults, SessionInfo,
+    Status, Suggestion, Track,
 };
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use tokio::sync::{broadcast, mpsc};
@@ -1309,6 +1309,36 @@ impl MusicStore {
             Ok(_) => Err(message(&ClientError::UnexpectedReply)),
             Err(error) => Err(message(&error)),
         }
+    }
+
+    pub async fn browsers(&self) -> Result<Browsers, String> {
+        match self.inner.transport.call(Command::Browsers).await {
+            Ok(Reply::Browsers(browsers)) => Ok(browsers),
+            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
+            Err(error) => Err(message(&error)),
+        }
+    }
+
+    /// Opens `browser` (or the default) for the user to sign in, and returns
+    /// once they have or the daemon gave up.
+    pub async fn browser_sign_in(&self, browser: Option<String>) -> Result<(), String> {
+        match self
+            .inner
+            .transport
+            .call(Command::BrowserSignIn { browser })
+            .await
+        {
+            Ok(Reply::Session(session)) if session.signed_in => {
+                self.apply(Event::Session(session));
+                Ok(())
+            }
+            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
+            Err(error) => Err(message(&error)),
+        }
+    }
+
+    pub async fn cancel_sign_in(&self) {
+        let _ = self.inner.transport.call(Command::CancelSignIn).await;
     }
 
     pub fn sign_out(&self) {

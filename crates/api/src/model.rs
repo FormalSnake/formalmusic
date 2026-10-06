@@ -9,13 +9,17 @@ use serde::{Deserialize, Serialize};
 pub enum BrowseTarget {
     Home,
     /// Home filtered by a mood chip; `params` comes from [`Chip::params`].
-    HomeChip { params: String },
+    HomeChip {
+        params: String,
+    },
     Explore,
     NewReleases,
     Charts,
     MoodsAndGenres,
     /// One mood or genre tile from [`BrowseTarget::MoodsAndGenres`].
-    MoodCategory { params: String },
+    MoodCategory {
+        params: String,
+    },
     Library(LibraryTab),
     History,
     Album(String),
@@ -24,9 +28,15 @@ pub enum BrowseTarget {
     Podcast(String),
     Episode(String),
     /// An artist's "see all" page (all songs, albums, singles, videos).
-    ArtistShelf { browse_id: String, params: String },
+    ArtistShelf {
+        browse_id: String,
+        params: String,
+    },
     /// Any other `browseId` + `params` pair a page linked to.
-    Raw { browse_id: String, params: Option<String> },
+    Raw {
+        browse_id: String,
+        params: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -347,15 +357,31 @@ pub enum Privacy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PlaylistEdit {
-    Add { video_id: String },
+    Add {
+        video_id: String,
+    },
     /// Add every track of another playlist or album.
-    AddPlaylist { playlist_id: String },
-    Remove { video_id: String, set_video_id: String },
+    AddPlaylist {
+        playlist_id: String,
+    },
+    Remove {
+        video_id: String,
+        set_video_id: String,
+    },
     /// Move a row so it sits before `before_set_video_id`, or last when `None`.
-    Move { set_video_id: String, before_set_video_id: Option<String> },
-    Rename { title: String },
-    Describe { description: String },
-    SetPrivacy { privacy: Privacy },
+    Move {
+        set_video_id: String,
+        before_set_video_id: Option<String>,
+    },
+    Rename {
+        title: String,
+    },
+    Describe {
+        description: String,
+    },
+    SetPrivacy {
+        privacy: Privacy,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -432,6 +458,22 @@ pub struct SessionInfo {
     pub account: Option<Account>,
     /// Premium unlocks the higher bitrate streams.
     pub premium: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Browser {
+    /// Stable id for [`crate::Command::BrowserSignIn`], such as `firefox`.
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Browsers {
+    pub installed: Vec<Browser>,
+    /// The id [`crate::Command::BrowserSignIn`] uses when given none: the
+    /// system default browser when it is installed and supported, else the
+    /// first installed one.
+    pub default: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -1509,6 +1509,22 @@ impl Transport for DemoTransport {
                 shared.state.lock().session = session.clone();
                 Reply::Session(session)
             }
+            Command::Browsers => Reply::Browsers(Browsers {
+                installed: [("helium", "Helium"), ("firefox", "Firefox")]
+                    .map(|(id, name)| Browser {
+                        id: id.into(),
+                        name: name.into(),
+                    })
+                    .into(),
+                default: Some("helium".into()),
+            }),
+            Command::BrowserSignIn { .. } => {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let session = session(true, None);
+                shared.state.lock().session = session.clone();
+                Reply::Session(session)
+            }
+            Command::CancelSignIn => Reply::Ok,
             Command::SignOut => {
                 let session = session(false, None);
                 shared.state.lock().session = session.clone();

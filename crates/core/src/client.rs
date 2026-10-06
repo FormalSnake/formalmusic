@@ -30,6 +30,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Browsing and starting playback go through InnerTube and yt-dlp, which
 /// take seconds on a bad network.
 const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+/// A browser sign-in lasts as long as the user takes, and the daemon gives
+/// up after five minutes.
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(320);
 const RETRY_MIN: Duration = Duration::from_millis(250);
 const RETRY_MAX: Duration = Duration::from_secs(10);
 /// A daemon that dies at once would otherwise be restarted on every retry.
@@ -98,6 +101,7 @@ fn timeout_for(command: &Command) -> Duration {
         | Command::Play { .. }
         | Command::SignIn { .. }
         | Command::Lyrics { .. } => SLOW_REQUEST_TIMEOUT,
+        Command::BrowserSignIn { .. } => SIGN_IN_TIMEOUT,
         _ => REQUEST_TIMEOUT,
     }
 }

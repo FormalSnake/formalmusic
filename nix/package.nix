@@ -76,7 +76,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # GPUI dlopens the windowing and GPU libraries at runtime. The daemon shells
   # out to yt-dlp for stream URLs, so it gets the pinned one, not whatever is
   # on the user's PATH. The app decodes animated covers with ffmpeg and
-  # ffprobe; the headless build has the native H.264 decoder they need.
+  # ffprobe; the headless build has the native H.264 decoder they need. The
+  # daemon asks xdg-settings which browser to open for sign-in.
   postFixup = ''
     patchelf $out/bin/formalmusic --add-rpath ${
       lib.makeLibraryPath [
@@ -97,7 +98,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
         ffmpeg-headless
       ]
     }
-    wrapProgram $out/bin/formalmusicd --prefix PATH : ${lib.makeBinPath [ yt-dlp ]}
+    wrapProgram $out/bin/formalmusicd --prefix PATH : ${lib.makeBinPath [ yt-dlp ]} \
+      --suffix PATH : ${lib.makeBinPath [ xdg-utils ]}
   '';
 
   meta = {

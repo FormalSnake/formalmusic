@@ -4,6 +4,7 @@ use crate::config::{Config, Paths};
 use crate::extras::Extras;
 use crate::playback::Playback;
 use crate::session::Session;
+use crate::signin::BrowserSignIn;
 use formalmusic_api::{ApiError, Command, Event, LibraryScope, RateTarget, Reply};
 use formalmusic_player::Player;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ pub struct Daemon {
     pub session: Arc<Session>,
     pub playback: Arc<Playback>,
     extras: Arc<Extras>,
+    signin: BrowserSignIn,
     pub events: broadcast::Sender<Event>,
 }
 
@@ -33,6 +35,7 @@ impl Daemon {
             session,
             playback,
             extras,
+            signin: BrowserSignIn::new(paths.signin()),
             events,
         }))
     }
@@ -78,6 +81,17 @@ impl Daemon {
                 let info = self.session.sign_in(&cookies, None).await?;
                 self.session_changed();
                 Ok(Reply::Session(info))
+            }
+            Command::Browsers => Ok(Reply::Browsers(self.signin.browsers().await)),
+            Command::BrowserSignIn { browser } => {
+                let cookies = self.signin.run(browser.as_deref()).await?;
+                let info = self.session.sign_in(&cookies, None).await?;
+                self.session_changed();
+                Ok(Reply::Session(info))
+            }
+            Command::CancelSignIn => {
+                self.signin.cancel();
+                Ok(Reply::Ok)
             }
             Command::SignOut => {
                 let info = self.session.sign_out()?;

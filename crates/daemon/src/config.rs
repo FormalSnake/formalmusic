@@ -81,6 +81,11 @@ impl Paths {
         self.state.join("session.json")
     }
 
+    /// Throwaway browser profiles of a running sign-in.
+    pub fn signin(&self) -> PathBuf {
+        self.state.join("signin")
+    }
+
     pub fn queue(&self) -> PathBuf {
         self.state.join("queue.json")
     }

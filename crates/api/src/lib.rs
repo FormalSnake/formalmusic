@@ -85,7 +85,9 @@ pub enum ApiError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
 pub enum Command {
-    Hello { protocol: u32 },
+    Hello {
+        protocol: u32,
+    },
     /// Start receiving [`Event`]s on this connection. The daemon answers with
     /// a full [`PlayerState`] and [`QueueState`] snapshot first.
     Subscribe,
@@ -94,54 +96,132 @@ pub enum Command {
     Session,
     /// A `Cookie` header copied from a signed-in music.youtube.com tab, or
     /// produced by the sign-in window.
-    SignIn { cookies: String },
+    SignIn {
+        cookies: String,
+    },
+    /// Browsers on this machine that [`Command::BrowserSignIn`] can open.
+    Browsers,
+    /// Open `browser` (a [`Browser::id`], or the default) in a throwaway
+    /// profile at Google's sign-in page and keep the cookies once the user is
+    /// signed in. Answers with the session when done, which takes as long as
+    /// the user does, up to five minutes.
+    BrowserSignIn {
+        browser: Option<String>,
+    },
+    /// Close the browser of a running [`Command::BrowserSignIn`], which then
+    /// fails.
+    CancelSignIn,
     SignOut,
     /// Brand accounts and channels under the signed-in Google account.
     Accounts,
-    SwitchAccount { page_id: Option<String> },
+    SwitchAccount {
+        page_id: Option<String>,
+    },
 
     // Browsing
-    Browse { target: BrowseTarget },
+    Browse {
+        target: BrowseTarget,
+    },
     /// More items for a shelf or page, from a [`Continuation`] token.
-    Continue { token: Continuation },
-    Search { query: String, filter: Option<SearchFilter> },
-    Suggestions { query: String },
-    Lyrics { video_id: String },
+    Continue {
+        token: Continuation,
+    },
+    Search {
+        query: String,
+        filter: Option<SearchFilter>,
+    },
+    Suggestions {
+        query: String,
+    },
+    Lyrics {
+        video_id: String,
+    },
     /// Apple Music's looping album video, downloaded by the daemon.
-    AnimatedCover { artist: String, album: String },
+    AnimatedCover {
+        artist: String,
+        album: String,
+    },
     /// The "Related" tab of the player page.
-    Related { browse_id: String },
+    Related {
+        browse_id: String,
+    },
 
     // Library mutations
-    Rate { target: RateTarget, rating: Rating },
+    Rate {
+        target: RateTarget,
+        rating: Rating,
+    },
     /// Subscribe to or unsubscribe from an artist channel.
-    SetSubscribed { channel_id: String, subscribed: bool },
-    CreatePlaylist { title: String, description: String, privacy: Privacy, video_ids: Vec<String> },
-    EditPlaylist { playlist_id: String, edits: Vec<PlaylistEdit> },
-    DeletePlaylist { playlist_id: String },
+    SetSubscribed {
+        channel_id: String,
+        subscribed: bool,
+    },
+    CreatePlaylist {
+        title: String,
+        description: String,
+        privacy: Privacy,
+        video_ids: Vec<String>,
+    },
+    EditPlaylist {
+        playlist_id: String,
+        edits: Vec<PlaylistEdit>,
+    },
+    DeletePlaylist {
+        playlist_id: String,
+    },
     /// Save or remove an album or someone else's playlist from the library.
-    SetInLibrary { playlist_id: String, saved: bool },
-    RemoveFromHistory { feedback_token: String },
+    SetInLibrary {
+        playlist_id: String,
+        saved: bool,
+    },
+    RemoveFromHistory {
+        feedback_token: String,
+    },
 
     // Playback
     /// Replace the queue and start playing `start_index`. With `radio` the
     /// daemon keeps extending the queue from `next` like the web app's autoplay.
-    Play { source: PlaySource, start_index: usize, shuffle: bool, radio: bool },
-    Enqueue { tracks: Vec<Track>, position: EnqueuePosition },
-    RemoveFromQueue { index: usize },
-    MoveInQueue { from: usize, to: usize },
+    Play {
+        source: PlaySource,
+        start_index: usize,
+        shuffle: bool,
+        radio: bool,
+    },
+    Enqueue {
+        tracks: Vec<Track>,
+        position: EnqueuePosition,
+    },
+    RemoveFromQueue {
+        index: usize,
+    },
+    MoveInQueue {
+        from: usize,
+        to: usize,
+    },
     ClearQueue,
-    JumpTo { index: usize },
+    JumpTo {
+        index: usize,
+    },
     Toggle,
     Pause,
     Resume,
     Next,
     Previous,
-    SeekTo { position_ms: u64 },
-    SetVolume { volume: f32 },
-    SetMuted { muted: bool },
-    SetRepeat { repeat: Repeat },
-    SetShuffle { shuffle: bool },
+    SeekTo {
+        position_ms: u64,
+    },
+    SetVolume {
+        volume: f32,
+    },
+    SetMuted {
+        muted: bool,
+    },
+    SetRepeat {
+        repeat: Repeat,
+    },
+    SetShuffle {
+        shuffle: bool,
+    },
     PlayerState,
     QueueState,
 }
@@ -150,8 +230,12 @@ pub enum Command {
 #[serde(tag = "reply", content = "data", rename_all = "snake_case")]
 pub enum Reply {
     Ok,
-    Hello { protocol: u32, version: String },
+    Hello {
+        protocol: u32,
+        version: String,
+    },
     Session(SessionInfo),
+    Browsers(Browsers),
     Accounts(Vec<Account>),
     Page(Page),
     Continuation(ContinuationPage),
@@ -160,7 +244,9 @@ pub enum Reply {
     Lyrics(Option<Lyrics>),
     /// Local path to the mp4; the daemon and client share a machine.
     AnimatedCover(Option<String>),
-    PlaylistCreated { playlist_id: String },
+    PlaylistCreated {
+        playlist_id: String,
+    },
     Player(PlayerState),
     Queue(QueueState),
 }
@@ -172,15 +258,22 @@ pub enum Event {
     /// Sent about once a second while playing, and at once on every play,
     /// pause, seek and track change. Clients interpolate in between from
     /// [`PlayerState::status`].
-    Position { position_ms: u64, buffered_ms: u64 },
+    Position {
+        position_ms: u64,
+        buffered_ms: u64,
+    },
     Queue(QueueState),
     Session(SessionInfo),
     /// A like, subscription or playlist edit landed; clients drop cached pages
     /// of these kinds and refetch the visible one.
-    LibraryChanged { scope: LibraryScope },
+    LibraryChanged {
+        scope: LibraryScope,
+    },
     /// A non-fatal failure the user should see, such as a track that could not
     /// be resolved and was skipped.
-    Notice { message: String },
+    Notice {
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -189,11 +282,20 @@ mod tests {
 
     #[test]
     fn request_shape_is_stable() {
-        let req = Request { id: 7, command: Command::SeekTo { position_ms: 1500 } };
+        let req = Request {
+            id: 7,
+            command: Command::SeekTo { position_ms: 1500 },
+        };
         let json = serde_json::to_string(&req).unwrap();
-        assert_eq!(json, r#"{"id":7,"cmd":"seek_to","args":{"position_ms":1500}}"#);
+        assert_eq!(
+            json,
+            r#"{"id":7,"cmd":"seek_to","args":{"position_ms":1500}}"#
+        );
         let back: Request = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back.command, Command::SeekTo { position_ms: 1500 }));
+        assert!(matches!(
+            back.command,
+            Command::SeekTo { position_ms: 1500 }
+        ));
     }
 
     #[test]
@@ -220,14 +322,26 @@ mod tests {
         };
         let suggestion = Suggestion::Item(Item::Track(track));
         let json = serde_json::to_string(&suggestion).unwrap();
-        assert_eq!(serde_json::from_str::<Suggestion>(&json).unwrap(), suggestion);
+        assert_eq!(
+            serde_json::from_str::<Suggestion>(&json).unwrap(),
+            suggestion
+        );
     }
 
     #[test]
     fn response_round_trips() {
-        let msg = ServerMessage::Response(Response { id: 3, result: ResponseResult::Err(ApiError::SignedOut) });
+        let msg = ServerMessage::Response(Response {
+            id: 3,
+            result: ResponseResult::Err(ApiError::SignedOut),
+        });
         let json = serde_json::to_string(&msg).unwrap();
         let back: ServerMessage = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back, ServerMessage::Response(Response { id: 3, result: ResponseResult::Err(ApiError::SignedOut) })));
+        assert!(matches!(
+            back,
+            ServerMessage::Response(Response {
+                id: 3,
+                result: ResponseResult::Err(ApiError::SignedOut)
+            })
+        ));
     }
 }
