@@ -36,6 +36,9 @@ const STALE_AFTER: Duration = Duration::from_secs(5 * 60);
 const SEARCH_STALE_AFTER: Duration = Duration::from_secs(60);
 /// Typing pauses this long before a suggestions request goes out.
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
+/// Prefetch waits this long, then leaves this much between requests.
+const PREFETCH_DELAY: Duration = Duration::from_millis(1200);
+const PREFETCH_GAP: Duration = Duration::from_millis(150);
 /// How far a seek jumps from the keyboard.
 pub const SEEK_STEP_MS: u64 = 10_000;
 pub const VOLUME_STEP: f32 = 0.05;
@@ -56,6 +59,8 @@ pub enum Route {
 #[derive(Clone, Debug, Default)]
 pub struct PageEntry {
     pub page: Option<Arc<Page>>,
+    /// Last opened, for evicting the page nobody has looked at longest.
+    viewed_at: Option<Instant>,
     pub loading: bool,
     pub loading_more: bool,
     /// The last fetch failed. The page, if there is one, is still the old one.
@@ -99,6 +104,9 @@ pub struct AppState {
     pub player: PlayerState,
     /// Kept apart from `player` because it moves four times a second.
     pub position_ms: u64,
+    /// When `position_ms` was true. The daemon sends a position about once a
+    /// second, so the UI moves the bar on from here (`position_now`).
+    pub position_at: Option<Instant>,
     pub buffered_ms: u64,
     pub queue: Arc<QueueState>,
     pub lyrics: HashMap<String, LyricsEntry>,
@@ -115,6 +123,16 @@ pub struct AppState {
 impl AppState {
     pub fn page(&self, target: &BrowseTarget) -> Option<&Arc<Page>> {
         self.pages.get(target).and_then(|entry| entry.page.as_ref())
+    }
+
+    /// Where playback is now: the last position plus the time since, while
+    /// playing, never past the end of the track.
+    pub fn position_now(&self) -> u64 {
+        let elapsed = match (self.player.status, self.position_at) {
+            (Status::Playing, Some(at)) => at.elapsed().as_millis() as u64,
+            _ => 0,
+        };
+        (self.position_ms + elapsed).min(self.player.duration_ms.unwrap_or(u64::MAX))
     }
 
     pub fn rating(&self, track: &Track) -> Rating {
@@ -162,6 +180,9 @@ pub enum StoreEvent {
     Suggestions,
     /// Track, status, volume, repeat or shuffle.
     Player,
+    /// Only which track is current, or whether it plays: what a row that
+    /// marks the playing track needs, without every volume change.
+    NowPlaying,
     /// Only `position_ms` and `buffered_ms`.
     Position,
     Queue,
@@ -223,6 +244,9 @@ pub struct StoreOptions {
     /// Last known state, painted before the daemon answers.
     pub cache: Option<Arc<StateCache>>,
     pub art: Arc<ArtCache>,
+    /// The cache already read (`StateCache::load_blocking` on a thread that
+    /// ran beside window setup), so the first frame has it.
+    pub preloaded: Option<CachedState>,
 }
 
 /// Cheap to clone; every clone is the same store.
@@ -244,6 +268,8 @@ struct Inner {
 
 #[derive(Default)]
 struct Private {
+    /// The cache was painted at construction; `start` does not read it again.
+    painted: bool,
     suggest: Option<AbortHandle>,
     event_loop: Option<AbortHandle>,
     notices: u64,
@@ -296,7 +322,12 @@ impl MusicStore {
             private: Mutex::new(Private::default()),
             me: me.clone(),
         });
-        Self { inner }
+        let store = Self { inner };
+        if let Some(cached) = options.preloaded {
+            store.paint_cached(cached);
+            store.inner.private.lock().painted = true;
+        }
+        store
     }
 
     /// Capacity is large enough that only a stalled UI lags.
@@ -331,7 +362,9 @@ impl MusicStore {
 
     /// Paints from the cache, then connects and keeps applying events.
     pub async fn start(&self) {
-        if let Some(cache) = &self.inner.cache
+        let painted = self.inner.private.lock().painted;
+        if !painted
+            && let Some(cache) = &self.inner.cache
             && let Some(cached) = cache.load().await
         {
             self.paint_cached(cached);
@@ -374,11 +407,13 @@ impl MusicStore {
                 player.status = Status::Paused;
             }
             state.position_ms = player.position_ms;
+            state.position_at = Some(Instant::now());
             state.player = player;
             state.queue = cached.queue;
             state.session = cached.session;
             events.extend([
                 StoreEvent::Player,
+                StoreEvent::NowPlaying,
                 StoreEvent::Position,
                 StoreEvent::Queue,
                 StoreEvent::Session,
@@ -416,7 +451,11 @@ impl MusicStore {
             Event::Player(player) => self.inner.update(|state, events| {
                 let changed_track = state.player.track.as_ref().map(|t| &t.video_id)
                     != player.track.as_ref().map(|t| &t.video_id);
+                if changed_track || state.player.status != player.status {
+                    events.push(StoreEvent::NowPlaying);
+                }
                 state.position_ms = player.position_ms;
+                state.position_at = Some(Instant::now());
                 state.player = player;
                 events.extend([StoreEvent::Player, StoreEvent::Position]);
                 if changed_track {
@@ -430,6 +469,7 @@ impl MusicStore {
             } => self.inner.update(|state, events| {
                 if state.position_ms != position_ms || state.buffered_ms != buffered_ms {
                     state.position_ms = position_ms;
+                    state.position_at = Some(Instant::now());
                     state.buffered_ms = buffered_ms;
                     events.push(StoreEvent::Position);
                     update_lyric_line(state, events);
@@ -533,7 +573,39 @@ impl MusicStore {
     /// Shows a page: the cached one at once if there is one, fetched again
     /// behind it when stale.
     pub fn open(&self, target: BrowseTarget) {
-        let fetch = self.inner.update(|state, events| {
+        self.inner
+            .state
+            .write()
+            .pages
+            .entry(target.clone())
+            .or_default()
+            .viewed_at = Some(Instant::now());
+        if !self.claim(&target) {
+            return;
+        }
+        let store = self.clone();
+        self.spawn(async move { store.fetch_page(target).await });
+    }
+
+    /// Fetches the first targets of a page ahead of a click, one at a time
+    /// and after a pause, so they never compete with what is on screen.
+    pub fn prefetch(&self, targets: Vec<BrowseTarget>) {
+        let store = self.clone();
+        self.spawn(async move {
+            tokio::time::sleep(PREFETCH_DELAY).await;
+            for target in targets {
+                if store.claim(&target) {
+                    store.fetch_page(target).await;
+                    tokio::time::sleep(PREFETCH_GAP).await;
+                }
+            }
+        });
+    }
+
+    /// Marks `target` loading when it is missing or stale; false when a
+    /// fetch is already out or the cached page is fresh.
+    fn claim(&self, target: &BrowseTarget) -> bool {
+        self.inner.update(|state, events| {
             let entry = state.pages.entry(target.clone()).or_default();
             if entry.loading
                 || (entry.page.is_some()
@@ -546,12 +618,12 @@ impl MusicStore {
             entry.loading = true;
             events.push(StoreEvent::Page(target.clone()));
             true
-        });
-        if !fetch {
-            return;
-        }
-        let store = self.clone();
-        self.spawn(async move {
+        })
+    }
+
+    async fn fetch_page(&self, target: BrowseTarget) {
+        let store = self;
+        {
             let result = store
                 .inner
                 .transport
@@ -572,8 +644,9 @@ impl MusicStore {
                     Err(error) => entry.error = Some(message(&error)),
                 }
                 events.push(StoreEvent::Page(target));
+                evict_pages(state);
             });
-        });
+        }
     }
 
     /// `open`, ignoring how fresh the page is.
@@ -616,7 +689,16 @@ impl MusicStore {
                             entry.page = Some(Arc::new(page));
                         }
                     }
-                    Err(error) => entry.error = Some(message(&error)),
+                    // Dropping the token stops the end of the page from asking again
+                    // every frame; a refresh brings it back.
+                    Err(error) => {
+                        entry.error = Some(message(&error));
+                        if let Some(page) = &entry.page {
+                            let mut page = (**page).clone();
+                            page.continuation = None;
+                            entry.page = Some(Arc::new(page));
+                        }
+                    }
                 }
                 events.push(StoreEvent::Page(target));
             });
@@ -661,7 +743,16 @@ impl MusicStore {
                             entry.page = Some(Arc::new(page));
                         }
                     }
-                    Err(error) => entry.error = Some(message(&error)),
+                    Err(error) => {
+                        entry.error = Some(message(&error));
+                        if let Some(page) = &entry.page {
+                            let mut page = (**page).clone();
+                            if let Some(shelf) = page.sections.get_mut(section) {
+                                shelf.continuation = None;
+                            }
+                            entry.page = Some(Arc::new(page));
+                        }
+                    }
                 }
                 events.push(StoreEvent::Page(target));
             });
@@ -769,7 +860,16 @@ impl MusicStore {
                             entry.results = Some(Arc::new(results));
                         }
                     }
-                    Err(error) => entry.error = Some(message(&error)),
+                    // Dropping the token stops the end of the list from asking again
+                    // every frame; a refresh brings it back.
+                    Err(error) => {
+                        entry.error = Some(message(&error));
+                        if let Some(results) = &entry.results {
+                            let mut results = (**results).clone();
+                            results.continuation = None;
+                            entry.results = Some(Arc::new(results));
+                        }
+                    }
                 }
                 events.push(StoreEvent::Search(key));
             });
@@ -847,8 +947,10 @@ impl MusicStore {
                 Status::Paused => Status::Playing,
                 Status::Stopped => return,
             };
+            state.position_ms = state.position_now();
+            state.position_at = Some(Instant::now());
             state.player.status = next;
-            events.push(StoreEvent::Player);
+            events.extend([StoreEvent::Player, StoreEvent::NowPlaying]);
         });
         self.send(Command::Toggle);
     }
@@ -865,6 +967,7 @@ impl MusicStore {
         let position_ms = self.inner.update(|state, events| {
             let end = state.player.duration_ms.unwrap_or(u64::MAX);
             state.position_ms = position_ms.min(end);
+            state.position_at = Some(Instant::now());
             events.push(StoreEvent::Position);
             update_lyric_line(state, events);
             state.position_ms
@@ -879,7 +982,7 @@ impl MusicStore {
             if state.player.track.is_none() {
                 return;
             }
-            (state.position_ms as i64 + delta_ms).max(0) as u64
+            (state.position_now() as i64 + delta_ms).max(0) as u64
         };
         self.seek(target);
     }
@@ -1234,6 +1337,49 @@ impl MusicStore {
     }
 }
 
+/// Pages kept in memory before the least recently viewed go. A page is tens
+/// to hundreds of kilobytes; a 1000 track playlist is about a megabyte.
+const KEPT_PAGES: usize = 32;
+const KEPT_SEARCHES: usize = 12;
+
+/// Home, Explore and the library tabs are always kept: they paint at launch
+/// and sit one click away in the sidebar.
+fn pinned(target: &BrowseTarget) -> bool {
+    matches!(
+        target,
+        BrowseTarget::Home | BrowseTarget::Explore | BrowseTarget::Library(_)
+    )
+}
+
+fn evict_pages(state: &mut AppState) {
+    while state.pages.len() > KEPT_PAGES {
+        let oldest = state
+            .pages
+            .iter()
+            .filter(|(target, entry)| !pinned(target) && !entry.loading && !entry.loading_more)
+            .min_by_key(|(_, entry)| entry.viewed_at)
+            .map(|(target, _)| target.clone());
+        let Some(oldest) = oldest else { break };
+        state.pages.remove(&oldest);
+    }
+    while state.searches.len() > KEPT_SEARCHES {
+        let oldest = state
+            .searches
+            .iter()
+            .filter(|(_, entry)| !entry.loading)
+            .min_by_key(|(_, entry)| entry.fetched_at)
+            .map(|(key, _)| key.clone());
+        let Some(oldest) = oldest else { break };
+        state.searches.remove(&oldest);
+    }
+    while state.related.len() > 4 {
+        let Some(key) = state.related.keys().next().cloned() else {
+            break;
+        };
+        state.related.remove(&key);
+    }
+}
+
 /// Where the row at `index` ends up after the row at `from` moves to `to`.
 fn moved_index(index: usize, from: usize, to: usize) -> usize {
     if index == from {
@@ -1254,7 +1400,7 @@ fn update_lyric_line(state: &mut AppState, events: &mut Vec<StoreEvent>) {
         .as_ref()
         .and_then(|track| state.lyrics.get(&track.video_id))
         .and_then(|entry| entry.lyrics.as_ref())
-        .and_then(|lyrics| line_at(lyrics, state.position_ms));
+        .and_then(|lyrics| line_at(lyrics, state.position_now()));
     if line != state.lyric_line {
         state.lyric_line = line;
         events.push(StoreEvent::LyricLine);
@@ -1330,7 +1476,11 @@ mod tests {
         let art = Arc::new(ArtCache::new(dir, reqwest::Client::new()));
         MusicStore::new(
             Arc::new(DemoTransport::new()),
-            StoreOptions { cache: None, art },
+            StoreOptions {
+                cache: None,
+                art,
+                preloaded: None,
+            },
             tokio::runtime::Handle::current(),
         )
     }
@@ -1351,11 +1501,13 @@ mod tests {
             start_ms,
             end_ms: None,
             text: String::new(),
+            ..LyricLine::default()
         };
         let lyrics = Lyrics {
             source: None,
             lines: vec![line(1000), line(3000), line(5000)],
             synced: true,
+            word_synced: false,
         };
         assert_eq!(line_at(&lyrics, 0), None);
         assert_eq!(line_at(&lyrics, 1000), Some(0));
@@ -1454,6 +1606,7 @@ mod tests {
                 start_ms,
                 end_ms: None,
                 text: String::new(),
+                ..LyricLine::default()
             };
             state.lyrics.insert(
                 track.video_id.clone(),
@@ -1462,6 +1615,7 @@ mod tests {
                         source: None,
                         lines: vec![line(0), line(4000)],
                         synced: true,
+                        word_synced: false,
                     })),
                     ..LyricsEntry::default()
                 },
@@ -1482,6 +1636,43 @@ mod tests {
         assert_eq!(events.try_recv().unwrap(), StoreEvent::Position);
         assert!(events.try_recv().is_err());
         assert_eq!(store.state().lyric_line, Some(1));
+    }
+
+    #[test]
+    fn eviction_keeps_pinned_pages_and_drops_the_least_recently_viewed() {
+        let mut state = AppState::default();
+        let page = |n| PageEntry {
+            viewed_at: Some(Instant::now() + Duration::from_secs(n)),
+            ..PageEntry::default()
+        };
+        state.pages.insert(BrowseTarget::Home, PageEntry::default());
+        for n in 0..(KEPT_PAGES as u64 + 5) {
+            state
+                .pages
+                .insert(BrowseTarget::Album(n.to_string()), page(n));
+        }
+        evict_pages(&mut state);
+        assert_eq!(state.pages.len(), KEPT_PAGES);
+        assert!(state.pages.contains_key(&BrowseTarget::Home));
+        assert!(!state.pages.contains_key(&BrowseTarget::Album("0".into())));
+        assert!(
+            state
+                .pages
+                .contains_key(&BrowseTarget::Album((KEPT_PAGES as u64 + 4).to_string()))
+        );
+    }
+
+    #[test]
+    fn the_position_moves_on_between_ticks_only_while_playing() {
+        let mut state = AppState::default();
+        state.player.duration_ms = Some(10_000);
+        state.position_ms = 1_000;
+        state.position_at = Some(Instant::now() - Duration::from_millis(500));
+        assert_eq!(state.position_now(), 1_000);
+        state.player.status = Status::Playing;
+        assert!(state.position_now() >= 1_500);
+        state.position_at = Some(Instant::now() - Duration::from_secs(60));
+        assert_eq!(state.position_now(), 10_000);
     }
 
     #[tokio::test]

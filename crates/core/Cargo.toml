@@ -16,6 +16,13 @@ dirs.workspace = true
 thiserror.workspace = true
 async-trait = "0.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+formalmusic-innertube = { workspace = true, optional = true }
+
+[features]
+default = []
+# The demo serves innertube's recorded responses where it has one, read from
+# the source tree at run time, so it is for dev builds only.
+demo-fixtures = ["dep:formalmusic-innertube"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

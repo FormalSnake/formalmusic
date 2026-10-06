@@ -855,6 +855,9 @@ fn mood_page(params: &str) -> Page {
 
 /// Every page the demo can show; `None` is a page it does not have.
 pub fn page(target: &BrowseTarget) -> Option<Page> {
+    if let Some(page) = fixtures::page(target) {
+        return Some(page);
+    }
     match target {
         BrowseTarget::Home => Some(home(None)),
         BrowseTarget::HomeChip { params } => Some(home(params.strip_prefix("chip-"))),
@@ -1068,6 +1071,7 @@ fn lyrics(video_id: &str, duration_ms: u64) -> Lyrics {
             start_ms: at,
             end_ms: Some(at + 4_200),
             text,
+            ..LyricLine::default()
         });
         at += 4_200 + (n as u64 % 3) * 600;
         n += 1;
@@ -1076,6 +1080,7 @@ fn lyrics(video_id: &str, duration_ms: u64) -> Lyrics {
         source: Some("Source: LyricFind".into()),
         lines,
         synced: true,
+        word_synced: false,
     }
 }
 
@@ -1115,6 +1120,24 @@ fn tracks_for(source: &PlaySource) -> (Vec<Track>, Option<String>) {
     let catalog = catalog();
     match source {
         PlaySource::Tracks { tracks } => (tracks.clone(), None),
+        PlaySource::Playlist { playlist_id } if !playlist_id.contains("demo") => {
+            let target = if playlist_id.starts_with("OLAK") {
+                BrowseTarget::Album("recorded".into())
+            } else {
+                BrowseTarget::Playlist("recorded".into())
+            };
+            fixtures::tracks(&target).unwrap_or_else(|| {
+                (
+                    tracks_from(playlist_id.len() as u64, 25),
+                    Some("Mix".into()),
+                )
+            })
+        }
+        PlaySource::Radio { video_id }
+            if !video_id.starts_with("demo-") && fixtures::radio().is_some() =>
+        {
+            (fixtures::radio().unwrap_or_default(), Some("Radio".into()))
+        }
         PlaySource::Playlist { playlist_id } => {
             if let Some(album) = catalog
                 .albums
@@ -1259,15 +1282,17 @@ impl DemoTransport {
     pub fn new() -> Self {
         let signed_in = std::env::var("FORMALMUSIC_DEMO_SIGNED_OUT").ok().as_deref() != Some("1");
         let album = &catalog().albums[2];
+        let (tracks, title) = fixtures::tracks(&BrowseTarget::Album("recorded".into()))
+            .unwrap_or_else(|| (album.tracks.clone(), Some(album.title.clone())));
         let mut state = DemoState {
             player: PlayerState {
                 volume: 0.8,
                 ..PlayerState::default()
             },
             queue: QueueState {
-                tracks: album.tracks.clone(),
+                tracks,
                 current: None,
-                source_title: Some(album.title.clone()),
+                source_title: title,
                 radio: false,
             },
             since: None,
@@ -1422,6 +1447,9 @@ impl Transport for DemoTransport {
                 )
             }
             Command::Continue { token } => {
+                if let Some(more) = fixtures::continuation(&token) {
+                    return Ok(Reply::Continuation(more));
+                }
                 let token = token.0;
                 if let Some(n) = token.strip_prefix("home-").and_then(|n| n.parse().ok()) {
                     Reply::Continuation(home_more(n))
@@ -1455,8 +1483,12 @@ impl Transport for DemoTransport {
                     return Err(ApiError::NotFound(token).into());
                 }
             }
-            Command::Search { query, filter } => Reply::Search(search(&query, filter)),
-            Command::Suggestions { query } => Reply::Suggestions(suggestions(&query)),
+            Command::Search { query, filter } => Reply::Search(
+                fixtures::search(&query, filter).unwrap_or_else(|| search(&query, filter)),
+            ),
+            Command::Suggestions { query } => {
+                Reply::Suggestions(fixtures::suggestions().unwrap_or_else(|| suggestions(&query)))
+            }
             Command::Lyrics { video_id } => {
                 let duration = catalog()
                     .albums
@@ -1467,7 +1499,8 @@ impl Transport for DemoTransport {
                     .unwrap_or(200_000);
                 Reply::Lyrics(Some(lyrics(&video_id, duration)))
             }
-            Command::Related { .. } => Reply::Page(related()),
+            Command::Related { .. } => Reply::Page(fixtures::related().unwrap_or_else(related)),
+            Command::AnimatedCover { .. } => Reply::AnimatedCover(None),
             Command::Rate { .. } => {
                 shared.emit(Event::LibraryChanged {
                     scope: LibraryScope::Likes,
@@ -1724,5 +1757,148 @@ mod tests {
             token = more.continuation;
         }
         assert_eq!(count, 400);
+    }
+}
+
+/// innertube's recorded responses, parsed by its own parsers. Any album opens
+/// the recorded album and any playlist the recorded playlist; the made-up
+/// catalog fills in what was not recorded (the library, lyrics with timing).
+#[cfg(feature = "demo-fixtures")]
+mod fixtures {
+    use formalmusic_api::*;
+    use formalmusic_innertube::parse;
+    use serde_json::Value;
+
+    const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../innertube/fixtures");
+
+    fn load(name: &str) -> Option<Value> {
+        let text = std::fs::read_to_string(format!("{DIR}/{name}.json")).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    fn name_for(target: &BrowseTarget) -> Option<&'static str> {
+        Some(match target {
+            BrowseTarget::Home | BrowseTarget::HomeChip { .. } => "home",
+            BrowseTarget::Explore => "explore",
+            BrowseTarget::Charts => "charts",
+            BrowseTarget::NewReleases => "new_releases",
+            BrowseTarget::MoodsAndGenres => "moods",
+            BrowseTarget::MoodCategory { .. } => "mood_category",
+            BrowseTarget::Album(id) if id.starts_with("MPREdemo") => return None,
+            BrowseTarget::Album(_) => "album",
+            BrowseTarget::Artist(id) if id.starts_with("UCdemo") => return None,
+            BrowseTarget::Artist(_) => "artist",
+            BrowseTarget::ArtistShelf { .. } => "artist_singles",
+            BrowseTarget::Playlist(id) if id.contains("demo") || id == "LM" => return None,
+            BrowseTarget::Playlist(_) => "playlist_large",
+            BrowseTarget::Podcast(_) => "podcast",
+            BrowseTarget::Episode(_) => "episode",
+            _ => return None,
+        })
+    }
+
+    pub fn page(target: &BrowseTarget) -> Option<Page> {
+        let name = name_for(target)?;
+        let mut page = parse::page::parse_page(target.clone(), &load(name)?).ok()?;
+        page.target = target.clone();
+        Some(page)
+    }
+
+    /// The recorded continuations, whichever page asked: Home's next
+    /// sections, or the next hundred tracks of the large playlist.
+    pub fn continuation(token: &Continuation) -> Option<ContinuationPage> {
+        let home = page(&BrowseTarget::Home)?;
+        if home.continuation.as_ref() == Some(token) {
+            return parse::page::parse_continuation(&load("home_continuation")?).ok();
+        }
+        let playlist = page(&BrowseTarget::Playlist("PL".into()))?;
+        if playlist
+            .sections
+            .iter()
+            .any(|section| section.continuation.as_ref() == Some(token))
+        {
+            return parse::page::parse_continuation(&load("playlist_continuation")?).ok();
+        }
+        None
+    }
+
+    pub fn search(query: &str, filter: Option<SearchFilter>) -> Option<SearchResults> {
+        let name = match filter {
+            Some(SearchFilter::Songs | SearchFilter::Videos) => "search_songs",
+            Some(SearchFilter::Albums) => "search_albums",
+            Some(SearchFilter::Artists) => "search_artists",
+            _ => "search_all",
+        };
+        parse::search::parse_search(query, filter, &load(name)?).ok()
+    }
+
+    pub fn suggestions() -> Option<Vec<Suggestion>> {
+        Some(parse::suggestions::parse_suggestions(&load("suggestions")?))
+    }
+
+    pub fn related() -> Option<Page> {
+        parse::page::parse_page(
+            BrowseTarget::Raw {
+                browse_id: "MPTRdemo".into(),
+                params: None,
+            },
+            &load("related")?,
+        )
+        .ok()
+    }
+
+    pub fn radio() -> Option<Vec<Track>> {
+        Some(parse::next::parse_next(&load("next_radio")?).ok()?.tracks)
+    }
+
+    /// The tracks of the first list on a recorded page, for playing it whole.
+    pub fn tracks(target: &BrowseTarget) -> Option<(Vec<Track>, Option<String>)> {
+        let page = page(target)?;
+        let title = match &page.header {
+            Some(Header::Detail { title, .. }) => Some(title.clone()),
+            _ => None,
+        };
+        let tracks: Vec<Track> = page
+            .sections
+            .iter()
+            .find(|section| section.layout == SectionLayout::List)?
+            .items
+            .iter()
+            .filter_map(|item| {
+                if let Item::Track(track) = item {
+                    Some(track.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        (!tracks.is_empty()).then_some((tracks, title))
+    }
+}
+
+#[cfg(not(feature = "demo-fixtures"))]
+mod fixtures {
+    use formalmusic_api::*;
+
+    pub fn page(_: &BrowseTarget) -> Option<Page> {
+        None
+    }
+    pub fn continuation(_: &Continuation) -> Option<ContinuationPage> {
+        None
+    }
+    pub fn search(_: &str, _: Option<SearchFilter>) -> Option<SearchResults> {
+        None
+    }
+    pub fn suggestions() -> Option<Vec<Suggestion>> {
+        None
+    }
+    pub fn related() -> Option<Page> {
+        None
+    }
+    pub fn radio() -> Option<Vec<Track>> {
+        None
+    }
+    pub fn tracks(_: &BrowseTarget) -> Option<(Vec<Track>, Option<String>)> {
+        None
     }
 }

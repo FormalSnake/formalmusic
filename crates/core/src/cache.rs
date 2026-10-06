@@ -112,6 +112,20 @@ impl StateCache {
         }
     }
 
+    /// `load` without a runtime, for the thread that reads the cache while
+    /// the window is still being set up.
+    pub fn load_blocking(&self) -> Option<CachedState> {
+        let bytes = std::fs::read(&self.shared.file).ok()?;
+        match serde_json::from_slice::<CachedState>(&bytes) {
+            Ok(state) if state.version == VERSION => Some(state),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!("cache: ignoring {}: {error}", self.shared.file.display());
+                None
+            }
+        }
+    }
+
     /// Schedules a write. `snapshot` runs when the timer fires, not now.
     /// Must be called inside the runtime's context.
     pub fn schedule(&self, snapshot: Snapshot) {
@@ -214,5 +228,22 @@ mod tests {
         cache.flush().await;
         assert_eq!(cache.load().await.unwrap().player.volume, 0.3);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod round_trip {
+    use super::*;
+
+    #[test]
+    fn a_saved_home_page_reads_back() {
+        let home = crate::demo::page(&BrowseTarget::Home).unwrap();
+        let state = CachedState {
+            pages: vec![(BrowseTarget::Home, Arc::new(home))],
+            ..CachedState::new()
+        };
+        let bytes = serde_json::to_vec(&state).unwrap();
+        let back: CachedState = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back.pages.len(), 1);
     }
 }
