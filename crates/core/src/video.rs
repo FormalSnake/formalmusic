@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use formalmusic_api::VideoStream;
@@ -252,22 +252,57 @@ const SYNC_TOLERANCE: f64 = 0.040;
 /// catching up frame by frame.
 const RESEEK_AFTER: f64 = 1.5;
 /// How far ahead of the audio a fresh ffmpeg starts, to cover opening the
-/// stream. Grows by however late the first frame was when it was not enough.
+/// stream, until one run has shown how long that takes (see [`Lead`]).
 const FIRST_LEAD: f64 = 1.0;
+const MIN_LEAD: f64 = 0.2;
 const MAX_LEAD: f64 = 8.;
+/// Added to a measured start-up, which varies from run to run.
+const LEAD_MARGIN: f64 = 0.15;
 /// Each frame costs a decode, a copy to the GPU and a redraw of the window;
 /// past film rate a player box gains little for that.
 const MAX_SYNCED_FPS: f64 = 24.;
 /// Starts in a row that produced no frame before giving up.
 const MAX_FAILED_STARTS: u32 = 3;
 
+/// How far ahead of the audio ffmpeg starts, learned from how long its first
+/// frame took. Kept across runs of one stream, so a picture that starts again
+/// (the window shown again, a seek) waits about as long as ffmpeg needs and
+/// not the full first guess.
+#[derive(Clone)]
+pub struct Lead(Arc<AtomicU64>);
+
+impl Default for Lead {
+    fn default() -> Self {
+        Lead(Arc::new(AtomicU64::new(FIRST_LEAD.to_bits())))
+    }
+}
+
+impl Lead {
+    fn get(&self) -> f64 {
+        f64::from_bits(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, lead: f64) {
+        self.0
+            .store(lead.clamp(MIN_LEAD, MAX_LEAD).to_bits(), Ordering::Relaxed);
+    }
+}
+
+#[derive(Default)]
+struct Control {
+    /// The running ffmpeg, 0 between runs.
+    pid: AtomicU32,
+    paused: AtomicBool,
+}
+
 /// A music video decoded muted beside the daemon's audio, held to its clock.
 pub struct Synced {
     task: JoinHandle<()>,
+    control: Arc<Control>,
 }
 
 impl Synced {
-    /// Decodes `stream` at `width` x `height` from wherever `clock` says,
+    /// Decodes `stream` at `(width, height)` from wherever `clock` says,
     /// showing each frame when the audio reaches it, dropping frames that
     /// come late and starting over after a seek. With `hardware`, ffmpeg
     /// decodes through VA-API and falls back to software if that fails. The
@@ -276,16 +311,101 @@ impl Synced {
     pub fn start(
         runtime: &tokio::runtime::Handle,
         stream: &VideoStream,
-        width: u32,
-        height: u32,
+        (width, height): (u32, u32),
         hardware: bool,
+        lead: &Lead,
         clock: Clock,
         frames: mpsc::Sender<VideoFrame>,
     ) -> Synced {
         let size = (width.max(2) & !1, height.max(2) & !1);
-        let task = runtime.spawn(run_synced(stream.clone(), size, hardware, clock, frames));
-        Synced { task }
+        let control = Arc::new(Control::default());
+        let run = Run {
+            stream: stream.clone(),
+            size,
+            lead: lead.clone(),
+            clock,
+            frames,
+            control: control.clone(),
+        };
+        let task = runtime.spawn(run_synced(run, hardware));
+        Synced { task, control }
     }
+
+    /// Stops ffmpeg where it is, for a picture nobody sees for a moment.
+    /// After [`Synced::resume`] its first frames are late and dropped until
+    /// it has caught up with the audio, or it starts again at the audio's
+    /// place when that is too far.
+    pub fn pause(&self) {
+        self.control.paused.store(true, Ordering::Relaxed);
+        self.control.signal(Signal::Stop);
+    }
+
+    pub fn resume(&self) {
+        self.control.paused.store(false, Ordering::Relaxed);
+        self.control.signal(Signal::Continue);
+    }
+}
+
+enum Signal {
+    Stop,
+    Continue,
+}
+
+impl Control {
+    fn signal(&self, signal: Signal) {
+        let pid = self.pid.load(Ordering::Relaxed);
+        if pid == 0 {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            let signal = match signal {
+                Signal::Stop => libc::SIGSTOP,
+                Signal::Continue => libc::SIGCONT,
+            };
+            // SAFETY: kill(2) takes plain integers. `pid` is a child that
+            // has not been reaped (see `Child`), so it is not reused.
+            unsafe {
+                libc::kill(pid as libc::pid_t, signal);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = signal;
+    }
+}
+
+/// An ffmpeg run's process, published for [`Synced::pause`] while it lives.
+struct Child {
+    child: tokio::process::Child,
+    control: Arc<Control>,
+}
+
+impl Child {
+    fn new(child: tokio::process::Child, control: Arc<Control>) -> Child {
+        control
+            .pid
+            .store(child.id().unwrap_or(0), Ordering::Relaxed);
+        if control.paused.load(Ordering::Relaxed) {
+            control.signal(Signal::Stop);
+        }
+        Child { child, control }
+    }
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        self.control.pid.store(0, Ordering::Relaxed);
+    }
+}
+
+/// What every ffmpeg run of one [`Synced`] shares.
+struct Run {
+    stream: VideoStream,
+    size: (u32, u32),
+    lead: Lead,
+    clock: Clock,
+    frames: mpsc::Sender<VideoFrame>,
+    control: Arc<Control>,
 }
 
 impl Drop for Synced {
@@ -304,18 +424,11 @@ enum Ended {
     Done,
 }
 
-async fn run_synced(
-    stream: VideoStream,
-    size: (u32, u32),
-    mut hardware: bool,
-    clock: Clock,
-    frames: mpsc::Sender<VideoFrame>,
-) {
-    let rate = stream.fps.clamp(1., MAX_SYNCED_FPS);
-    let mut lead = FIRST_LEAD;
+async fn run_synced(run: Run, mut hardware: bool) {
+    let rate = run.stream.fps.clamp(1., MAX_SYNCED_FPS);
     let mut failed = 0;
     loop {
-        match decode_from(&stream, lead, rate, size, hardware, &clock, &frames).await {
+        match decode_from(&run, rate, hardware).await {
             Ended::Done => return,
             Ended::Stopped(true) => failed = 0,
             Ended::Stopped(false) if hardware => {
@@ -328,22 +441,23 @@ async fn run_synced(
                     return;
                 }
             }
-            Ended::Reseek { late: Some(late) } => lead = (lead + late + 0.25).min(MAX_LEAD),
+            Ended::Reseek { late: Some(late) } => run.lead.set(run.lead.get() + late + 0.25),
             Ended::Reseek { late: None } => {}
         }
     }
 }
 
-/// One ffmpeg run, from `lead` seconds past where the audio is now.
-async fn decode_from(
-    stream: &VideoStream,
-    lead: f64,
-    rate: f64,
-    (width, height): (u32, u32),
-    hardware: bool,
-    clock: &Clock,
-    frames: &mpsc::Sender<VideoFrame>,
-) -> Ended {
+/// One ffmpeg run, from the lead past where the audio is now.
+async fn decode_from(run: &Run, rate: f64, hardware: bool) -> Ended {
+    let Run {
+        stream,
+        size: (width, height),
+        clock,
+        frames,
+        ..
+    } = run;
+    let (width, height) = (*width, *height);
+    let lead = run.lead.get();
     let Some(now) = clock() else {
         return Ended::Done;
     };
@@ -392,13 +506,13 @@ async fn decode_from(
         .kill_on_drop(true)
         .spawn();
     let mut child = match spawned {
-        Ok(child) => child,
+        Ok(child) => Child::new(child, run.control.clone()),
         Err(error) => {
             tracing::warn!("music video: ffmpeg: {error}");
             return Ended::Done;
         }
     };
-    let Some(mut stdout) = child.stdout.take() else {
+    let Some(mut stdout) = child.child.stdout.take() else {
         return Ended::Stopped(false);
     };
     let frame_len = width as usize * height as usize * 4;
@@ -410,6 +524,13 @@ async fn decode_from(
         let at = start + index as f64 / rate;
         let first_frame = index == 0;
         index += 1;
+        if first_frame && let Some(now) = clock() {
+            // Early by `at - now`, so starting took the rest of the lead.
+            let took = lead - (at - now);
+            if took < lead {
+                run.lead.set(took + LEAD_MARGIN);
+            }
+        }
         let ahead = loop {
             let Some(now) = clock() else {
                 return Ended::Done;
@@ -552,9 +673,9 @@ mod tests {
         let _run = Synced::start(
             &tokio::runtime::Handle::current(),
             &stream,
-            80,
-            45,
+            (80, 45),
             false,
+            &Lead::default(),
             clock,
             tx,
         );

@@ -15,6 +15,7 @@ parking_lot.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
 async-trait = "0.1"
+libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 formalmusic-innertube = { workspace = true, optional = true }
 

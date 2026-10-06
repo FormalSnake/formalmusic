@@ -2140,6 +2140,7 @@ dependencies = [
  "formalmusic-api",
  "formalmusic-innertube",
  "image",
+ "libc",
  "parking_lot",
  "reqwest",
  "serde",

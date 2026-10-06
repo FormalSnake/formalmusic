@@ -9,10 +9,11 @@
 //! expanded player is open.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use formalmusic_api::{Status, VideoStream};
 use formalmusic_core::MusicStore;
-use formalmusic_core::video::{Clock, Synced, VideoFrame};
+use formalmusic_core::video::{Clock, Lead, Synced, VideoFrame};
 use gpui_kit::*;
 use image::{Frame, RgbaImage};
 use tokio::sync::mpsc;
@@ -21,6 +22,11 @@ use crate::bridge::{Bridge, Topic};
 use crate::clock::{self, Surface};
 
 const FRAME_QUEUE: usize = 2;
+/// How long a hidden window keeps ffmpeg stopped rather than gone, so a
+/// quick look elsewhere costs no restart.
+const HOLD: Duration = Duration::from_secs(10);
+/// A picture coming back takes this long before the owner shows it loading.
+const RESUME_GRACE: Duration = Duration::from_millis(150);
 
 pub struct MusicVideo {
     store: MusicStore,
@@ -38,10 +44,18 @@ pub struct MusicVideo {
     /// Asked yt-dlp again once already after googlevideo refused the URL.
     refreshed: bool,
     run: Option<Synced>,
+    /// The window is hidden and `run` is stopped where it was, until `HOLD`
+    /// has passed. Bumped on every hide, so an old timer knows it is stale.
+    held: Option<u64>,
+    hides: u64,
+    lead: Lead,
+    /// Since when a frame is owed: decoding started or resumed.
+    waiting: Option<Instant>,
     surface: Option<Surface>,
     receiver: Option<Task<()>>,
     frame: Option<Arc<RenderImage>>,
     visibility: Option<Subscription>,
+    activation: Option<Subscription>,
 }
 
 impl MusicVideo {
@@ -66,16 +80,80 @@ impl MusicVideo {
             requesting: false,
             refreshed: false,
             run: None,
+            held: None,
+            hides: 0,
+            lead: Lead::default(),
+            waiting: None,
             surface: None,
             receiver: None,
             frame: None,
             visibility: None,
+            activation: None,
         }
     }
 
     /// Whether a frame is on screen, so the owner can fade the cover out.
     pub fn showing(&self) -> bool {
         self.active && self.frame.is_some()
+    }
+
+    /// Whether the owner should show the picture loading: from the switch
+    /// to the first frame, and when a picture coming back is slow to.
+    pub fn loading(&self) -> bool {
+        self.active
+            && (self.requesting || self.run.is_some())
+            && (self.frame.is_none()
+                || self
+                    .waiting
+                    .is_some_and(|since| since.elapsed() >= RESUME_GRACE))
+    }
+
+    /// Owes a frame from now on, and has the owner look again once the
+    /// grace for a picture coming back is over.
+    fn wait(&mut self, cx: &mut Context<Self>) {
+        self.waiting = Some(Instant::now());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(RESUME_GRACE).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.waiting.is_some() {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Hidden, ffmpeg is stopped where it is and let go after `HOLD`;
+    /// shown again, it goes on from there. Called on the window's own
+    /// events, so decoding is back underway before the first frame paints.
+    fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visible == visible {
+            return;
+        }
+        self.visible = visible;
+        if visible {
+            self.held = None;
+            if let Some(run) = &self.run {
+                run.resume();
+                self.wait(cx);
+            }
+        } else if let Some(run) = &self.run {
+            run.pause();
+            self.hides += 1;
+            let hide = self.hides;
+            self.held = Some(hide);
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(HOLD).await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.held == Some(hide) {
+                        this.held = None;
+                        this.sync(cx);
+                    }
+                });
+            })
+            .detach();
+        }
+        self.sync(cx);
     }
 
     /// Width over height of the stream, 16:9 until it is known.
@@ -125,6 +203,7 @@ impl MusicVideo {
                 cx.drop_image(frame, None);
             }
             self.video_id = video_id;
+            self.lead = Lead::default();
             self.stream = None;
             self.refreshed = false;
             self.requesting = false;
@@ -132,7 +211,8 @@ impl MusicVideo {
                 self.request(false, cx);
             }
         }
-        let wanted = self.visible && self.active && audible && self.stream.is_some();
+        let seen = self.visible || (self.held.is_some() && self.run.is_some());
+        let wanted = seen && self.active && audible && self.stream.is_some();
         if wanted && self.run.is_none() {
             self.start(cx);
         } else if !wanted && self.run.is_some() {
@@ -198,12 +278,14 @@ impl MusicVideo {
         self.run = Some(Synced::start(
             self.store.runtime(),
             stream,
-            width,
-            height,
+            (width, height),
             self.hardware,
+            &self.lead,
             clock,
             tx,
         ));
+        self.wait(cx);
+        cx.notify();
         self.receiver = Some(cx.spawn(async move |this, cx| {
             while let Some(frame) = rx.recv().await {
                 if this.update(cx, |this, cx| this.show(frame, cx)).is_err() {
@@ -216,6 +298,8 @@ impl MusicVideo {
 
     fn stop(&mut self) {
         self.run = None;
+        self.held = None;
+        self.waiting = None;
         self.receiver = None;
         self.surface = None;
     }
@@ -249,6 +333,7 @@ impl MusicVideo {
         if let Some(previous) = self.frame.replace(image) {
             cx.drop_image(previous, None);
         }
+        self.waiting = None;
         cx.notify();
         clock::Clock::frame(cx);
     }
@@ -267,13 +352,18 @@ impl Render for MusicVideo {
         crate::trace::render("MusicVideo");
         if self.visibility.is_none() {
             self.visible = window.is_visible();
-            self.visibility = Some(cx.observe_window_visibility(
-                window,
-                |this, visibility, _, cx| {
-                    this.visible = visibility.is_visible();
-                    this.sync(cx);
-                },
-            ));
+            self.visibility = Some(
+                cx.observe_window_visibility(window, |this, visibility, _, cx| {
+                    this.set_visible(visibility.is_visible(), cx)
+                }),
+            );
+            // A window coming back to the front can say so before the
+            // compositor reports it visible.
+            self.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.set_visible(true, cx);
+                }
+            }));
         }
         if self.scale != window.scale_factor() {
             self.scale = window.scale_factor();
