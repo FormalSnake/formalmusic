@@ -278,7 +278,7 @@ rev-parse HEAD)`.
   --sudo`, and fast-forwards the e1504g's `~/.config/nix`.
 * Unreachable: hand the retries to a unit that outlives this run,
   `systemd-run --user --collect --unit=formalmusic-deploy-e1504g
-  formalmusic-deploy-e1504g "$rev"`. It retries every 30 minutes for up to 48
+  "$(command -v formalmusic-deploy-e1504g)" "$rev"`. It retries every 30 minutes for up to 48
   hours, then gives up, and sends its own notification either way. Do not
   wait for it.
 
