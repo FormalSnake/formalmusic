@@ -60,6 +60,9 @@ pub enum IconName {
     Open,
     Resync,
     Settings,
+    NewReleases,
+    Charts,
+    Moods,
 }
 
 /// Resolves to the bundled Lucide glyph.
@@ -111,6 +114,9 @@ pub fn glyph(name: IconName) -> Glyph {
         Open => Glyph::ExternalLink,
         Resync => Glyph::RefreshCw,
         Settings => Glyph::Settings,
+        NewReleases => Glyph::Sparkles,
+        Charts => Glyph::TrendingUp,
+        Moods => Glyph::FaceSlightlySmiling,
     }
 }
 

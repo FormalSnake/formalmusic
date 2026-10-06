@@ -67,6 +67,10 @@ fn assert_item(item: &Item) {
             browse_id, title, ..
         } => assert!(browse_id.starts_with("MPSP") && !title.is_empty()),
         Item::Mood { title, params, .. } => assert!(!title.is_empty() && !params.is_empty()),
+        Item::Shortcut { title, target, .. } => assert!(
+            !title.is_empty() && !matches!(target, BrowseTarget::Raw { .. }),
+            "{target:?}"
+        ),
     }
 }
 
@@ -145,6 +149,26 @@ fn home_continuation() {
 fn explore() {
     let explore = page("explore", BrowseTarget::Explore);
     assert_sections(&explore.sections);
+    let shortcuts: Vec<_> = explore.sections[0]
+        .items
+        .iter()
+        .map(|item| match item {
+            Item::Shortcut {
+                target,
+                icon: Some(_),
+                ..
+            } => target.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        shortcuts,
+        [
+            BrowseTarget::NewReleases,
+            BrowseTarget::Charts,
+            BrowseTarget::MoodsAndGenres
+        ]
+    );
     let moods = titled(&explore.sections, "Moods & genres");
     assert_eq!(moods.layout, SectionLayout::Grid);
     assert_eq!(moods.more, Some(BrowseTarget::MoodsAndGenres));

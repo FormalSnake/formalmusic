@@ -21,6 +21,7 @@ pub fn target_of(item: &Item) -> Option<BrowseTarget> {
         Item::Mood { params, .. } => Some(BrowseTarget::MoodCategory {
             params: params.clone(),
         }),
+        Item::Shortcut { target, .. } => Some(target.clone()),
     }
 }
 
@@ -182,7 +183,7 @@ pub fn item_menu(item: &Item, context: &MenuContext, store: &MusicStore) -> Vec<
                     .icon(IconName::Artist),
             ]
         }
-        Item::Podcast { .. } | Item::Mood { .. } => {
+        Item::Podcast { .. } | Item::Mood { .. } | Item::Shortcut { .. } => {
             let Some(target) = target_of(item) else {
                 return Vec::new();
             };

@@ -237,8 +237,10 @@ pub fn carousel(section: &Section, scroll: &ScrollHandle, env: &Env, id: usize) 
 pub fn card(item: &Item, id: ElementId, env: &Env) -> AnyElement {
     let palette = env.palette;
     let (title, subtitle, thumbnails, round) = card_text(item);
-    if let Item::Mood { .. } = item {
-        return mood_tile(item, id, env);
+    match item {
+        Item::Mood { .. } => return mood_tile(item, id, env),
+        Item::Shortcut { .. } => return shortcut_tile(item, id, env),
+        _ => {}
     }
     let group: SharedString = format!("{id}").into();
     let target = actions::target_of(item);
@@ -401,7 +403,9 @@ fn card_text(
             thumbnails,
             ..
         } => (title.clone(), subtitle.clone(), thumbnails.clone(), false),
-        Item::Mood { title, .. } => (title.clone(), None, Vec::new(), false),
+        Item::Mood { title, .. } | Item::Shortcut { title, .. } => {
+            (title.clone(), None, Vec::new(), false)
+        }
     }
 }
 
@@ -436,6 +440,48 @@ pub fn mood_tile(item: &Item, id: ElementId, env: &Env) -> AnyElement {
                 .px(spacing::X3)
                 .child(title_text(title.clone(), &palette)),
         )
+        .into_any_element()
+}
+
+/// One of Explore's buttons to New releases, Charts and Moods & genres. They
+/// share their row's width, as on the web app.
+fn shortcut_tile(item: &Item, id: ElementId, env: &Env) -> AnyElement {
+    let Item::Shortcut {
+        title,
+        target,
+        icon,
+    } = item
+    else {
+        return div().into_any_element();
+    };
+    let palette = env.palette;
+    let icon = match icon.as_deref() {
+        Some("MUSIC_NEW_RELEASE") => IconName::NewReleases,
+        Some("TRENDING_UP") => IconName::Charts,
+        Some("STICKER_EMOTICON") => IconName::Moods,
+        _ => IconName::Explore,
+    };
+    let (target, hovered) = (target.clone(), target.clone());
+    div()
+        .id(id)
+        .flex_1()
+        .min_w(px(0.))
+        .h(px(56.))
+        .px(spacing::X4)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(spacing::X3)
+        .rounded(radius::ROW)
+        .bg(palette.raised)
+        .cursor_pointer()
+        .hover(move |style| style.bg(palette.raised_hover))
+        .on_hover(move |hovered_now, _, cx| {
+            actions::prefetch_on_hover(Some(hovered.clone()), *hovered_now, cx)
+        })
+        .on_click(move |_, _, cx| actions::open(target.clone(), cx))
+        .child(Icon::new(icon).size(px(20.)).color(palette.secondary))
+        .child(title_text(title.clone(), &palette))
         .into_any_element()
 }
 
@@ -898,6 +944,7 @@ pub fn hero(item: &Item, env: &Env) -> AnyElement {
         Item::Playlist { .. } => "Playlist",
         Item::Podcast { .. } => "Podcast",
         Item::Mood { .. } => "Mood",
+        Item::Shortcut { .. } => "Page",
     };
     let target = actions::target_of(item);
     let (play_item, play_store) = (item.clone(), env.store.clone());

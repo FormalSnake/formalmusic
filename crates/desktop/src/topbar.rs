@@ -329,7 +329,7 @@ impl TopBar {
                             thumbnails.clone(),
                             false,
                         ),
-                        Item::Mood { title, .. } => {
+                        Item::Mood { title, .. } | Item::Shortcut { title, .. } => {
                             (title.clone(), String::new(), Vec::new(), false)
                         }
                     };

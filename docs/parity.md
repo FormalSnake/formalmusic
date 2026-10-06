@@ -23,9 +23,9 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Home mood chips | Relax, Sleep, Focus, ... | yes | `desktop/src/page.rs` (`chip_target`) |
 | Home infinite scroll | continuation | yes | `core/src/store.rs` (`load_more`) |
 | Explore | `/explore` | yes | `desktop/src/sidebar.rs` |
-| New releases | `/new_releases` | partial | Daemon browses it (`innertube/src/endpoints.rs`); the Explore page's button is dropped by `innertube/src/parse/items/navigation_button.rs` and no screen links to it |
-| Charts | `/charts` | partial | Same as new releases |
-| Moods and genres landing | `/moods_and_genres` | partial | Same; individual mood tiles on Explore do open (`desktop/src/shelves.rs` `mood_tile`) |
+| New releases | `/new_releases` | yes | Explore's button, `innertube/src/parse/items/navigation_button.rs` (`Item::Shortcut`), `desktop/src/shelves.rs` (`shortcut_tile`) |
+| Charts | `/charts` | yes | Same as new releases |
+| Moods and genres landing | `/moods_and_genres` | yes | Same as new releases; mood tiles open from `desktop/src/shelves.rs` (`mood_tile`) |
 | Mood or genre category | `/moods_and_genres_category` | yes | `desktop/src/actions.rs` (`target_of`) |
 | Library, Playlists tab | `/library` | yes | `desktop/src/page.rs` (`chip_target`) |
 | Library, Songs, Albums, Artists, Subscriptions, Podcasts tabs | `/library/*` | yes | `desktop/src/page.rs` |
@@ -153,7 +153,6 @@ Read from the web app's `?` overlay. FormalMusic's single keys are in
 
 Most used first.
 
-1. Link New releases, Charts and Moods and genres from the Explore page. Stop dropping the three buttons in `navigation_button.rs` and route them to the existing `BrowseTarget`s. ~2 hours.
 2. History screen: a sidebar or Library entry for `BrowseTarget::History`, with remove from history on rows. ~3 hours.
 3. Match the web's playback keys: `j`/`k` as next/previous, `;` for play, `+`/`_` for like and dislike. Needs a decision on the current `j`/`k` seek habit. ~1 hour.
 4. Playlist editing UI: rename, description, privacy, delete, reorder (all in `PlaylistEdit`). ~a day.

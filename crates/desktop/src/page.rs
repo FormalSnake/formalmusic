@@ -206,11 +206,14 @@ impl PageView {
                     rows.extend((0..section.items.len()).map(|item| Row::Item(index, item)))
                 }
                 SectionLayout::Grid => {
-                    let moods = section
-                        .items
-                        .iter()
-                        .all(|item| matches!(item, Item::Mood { .. }));
-                    let per_row = if moods { columns.1 } else { columns.0 };
+                    let all = |kind: fn(&Item) -> bool| section.items.iter().all(kind);
+                    let per_row = if all(|item| matches!(item, Item::Shortcut { .. })) {
+                        section.items.len()
+                    } else if all(|item| matches!(item, Item::Mood { .. })) {
+                        columns.1
+                    } else {
+                        columns.0
+                    };
                     rows.extend((0..section.items.len()).step_by(per_row).map(|start| {
                         Row::Grid(index, start, per_row.min(section.items.len() - start))
                     }));

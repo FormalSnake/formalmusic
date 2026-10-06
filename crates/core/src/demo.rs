@@ -546,6 +546,29 @@ fn moods() -> Vec<Item> {
         .collect()
 }
 
+fn shortcuts() -> Vec<Item> {
+    [
+        (
+            "New releases",
+            BrowseTarget::NewReleases,
+            "MUSIC_NEW_RELEASE",
+        ),
+        ("Charts", BrowseTarget::Charts, "TRENDING_UP"),
+        (
+            "Moods and genres",
+            BrowseTarget::MoodsAndGenres,
+            "STICKER_EMOTICON",
+        ),
+    ]
+    .into_iter()
+    .map(|(title, target, icon)| Item::Shortcut {
+        title: title.into(),
+        target,
+        icon: Some(icon.into()),
+    })
+    .collect()
+}
+
 fn explore() -> Page {
     let catalog = catalog();
     Page {
@@ -553,6 +576,10 @@ fn explore() -> Page {
         header: None,
         chips: Vec::new(),
         sections: vec![
+            Section {
+                title: None,
+                ..section("", SectionLayout::Grid, shortcuts())
+            },
             section(
                 "New albums and singles",
                 SectionLayout::Carousel,

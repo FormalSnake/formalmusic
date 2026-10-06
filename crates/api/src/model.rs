@@ -271,6 +271,14 @@ pub enum Item {
         /// The tile's accent colour from YouTube, as `0xAARRGGBB`.
         color: Option<u32>,
     },
+    /// A button to another page, as Explore's New releases, Charts and
+    /// Moods & genres.
+    Shortcut {
+        title: String,
+        target: BrowseTarget,
+        /// YouTube's `iconType`, such as `TRENDING_UP`.
+        icon: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
