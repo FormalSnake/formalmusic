@@ -53,9 +53,8 @@ fn account_item(item: &Value) -> Option<Account> {
     })
 }
 
-/// The signed-in account from the avatar menu, with Premium read from the
-/// `has_unlimited_entitlement` flag YouTube puts in `responseContext` of
-/// signed-in responses.
+/// The signed-in account from the avatar menu. Premium is not in this
+/// response; [`crate::parse::player::has_premium_audio`] tells.
 pub fn parse_session(json: &Value) -> Result<SessionInfo> {
     let header = &json["actions"][0]["openPopupAction"]["popup"]["multiPageMenuRenderer"]["header"]
         ["activeAccountHeaderRenderer"];
@@ -73,24 +72,10 @@ pub fn parse_session(json: &Value) -> Result<SessionInfo> {
         selected: true,
     };
     Ok(SessionInfo {
-        signed_in: tracking_param(json, "logged_in").is_none_or(|v| v == "1"),
+        signed_in: true,
         account: Some(account),
-        premium: tracking_param(json, "has_unlimited_entitlement")
-            .is_some_and(|v| v.eq_ignore_ascii_case("true")),
+        premium: false,
     })
-}
-
-fn tracking_param<'a>(json: &'a Value, key: &str) -> Option<&'a str> {
-    json["responseContext"]["serviceTrackingParams"]
-        .as_array()?
-        .iter()
-        .find_map(|service| {
-            service["params"]
-                .as_array()?
-                .iter()
-                .find(|p| p["key"].as_str() == Some(key))?["value"]
-                .as_str()
-        })
 }
 
 #[cfg(test)]
@@ -119,18 +104,15 @@ mod tests {
     }
 
     #[test]
-    fn premium_from_tracking_params() {
+    fn session_from_avatar_menu() {
         let json = json!({
-            "responseContext": {"serviceTrackingParams": [{"service": "GFEEDBACK", "params": [
-                {"key": "logged_in", "value": "1"}, {"key": "has_unlimited_entitlement", "value": "True"}
-            ]}]},
             "actions": [{"openPopupAction": {"popup": {"multiPageMenuRenderer": {"header": {"activeAccountHeaderRenderer": {
                 "accountName": {"runs": [{"text": "Kyan"}]}, "channelHandle": {"runs": [{"text": "@kyan"}]},
                 "accountPhoto": {"thumbnails": [{"url": "https://x/a.jpg", "width": 88, "height": 88}]}
             }}}}}}]
         });
         let session = parse_session(&json).unwrap();
-        assert!(session.signed_in && session.premium);
-        assert_eq!(session.account.unwrap().name, "Kyan");
+        assert!(session.signed_in);
+        assert_eq!(session.account.unwrap().handle.as_deref(), Some("@kyan"));
     }
 }

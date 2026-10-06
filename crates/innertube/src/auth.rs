@@ -40,9 +40,43 @@ pub(crate) fn cookie_value<'a>(cookie: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
+/// A `Cookie` header from a Netscape cookie file (the format yt-dlp and
+/// browser export extensions write), keeping the youtube.com cookies.
+pub fn cookie_header_from_netscape(file: &str) -> String {
+    file.lines()
+        .filter_map(|line| {
+            // curl marks HttpOnly cookies by prefixing the domain, which
+            // otherwise reads as a comment.
+            let line = line.strip_prefix("#HttpOnly_").unwrap_or(line);
+            if line.starts_with('#') {
+                return None;
+            }
+            let fields: Vec<&str> = line.split('\t').collect();
+            let [domain, _, _, _, _, name, value] = fields[..] else {
+                return None;
+            };
+            domain
+                .trim_start_matches('.')
+                .ends_with("youtube.com")
+                .then(|| format!("{name}={}", value.trim_end()))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_netscape_cookie_files() {
+        let file = "# Netscape HTTP Cookie File\n\
+            .youtube.com\tTRUE\t/\tTRUE\t1893456000\tSAPISID\tabc\n\
+            #HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\tdef\n\
+            .google.com\tTRUE\t/\tTRUE\t1893456000\tNID\tzzz\n\
+            \n";
+        assert_eq!(cookie_header_from_netscape(file), "SAPISID=abc; SID=def");
+    }
 
     #[test]
     fn finds_sapisid_among_other_cookies() {

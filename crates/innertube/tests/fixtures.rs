@@ -44,7 +44,13 @@ fn assert_item(item: &Item) {
         }
         Item::Artist {
             browse_id, name, ..
-        } => assert!(browse_id.starts_with("UC") && !name.is_empty()),
+        } => {
+            assert!(
+                browse_id.starts_with("UC") || browse_id.starts_with("MPLAUC"),
+                "{browse_id}"
+            );
+            assert!(!name.is_empty());
+        }
         Item::Playlist {
             playlist_id,
             title,
@@ -617,6 +623,11 @@ fn player_tracking() {
 }
 
 #[test]
+fn anonymous_player_has_no_premium_audio() {
+    assert!(!parse::player::has_premium_audio(&load("player")));
+}
+
+#[test]
 fn unknown_renderers_are_skipped() {
     let json = serde_json::json!({"contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {
     "sectionListRenderer": {"contents": [
@@ -642,18 +653,23 @@ fn missing_structure_is_a_parse_error() {
     assert!(matches!(err, ApiError::Parse(_)));
 }
 
-// Pages that need a signed-in session. Record each fixture with a signed-in
-// client and drop the ignore. Until then they skip when the fixture is
-// absent, so `cargo test -- --ignored` in the maintenance run only fails on
-// the live tests.
+// Pages that need a signed-in session. Their fixtures hold the account's
+// library, so they live in the gitignored fixtures/private/ and are recorded
+// with `FORMALMUSIC_RECORD=1 FORMALMUSIC_COOKIES=<file> cargo test
+// --test live record_signed_in_fixtures -- --ignored`. Without them these
+// tests skip, so a fresh clone's `-- --ignored` run only exercises the live
+// tests.
 
 fn recorded(name: &str) -> Option<Value> {
-    let path = format!("{}/fixtures/{name}.json", env!("CARGO_MANIFEST_DIR"));
-    if !std::path::Path::new(&path).exists() {
+    let path = format!(
+        "{}/fixtures/private/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let Ok(raw) = std::fs::read_to_string(&path) else {
         eprintln!("skipping: {path} has not been recorded");
         return None;
-    }
-    Some(load(name))
+    };
+    Some(serde_json::from_str(&raw).unwrap())
 }
 
 fn signed_in_page(name: &str, target: BrowseTarget) -> Option<Page> {
@@ -665,12 +681,18 @@ fn library(name: &str, tab: LibraryTab) -> Option<Page> {
     signed_in_page(name, BrowseTarget::Library(tab))
 }
 
+fn all_tracks(p: &Page) -> Vec<&Track> {
+    p.sections.iter().flat_map(tracks).collect()
+}
+
 #[test]
-#[ignore = "needs fixtures/library_playlists.json (FEmusic_liked_playlists, signed in)"]
+#[ignore = "needs fixtures/private/library_playlists.json (FEmusic_liked_playlists, signed in)"]
 fn library_playlists() {
     let Some(p) = library("library_playlists", LibraryTab::Playlists) else {
         return;
     };
+    assert_sections(&p.sections);
+    assert_eq!(p.sections[0].layout, SectionLayout::Grid);
     assert!(
         p.sections[0]
             .items
@@ -680,48 +702,63 @@ fn library_playlists() {
 }
 
 #[test]
-#[ignore = "needs fixtures/library_songs.json (FEmusic_liked_videos, signed in)"]
+#[ignore = "needs fixtures/private/library_songs.json (FEmusic_liked_videos, signed in)"]
 fn library_songs() {
     let Some(p) = library("library_songs", LibraryTab::Songs) else {
         return;
     };
-    tracks(&p.sections[0]).into_iter().for_each(assert_track);
+    assert_sections(&p.sections);
+    let songs = all_tracks(&p);
+    assert!(!songs.is_empty());
+    assert!(
+        songs
+            .iter()
+            .all(|t| !t.artists.is_empty() && t.duration_ms.is_some())
+    );
+    assert!(p.sections[0].continuation.is_some() || songs.len() < 25);
 }
 
 #[test]
-#[ignore = "needs fixtures/library_albums.json (FEmusic_liked_albums, signed in)"]
+#[ignore = "needs fixtures/private/library_albums.json (FEmusic_liked_albums, signed in)"]
 fn library_albums() {
     let Some(p) = library("library_albums", LibraryTab::Albums) else {
         return;
     };
-    assert!(
-        p.sections[0]
-            .items
-            .iter()
-            .all(|i| matches!(i, Item::Album { .. }))
-    );
+    assert_sections(&p.sections);
+    assert!(p.sections[0].items.iter().all(|i| matches!(
+        i,
+        Item::Album {
+            playlist_id: Some(_),
+            ..
+        }
+    )));
 }
 
 #[test]
-#[ignore = "needs fixtures/library_artists.json (FEmusic_library_corpus_track_artists, signed in)"]
+#[ignore = "needs fixtures/private/library_artists.json (FEmusic_library_corpus_track_artists, signed in)"]
 fn library_artists() {
     let Some(p) = library("library_artists", LibraryTab::Artists) else {
         return;
     };
-    assert!(
-        p.sections[0]
-            .items
-            .iter()
-            .all(|i| matches!(i, Item::Artist { .. }))
-    );
+    assert_sections(&p.sections);
+    assert!(!p.sections[0].items.is_empty());
+    assert!(p.sections[0].items.iter().all(|i| matches!(
+        i,
+        Item::Artist {
+            subtitle: Some(_),
+            ..
+        }
+    )));
 }
 
 #[test]
-#[ignore = "needs fixtures/library_subscriptions.json (FEmusic_library_corpus_artists, signed in)"]
+#[ignore = "needs fixtures/private/library_subscriptions.json (FEmusic_library_corpus_artists, signed in)"]
 fn library_subscriptions() {
     let Some(p) = library("library_subscriptions", LibraryTab::Subscriptions) else {
         return;
     };
+    assert_sections(&p.sections);
+    assert!(!p.sections[0].items.is_empty());
     assert!(
         p.sections[0]
             .items
@@ -731,7 +768,7 @@ fn library_subscriptions() {
 }
 
 #[test]
-#[ignore = "needs fixtures/library_podcasts.json (FEmusic_library_non_music_audio_list, signed in)"]
+#[ignore = "needs fixtures/private/library_podcasts.json (FEmusic_library_non_music_audio_list, signed in)"]
 fn library_podcasts() {
     let Some(p) = library("library_podcasts", LibraryTab::Podcasts) else {
         return;
@@ -740,87 +777,119 @@ fn library_podcasts() {
 }
 
 #[test]
-#[ignore = "needs fixtures/library_uploads.json (FEmusic_library_privately_owned_tracks, signed in)"]
+#[ignore = "needs fixtures/private/library_uploads.json (FEmusic_library_privately_owned_tracks, signed in)"]
 fn library_uploads() {
+    // An account without uploads gets only a message, so no sections at all.
     let Some(p) = library("library_uploads", LibraryTab::Uploads) else {
         return;
     };
-    assert!(
-        tracks(&p.sections[0])
-            .iter()
-            .all(|t| t.kind == TrackKind::Upload)
-    );
+    assert!(all_tracks(&p).iter().all(|t| t.kind == TrackKind::Upload));
 }
 
 #[test]
-#[ignore = "needs fixtures/liked_songs.json (VLLM, signed in)"]
+#[ignore = "needs fixtures/private/liked_songs.json (VLLM, signed in)"]
 fn liked_songs() {
     let Some(p) = library("liked_songs", LibraryTab::LikedSongs) else {
         return;
     };
+    assert!(matches!(
+        &p.header,
+        Some(Header::Detail {
+            editable: false,
+            ..
+        })
+    ));
+    let songs = all_tracks(&p);
+    assert!(songs.len() >= 10);
+    songs.iter().for_each(|t| assert_track(t));
     assert!(
-        tracks(&p.sections[0])
+        songs
             .iter()
-            .all(|t| t.like == Rating::Like)
+            .all(|t| t.like == Rating::Like && t.set_video_id.is_some())
     );
 }
 
 #[test]
-#[ignore = "needs fixtures/owned_playlist.json (a playlist you own, signed in)"]
+#[ignore = "needs fixtures/private/owned_playlist.json (a playlist you own, signed in)"]
 fn owned_playlist() {
     let Some(p) = signed_in_page("owned_playlist", BrowseTarget::Playlist("PL".into())) else {
         return;
     };
-    assert!(matches!(
-        p.header,
-        Some(Header::Detail {
-            editable: true,
-            privacy: Some(_),
-            ..
-        })
-    ));
-    assert!(
-        tracks(&p.sections[0])
-            .iter()
-            .all(|t| t.set_video_id.is_some())
-    );
+    let Some(Header::Detail {
+        editable,
+        privacy,
+        playlist_id,
+        ..
+    }) = &p.header
+    else {
+        panic!("{:?}", p.header)
+    };
+    assert!(*editable && privacy.is_some() && playlist_id.is_some());
+    let rows = all_tracks(&p);
+    assert!(!rows.is_empty());
+    assert!(rows.iter().all(|t| t.set_video_id.is_some()));
 }
 
 #[test]
-#[ignore = "needs fixtures/history.json (FEmusic_history, signed in)"]
+#[ignore = "needs fixtures/private/history.json (FEmusic_history, signed in)"]
 fn history() {
     let Some(p) = signed_in_page("history", BrowseTarget::History) else {
         return;
     };
+    assert_eq!(
+        p.header,
+        Some(Header::Title {
+            title: "History".into()
+        })
+    );
+    assert_sections(&p.sections);
     assert!(p.sections.iter().all(|s| s.title.is_some()));
+    assert!(all_tracks(&p).iter().all(|t| t.feedback_token.is_some()));
+}
+
+#[test]
+#[ignore = "needs fixtures/private/accounts_list.json (account/accounts_list, signed in)"]
+fn accounts_list() {
+    let Some(json) = recorded("accounts_list") else {
+        return;
+    };
+    let accounts = parse::account::parse_accounts(&json).unwrap();
+    assert_eq!(accounts.iter().filter(|a| a.selected).count(), 1);
     assert!(
-        p.sections
+        accounts
             .iter()
-            .flat_map(tracks)
-            .all(|t| t.feedback_token.is_some())
+            .all(|a| !a.name.is_empty() && !a.thumbnails.is_empty())
     );
 }
 
 #[test]
-#[ignore = "needs fixtures/accounts_list.json (account/accounts_list, signed in)"]
-fn accounts_list() {
-    let accounts = {
-        let Some(json) = recorded("accounts_list") else {
-            return;
-        };
-        parse::account::parse_accounts(&json).unwrap()
+#[ignore = "needs fixtures/private/account_menu.json (account/account_menu, signed in)"]
+fn account_menu() {
+    let Some(json) = recorded("account_menu") else {
+        return;
     };
-    assert_eq!(accounts.iter().filter(|a| a.selected).count(), 1);
+    let session = parse::account::parse_session(&json).unwrap();
+    let account = session.account.unwrap();
+    assert!(!account.name.is_empty() && !account.thumbnails.is_empty());
 }
 
 #[test]
-#[ignore = "needs fixtures/account_menu.json (account/account_menu, signed in)"]
-fn account_menu() {
-    let session = {
-        let Some(json) = recorded("account_menu") else {
-            return;
-        };
-        parse::account::parse_session(&json).unwrap()
+#[ignore = "needs fixtures/private/home.json (FEmusic_home, signed in)"]
+fn signed_in_home() {
+    let Some(home) = signed_in_page("home", BrowseTarget::Home) else {
+        return;
     };
-    assert!(session.signed_in && session.account.is_some());
+    assert!(!home.chips.is_empty() && home.continuation.is_some());
+    assert_sections(&home.sections);
+    assert!(home.sections.iter().all(|s| s.title.is_some()));
+}
+
+#[test]
+#[ignore = "needs fixtures/private/player.json (player, signed in)"]
+fn signed_in_player() {
+    let Some(json) = recorded("player") else {
+        return;
+    };
+    let tracking = parse::player::parse_player("IluRBvnYMoY", &json).unwrap();
+    assert!(tracking.playback_url.starts_with("https://") && tracking.loudness_db.is_some());
 }

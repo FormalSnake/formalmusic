@@ -197,11 +197,12 @@ pub(crate) fn explicit(badges: &Value) -> bool {
 
 /// The like state from a row's menu, as the signed-in user set it.
 pub(crate) fn like_status(menu: &Value) -> Rating {
-    let buttons = menu["menuRenderer"]["topLevelButtons"]
-        .as_array()
-        .into_iter()
-        .flatten();
-    for button in buttons {
+    like_in_buttons(&menu["menuRenderer"]["topLevelButtons"])
+}
+
+/// The first `likeButtonRenderer` state in a list of buttons.
+pub(crate) fn like_in_buttons(buttons: &Value) -> Rating {
+    for button in buttons.as_array().into_iter().flatten() {
         match button["likeButtonRenderer"]["likeStatus"].as_str() {
             Some("LIKE") => return Rating::Like,
             Some("DISLIKE") => return Rating::Dislike,

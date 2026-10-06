@@ -26,6 +26,7 @@ pub fn parse_timed(json: &Value) -> Option<Lyrics> {
                 start_ms: start.unwrap_or(0),
                 end_ms: millis(&cue["endTimeMilliseconds"]),
                 text: line["lyricLine"].as_str().unwrap_or_default().to_owned(),
+                ..Default::default()
             }
         })
         .collect();
@@ -48,6 +49,7 @@ pub fn parse_timed(json: &Value) -> Option<Lyrics> {
         source: data["sourceMessage"].as_str().map(source_name),
         lines,
         synced,
+        word_synced: false,
     })
 }
 
@@ -64,12 +66,14 @@ pub fn parse_plain(json: &Value) -> Option<Lyrics> {
             start_ms: 0,
             end_ms: None,
             text: line.to_owned(),
+            ..Default::default()
         })
         .collect();
     Some(Lyrics {
         source: text(&shelf["footer"]).as_deref().map(source_name),
         lines,
         synced: false,
+        word_synced: false,
     })
 }
 

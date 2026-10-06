@@ -1,10 +1,10 @@
 //! The `next` endpoint: the player page's up-next queue (`playlistPanelVideoRenderer`
 //! rows) and the browse ids of its Lyrics and Related tabs.
 
-use super::items::{Byline, blank_track, explicit, like_status, video_kind};
+use super::items::{Byline, blank_track, explicit, like_in_buttons, like_status, video_kind};
 use super::{continuation, missing, runs, text, thumbnails};
 use crate::Result;
-use formalmusic_api::{Continuation, Track, TrackKind};
+use formalmusic_api::{Continuation, Rating, Track, TrackKind};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -16,6 +16,8 @@ pub struct NextResult {
     pub related_browse_id: Option<String>,
     /// More queue for radio and long playlists, for [`crate::Client::next_continuation`].
     pub continuation: Option<Continuation>,
+    /// The signed-in user's rating of the requested track.
+    pub like: Rating,
 }
 
 pub fn parse_next(json: &Value) -> Result<NextResult> {
@@ -24,7 +26,10 @@ pub fn parse_next(json: &Value) -> Result<NextResult> {
         .as_array()
         .ok_or_else(|| missing("contents.singleColumnMusicWatchNextResultsRenderer...watchNextTabbedResultsRenderer.tabs"))?;
 
-    let mut result = NextResult::default();
+    let mut result = NextResult {
+        like: like_in_buttons(&json["playerOverlays"]["playerOverlayRenderer"]["actions"]),
+        ..NextResult::default()
+    };
     for tab in tabs {
         let tab = &tab["tabRenderer"];
         let browse_id = tab["endpoint"]["browseEndpoint"]["browseId"]

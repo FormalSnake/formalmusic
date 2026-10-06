@@ -39,3 +39,14 @@ pub fn parse_player(video_id: &str, json: &Value) -> Result<PlaybackTracking> {
         loudness_db: json["playerConfig"]["audioConfig"]["loudnessDb"].as_f64(),
     })
 }
+
+/// Premium accounts get 256 kbps audio (itag 141, AAC, and 774, Opus) that
+/// other accounts never see. Neither the avatar menu nor `responseContext`
+/// says Premium outright, so the formats offered are the tell.
+pub fn has_premium_audio(json: &Value) -> bool {
+    json["streamingData"]["adaptiveFormats"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|f| matches!(f["itag"].as_u64(), Some(141 | 774)))
+}

@@ -23,6 +23,9 @@ const FALLBACK_CLIENT_VERSION: &str = "1.20261004.17.00";
 /// The player script's `signatureTimestamp`. Without one, `player` answers
 /// "The page needs to be reloaded" instead of a playable response.
 const FALLBACK_SIGNATURE_TIMESTAMP: u64 = 20726;
+/// A long-lived album track whose `player` formats show whether the session
+/// has Premium (see [`parse::player::has_premium_audio`]).
+const PREMIUM_PROBE_VIDEO: &str = "IluRBvnYMoY";
 const ANDROID_MUSIC_VERSION: &str = "7.21.50";
 const LANGUAGE: &str = "en";
 const LOCATION: &str = "US";
@@ -71,6 +74,18 @@ impl Client {
             )
         })?;
         Self::build(Some(session))
+    }
+
+    /// [`Client::signed_in`] from a Netscape cookie file, the format yt-dlp
+    /// reads with `--cookies`, so the daemon can hand both the same file.
+    pub fn from_cookie_file(
+        path: impl AsRef<std::path::Path>,
+        page_id: Option<String>,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let file = std::fs::read_to_string(path)
+            .map_err(|e| ApiError::BadRequest(format!("{}: {e}", path.display())))?;
+        Self::signed_in(&crate::auth::cookie_header_from_netscape(&file), page_id)
     }
 
     fn build(session: Option<Session>) -> Result<Self> {
@@ -358,10 +373,18 @@ impl Client {
         let Some(session) = &self.inner.session else {
             return Ok(SessionInfo::default());
         };
-        let json = self.post("account/account_menu", json!({})).await?;
-        let mut info = parse::account::parse_session(&json)?;
+        let player_body = self.player_body(PREMIUM_PROBE_VIDEO).await;
+        let (menu, player) = tokio::join!(
+            self.post("account/account_menu", json!({})),
+            self.post("player", player_body),
+        );
+        let mut info = parse::account::parse_session(&menu?)?;
         if let Some(account) = &mut info.account {
             account.page_id = session.page_id.clone();
+        }
+        match player {
+            Ok(player) => info.premium = parse::player::has_premium_audio(&player),
+            Err(err) => tracing::warn!(%err, "could not check for Premium formats"),
         }
         Ok(info)
     }
@@ -371,15 +394,7 @@ impl Client {
     /// The URLs that put a play into History, and the track's loudness. Asked
     /// as the signed-in session so the play counts for that account.
     pub async fn playback_tracking(&self, video_id: &str) -> Result<PlaybackTracking> {
-        let body = json!({
-            "videoId": video_id,
-            "playbackContext": { "contentPlaybackContext": {
-                "signatureTimestamp": self.signature_timestamp().await,
-                "html5Preference": "HTML5_PREF_WANTS",
-            }},
-            "contentCheckOk": true,
-            "racyCheckOk": true,
-        });
+        let body = self.player_body(video_id).await;
         let json = self.post("player", body).await?;
         parse::player::parse_player(video_id, &json)
     }
@@ -406,6 +421,25 @@ impl Client {
                 response.status()
             )))
         }
+    }
+
+    /// The unparsed response of any `WEB_REMIX` endpoint, with the context
+    /// and session headers filled in. For recording fixtures.
+    pub async fn raw(&self, endpoint: &str, body: Value) -> Result<Value> {
+        self.post(endpoint, body).await
+    }
+
+    /// The `player` body [`Client::playback_tracking`] sends, for recording.
+    pub async fn player_body(&self, video_id: &str) -> Value {
+        json!({
+            "videoId": video_id,
+            "playbackContext": { "contentPlaybackContext": {
+                "signatureTimestamp": self.signature_timestamp().await,
+                "html5Preference": "HTML5_PREF_WANTS",
+            }},
+            "contentCheckOk": true,
+            "racyCheckOk": true,
+        })
     }
 
     // Plumbing

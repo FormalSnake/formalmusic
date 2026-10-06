@@ -138,6 +138,9 @@ pub fn target_for(id: &str, params: Option<String>) -> BrowseTarget {
         _ if id.starts_with("MPRE") => BrowseTarget::Album(id.to_owned()),
         _ if id.starts_with("MPSP") => BrowseTarget::Podcast(id.to_owned()),
         _ if id.starts_with("MPED") => BrowseTarget::Episode(id.to_owned()),
+        // Library artist rows link to MPLA plus the channel id: the artist's
+        // songs in your library, which browses like an artist page.
+        _ if id.starts_with("MPLA") => BrowseTarget::Artist(id.to_owned()),
         _ if id.starts_with("MPAD") => match params {
             Some(params) => BrowseTarget::ArtistShelf {
                 browse_id: id.to_owned(),
