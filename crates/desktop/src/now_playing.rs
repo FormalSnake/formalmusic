@@ -465,18 +465,6 @@ impl Render for QueueView {
             }
         }
         let store = self.store.clone();
-        let caption = queue.source_title.clone().map(|title| {
-            div()
-                .px(spacing::X3)
-                .pb(spacing::X2)
-                .text_size(type_scale::CAPTION.font_size)
-                .text_color(palette.secondary)
-                .child(if queue.radio {
-                    format!("Playing from {title}, with radio after it")
-                } else {
-                    format!("Playing from {title}")
-                })
-        });
         let entity = cx.entity().downgrade();
         let list = uniform_list("queue", queue.tracks.len(), move |range, _window, _cx| {
             range
@@ -632,7 +620,6 @@ impl Render for QueueView {
             .size_full()
             .flex()
             .flex_col()
-            .children(caption)
             .child(list)
             .into_any_element()
     }

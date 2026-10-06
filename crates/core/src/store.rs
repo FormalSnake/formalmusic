@@ -1874,7 +1874,6 @@ mod tests {
         store.apply(Event::Queue(QueueState {
             tracks: tracks.clone(),
             current: Some(1),
-            source_title: None,
             radio: false,
         }));
         store.move_in_queue(1, 3);

@@ -61,7 +61,6 @@ pub struct Playback {
 #[derive(Default)]
 struct State {
     queue: Queue,
-    source_title: Option<String>,
     radio: Option<Radio>,
     status: Status,
     /// Whether playback should run once the current load finishes.
@@ -117,7 +116,6 @@ struct Radio {
 #[serde(rename_all = "camelCase")]
 struct Saved {
     queue: Queue,
-    source_title: Option<String>,
     radio: bool,
     position_ms: u64,
     volume: f32,
@@ -143,7 +141,6 @@ impl Playback {
             Ok(bytes) => match serde_json::from_slice::<Saved>(&bytes) {
                 Ok(saved) => {
                     state.queue = saved.queue;
-                    state.source_title = saved.source_title;
                     state.radio = saved.radio.then(Radio::default);
                     state.position_ms = saved.position_ms;
                     state.volume = saved.volume.clamp(0.0, 1.0);
@@ -243,21 +240,19 @@ impl Playback {
         radio: bool,
     ) -> Result<(), ApiError> {
         let client = self.session.client();
-        let (tracks, title, radio_state) = match source {
-            PlaySource::Tracks { tracks } => (tracks, None, None),
+        let (tracks, radio_state) = match source {
+            PlaySource::Tracks { tracks } => (tracks, None),
             PlaySource::Playlist { playlist_id } => {
-                let (title, tracks) = fetch_playlist(&client, &playlist_id).await?;
-                (tracks, title, None)
+                (fetch_playlist(&client, &playlist_id).await?, None)
             }
             PlaySource::Radio { video_id } => {
                 let next = client.radio(&video_id).await?;
-                let title = next.tracks.first().map(|t| format!("{} radio", t.title));
                 let radio = Radio {
                     playlist_id: next.playlist_id,
                     continuation: next.continuation,
                     ..Radio::default()
                 };
-                (next.tracks, title, Some(radio))
+                (next.tracks, Some(radio))
             }
         };
         if tracks.is_empty() {
@@ -266,7 +261,6 @@ impl Playback {
         let mut st = self.state.lock();
         st.queue
             .replace(tracks, start, shuffle, &mut self.rng.lock());
-        st.source_title = title;
         st.radio = radio_state.or_else(|| radio.then(Radio::default));
         st.failures = 0;
         self.start_current(&mut st, 0, true);
@@ -943,7 +937,6 @@ impl Playback {
         let st = self.state.lock();
         Saved {
             queue: st.queue.clone(),
-            source_title: st.source_title.clone(),
             radio: st.radio.is_some(),
             position_ms: st.position_ms,
             volume: st.volume,
@@ -1017,7 +1010,6 @@ fn queue_state(st: &State) -> QueueState {
     QueueState {
         tracks: st.queue.tracks(),
         current: st.queue.current_index(),
-        source_title: st.source_title.clone(),
         radio: st.radio.is_some(),
     }
 }
@@ -1028,12 +1020,9 @@ fn out_of_range(index: usize) -> ApiError {
 
 /// A playlist or album in full. Album playlists (`OLAK5uy_...`) have no
 /// browse page of their own, so those come from the player's queue panel.
-async fn fetch_playlist(
-    client: &Client,
-    playlist_id: &str,
-) -> Result<(Option<String>, Vec<Track>), ApiError> {
+async fn fetch_playlist(client: &Client, playlist_id: &str) -> Result<Vec<Track>, ApiError> {
     match browse_playlist(client, playlist_id).await {
-        Ok(found) if !found.1.is_empty() => Ok(found),
+        Ok(found) if !found.is_empty() => Ok(found),
         Ok(_) | Err(ApiError::Parse(_) | ApiError::NotFound(_)) => {
             queue_playlist(client, playlist_id).await
         }
@@ -1042,21 +1031,14 @@ async fn fetch_playlist(
 }
 
 /// The playlist page's track list, following its continuations.
-async fn browse_playlist(
-    client: &Client,
-    playlist_id: &str,
-) -> Result<(Option<String>, Vec<Track>), ApiError> {
+async fn browse_playlist(client: &Client, playlist_id: &str) -> Result<Vec<Track>, ApiError> {
     let page = client
         .browse(formalmusic_api::BrowseTarget::Playlist(
             playlist_id.to_owned(),
         ))
         .await?;
-    let title = match &page.header {
-        Some(formalmusic_api::Header::Detail { title, .. }) => Some(title.clone()),
-        _ => None,
-    };
     let Some(list) = page.sections.into_iter().next() else {
-        return Ok((title, Vec::new()));
+        return Ok(Vec::new());
     };
     let mut tracks: Vec<Track> = tracks_of(list.items);
     let mut token = list.continuation;
@@ -1069,15 +1051,12 @@ async fn browse_playlist(
         }
         token = more.continuation;
     }
-    Ok((title, tracks))
+    Ok(tracks)
 }
 
 /// The up-next panel the web app shows for a playlist, which also covers
-/// albums. Titled after the album when the tracks share one.
-async fn queue_playlist(
-    client: &Client,
-    playlist_id: &str,
-) -> Result<(Option<String>, Vec<Track>), ApiError> {
+/// albums.
+async fn queue_playlist(client: &Client, playlist_id: &str) -> Result<Vec<Track>, ApiError> {
     let first = client.next(None, Some(playlist_id)).await?;
     let panel_id = first.playlist_id.unwrap_or_else(|| playlist_id.to_owned());
     let mut tracks = first.tracks;
@@ -1095,16 +1074,7 @@ async fn queue_playlist(
         tracks.extend(fresh);
         token = more.continuation;
     }
-    let album = tracks
-        .first()
-        .and_then(|t| t.album.as_ref())
-        .map(|a| a.text.clone());
-    let title = album.filter(|album| {
-        tracks
-            .iter()
-            .all(|t| t.album.as_ref().is_some_and(|a| &a.text == album))
-    });
-    Ok((title, tracks))
+    Ok(tracks)
 }
 
 fn tracks_of(items: Vec<Item>) -> Vec<Track> {

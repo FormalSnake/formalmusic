@@ -1188,27 +1188,22 @@ fn related() -> Page {
     }
 }
 
-fn tracks_for(source: &PlaySource) -> (Vec<Track>, Option<String>) {
+fn tracks_for(source: &PlaySource) -> Vec<Track> {
     let catalog = catalog();
     match source {
-        PlaySource::Tracks { tracks } => (tracks.clone(), None),
+        PlaySource::Tracks { tracks } => tracks.clone(),
         PlaySource::Playlist { playlist_id } if !playlist_id.contains("demo") => {
             let target = if playlist_id.starts_with("OLAK") {
                 BrowseTarget::Album("recorded".into())
             } else {
                 BrowseTarget::Playlist("recorded".into())
             };
-            fixtures::tracks(&target).unwrap_or_else(|| {
-                (
-                    tracks_from(playlist_id.len() as u64, 25),
-                    Some("Mix".into()),
-                )
-            })
+            fixtures::tracks(&target).unwrap_or_else(|| tracks_from(playlist_id.len() as u64, 25))
         }
         PlaySource::Radio { video_id }
             if !video_id.starts_with("demo-") && fixtures::radio().is_some() =>
         {
-            (fixtures::radio().unwrap_or_default(), Some("Radio".into()))
+            fixtures::radio().unwrap_or_default()
         }
         PlaySource::Playlist { playlist_id } => {
             if let Some(album) = catalog
@@ -1216,19 +1211,16 @@ fn tracks_for(source: &PlaySource) -> (Vec<Track>, Option<String>) {
                 .iter()
                 .find(|album| album.playlist_id == *playlist_id)
             {
-                return (album.tracks.clone(), Some(album.title.clone()));
+                return album.tracks.clone();
             }
             if let Some(playlist) = catalog
                 .playlists
                 .iter()
                 .find(|playlist| playlist.playlist_id == *playlist_id)
             {
-                return (playlist.tracks.clone(), Some(playlist.title.into()));
+                return playlist.tracks.clone();
             }
-            (
-                tracks_from(playlist_id.len() as u64, 25),
-                Some("Mix".into()),
-            )
+            tracks_from(playlist_id.len() as u64, 25)
         }
         PlaySource::Radio { video_id } => {
             let seed = catalog
@@ -1238,11 +1230,10 @@ fn tracks_for(source: &PlaySource) -> (Vec<Track>, Option<String>) {
                 .find(|track| track.video_id == *video_id)
                 .cloned();
             let mut tracks = tracks_from(video_id.len() as u64 * 13, 24);
-            let title = seed.as_ref().map(|track| format!("{} radio", track.title));
             if let Some(seed) = seed {
                 tracks.insert(0, seed);
             }
-            (tracks, title)
+            tracks
         }
     }
 }
@@ -1355,8 +1346,8 @@ impl DemoTransport {
     pub fn new() -> Self {
         let signed_in = std::env::var("FORMALMUSIC_DEMO_SIGNED_OUT").ok().as_deref() != Some("1");
         let album = &catalog().albums[2];
-        let (tracks, title) = fixtures::tracks(&BrowseTarget::Album("recorded".into()))
-            .unwrap_or_else(|| (album.tracks.clone(), Some(album.title.clone())));
+        let tracks = fixtures::tracks(&BrowseTarget::Album("recorded".into()))
+            .unwrap_or_else(|| album.tracks.clone());
         let mut state = DemoState {
             player: PlayerState {
                 volume: 0.8,
@@ -1365,7 +1356,6 @@ impl DemoTransport {
             queue: QueueState {
                 tracks,
                 current: None,
-                source_title: title,
                 radio: false,
             },
             since: None,
@@ -1708,7 +1698,7 @@ impl Transport for DemoTransport {
                 shuffle,
                 radio,
             } => {
-                let (mut tracks, title) = tracks_for(&source);
+                let mut tracks = tracks_for(&source);
                 if shuffle {
                     let mut rng = Rng(tracks.len() as u64 * 2654435761 | 1);
                     for n in (1..tracks.len()).rev() {
@@ -1720,7 +1710,6 @@ impl Transport for DemoTransport {
                     state.queue = QueueState {
                         tracks,
                         current: None,
-                        source_title: title,
                         radio,
                     };
                     state.player.shuffle = shuffle;
@@ -2039,12 +2028,8 @@ mod fixtures {
     }
 
     /// The tracks of the first list on a recorded page, for playing it whole.
-    pub fn tracks(target: &BrowseTarget) -> Option<(Vec<Track>, Option<String>)> {
+    pub fn tracks(target: &BrowseTarget) -> Option<Vec<Track>> {
         let page = page(target)?;
-        let title = match &page.header {
-            Some(Header::Detail { title, .. }) => Some(title.clone()),
-            _ => None,
-        };
         let tracks: Vec<Track> = page
             .sections
             .iter()
@@ -2059,7 +2044,7 @@ mod fixtures {
                 }
             })
             .collect();
-        (!tracks.is_empty()).then_some((tracks, title))
+        (!tracks.is_empty()).then_some(tracks)
     }
 }
 
@@ -2085,7 +2070,7 @@ mod fixtures {
     pub fn radio() -> Option<Vec<Track>> {
         None
     }
-    pub fn tracks(_: &BrowseTarget) -> Option<(Vec<Track>, Option<String>)> {
+    pub fn tracks(_: &BrowseTarget) -> Option<Vec<Track>> {
         None
     }
 }

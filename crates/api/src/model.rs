@@ -446,8 +446,6 @@ pub struct PlayerState {
 pub struct QueueState {
     pub tracks: Vec<Track>,
     pub current: Option<usize>,
-    /// Where the queue came from, for the "Playing from" caption.
-    pub source_title: Option<String>,
     /// Radio is on: the daemon appends tracks as the queue runs out.
     pub radio: bool,
 }
