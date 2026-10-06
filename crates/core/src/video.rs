@@ -638,8 +638,8 @@ mod tests {
         assert!(run.position() < 1.5, "at {}", run.position());
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn synced_frames_follow_the_clock_and_stop_with_it() {
+    /// Eight seconds at 30 fps, rendered by ffmpeg under target/ once.
+    fn long_fixture() -> Option<VideoStream> {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-video");
         let path = dir.join("long.mp4");
         if !path.exists() {
@@ -652,17 +652,62 @@ mod tests {
                     .status()
                     .is_ok_and(|s| s.success());
             if !made {
-                return;
+                return None;
             }
         }
-        let stream = VideoStream {
+        Some(VideoStream {
             url: path.to_string_lossy().into_owned(),
             headers: Vec::new(),
             width: 160,
             height: 90,
             fps: 30.,
             codec: "mp4v".into(),
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_restart_or_a_resume_shows_a_frame_without_the_first_lead() {
+        let Some(stream) = long_fixture() else { return };
+        let began = Instant::now();
+        let clock: Clock = Arc::new(move || Some(0.5 + began.elapsed().as_secs_f64()));
+        let lead = Lead::default();
+        let start = |lead: &Lead| {
+            let (tx, rx) = mpsc::channel(2);
+            let run = Synced::start(
+                &tokio::runtime::Handle::current(),
+                &stream,
+                (80, 45),
+                false,
+                lead,
+                clock.clone(),
+                tx,
+            );
+            (run, rx)
         };
+        let (run, mut rx) = start(&lead);
+        rx.recv().await.expect("first run");
+        drop(run);
+        assert!(lead.get() < 0.5, "learned lead {}", lead.get());
+
+        let (run, mut rx) = start(&lead);
+        let restarted = Instant::now();
+        rx.recv().await.expect("second run");
+        let waited = restarted.elapsed().as_secs_f64();
+        assert!(waited < 0.5, "restart took {waited:.2}s");
+
+        run.pause();
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        while rx.try_recv().is_ok() {}
+        run.resume();
+        let resumed = Instant::now();
+        rx.recv().await.expect("resumed run");
+        let waited = resumed.elapsed().as_secs_f64();
+        assert!(waited < 0.3, "resume took {waited:.2}s");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn synced_frames_follow_the_clock_and_stop_with_it() {
+        let Some(stream) = long_fixture() else { return };
         let began = Instant::now();
         let stop_at = 3.0;
         let clock: Clock = Arc::new(move || {
