@@ -11,17 +11,17 @@
 //! Events are narrow on purpose: a position tick is `Position` alone, so the
 //! desktop repaints the seek bar and nothing else.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use formalmusic_api::{
-    Account, BrowseTarget, Browsers, Command, Continuation, EnqueuePosition, Event, Item,
+    Account, BrowseTarget, Browsers, Command, Continuation, EnqueuePosition, Event, Header, Item,
     LastFmApp, LibraryScope, LibraryTab, ListenBrainzSource, Lyrics, Page, PlaySource, PlayerState,
     PlaylistEdit, Privacy, ProfileBrowser, QueueState, RateTarget, Rating, Repeat, Reply,
-    ScrobbleService, ScrobbleStatus, SearchFilter, SearchResults, SessionInfo, Status, Suggestion,
-    Track,
+    ScrobbleService, ScrobbleStatus, SearchFilter, SearchResults, SectionLayout, SessionInfo,
+    Status, Suggestion, Track,
 };
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use tokio::sync::{broadcast, mpsc};
@@ -33,6 +33,9 @@ use crate::transport::{ClientError, ConnectionStatus, Transport, TransportEvent,
 
 /// A page older than this is shown and fetched again behind it.
 const STALE_AFTER: Duration = Duration::from_secs(5 * 60);
+/// A mix answers with a different list every time, so it is fetched again
+/// only once it has been off screen this long, never while it shows.
+const MIX_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 /// Search answers go stale faster: a query typed again usually wants fresh results.
 const SEARCH_STALE_AFTER: Duration = Duration::from_secs(60);
 /// Typing pauses this long before a suggestions request goes out.
@@ -67,6 +70,8 @@ pub struct PageEntry {
     /// The last fetch failed. The page, if there is one, is still the old one.
     pub error: Option<String>,
     fetched_at: Option<Instant>,
+    /// When the page last left the main pane; `None` while it shows.
+    hidden_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -270,6 +275,105 @@ fn item_tracks(items: &[Item]) -> impl Iterator<Item = &Track> {
     })
 }
 
+fn bare_playlist(playlist_id: &str) -> &str {
+    playlist_id.strip_prefix("VL").unwrap_or(playlist_id)
+}
+
+/// Mixes and radios (`RD...`, or a page that calls itself a "Mix") are
+/// always updating: each fetch answers with a different list.
+fn is_mix(target: &BrowseTarget, page: Option<&Page>) -> bool {
+    let BrowseTarget::Playlist(playlist_id) = target else {
+        return false;
+    };
+    bare_playlist(playlist_id).starts_with("RD")
+        || matches!(page.and_then(|page| page.header.as_ref()), Some(Header::Detail { subtitle, .. })
+            if subtitle.first().is_some_and(|link| link.text == "Mix"))
+}
+
+/// A mix is fetched again only once it has been off screen a long while,
+/// and never while the queue plays from it.
+fn mix_may_refresh(target: &BrowseTarget, entry: &PageEntry, playing_from: Option<&str>) -> bool {
+    let playing = match (target, playing_from) {
+        (BrowseTarget::Playlist(id), Some(from)) => bare_playlist(id) == from,
+        _ => false,
+    };
+    !playing
+        && entry
+            .hidden_at
+            .is_some_and(|at| at.elapsed() >= MIX_STALE_AFTER)
+}
+
+/// A row's identity in a list: the playlist entry when there is one, since
+/// a playlist can hold a video twice.
+fn row_key(item: &Item) -> Option<&str> {
+    match item {
+        Item::Track(track) => Some(track.set_video_id.as_deref().unwrap_or(&track.video_id)),
+        _ => None,
+    }
+}
+
+/// A playlist fetched again keeps its rows where they were. Added and
+/// removed rows come through as they are; a list that only moved rows keeps
+/// the old order, with any new rows after it. A first page that matches the
+/// rows already loaded keeps the ones loaded past it too.
+fn keep_rows(old: &Page, mut new: Page) -> Page {
+    for (section, old) in new.sections.iter_mut().zip(&old.sections) {
+        if section.layout != SectionLayout::List || old.layout != SectionLayout::List {
+            continue;
+        }
+        let (Some(old_keys), Some(new_keys)) = (
+            old.items.iter().map(row_key).collect::<Option<Vec<_>>>(),
+            section
+                .items
+                .iter()
+                .map(row_key)
+                .collect::<Option<Vec<_>>>(),
+        ) else {
+            continue;
+        };
+        if old_keys.len() > new_keys.len() {
+            if old_keys.starts_with(&new_keys) {
+                section.items = old.items.clone();
+                section.continuation = old.continuation.clone();
+            }
+            continue;
+        }
+        let in_old: HashSet<&str> = old_keys.iter().copied().collect();
+        let in_new: HashSet<&str> = new_keys.iter().copied().collect();
+        let kept_old: Vec<&str> = old_keys
+            .iter()
+            .copied()
+            .filter(|k| in_new.contains(k))
+            .collect();
+        let kept_new: Vec<&str> = new_keys
+            .iter()
+            .copied()
+            .filter(|k| in_old.contains(k))
+            .collect();
+        if kept_old == kept_new {
+            continue;
+        }
+        let mut fresh: HashMap<&str, VecDeque<&Item>> = HashMap::new();
+        for (key, item) in new_keys.iter().zip(&section.items) {
+            fresh.entry(key).or_default().push_back(item);
+        }
+        let items: Vec<Item> = kept_old
+            .iter()
+            .filter_map(|key| fresh.get_mut(key)?.pop_front())
+            .chain(
+                new_keys
+                    .iter()
+                    .zip(&section.items)
+                    .filter(|(key, _)| !in_old.contains(*key))
+                    .map(|(_, item)| item),
+            )
+            .cloned()
+            .collect();
+        section.items = items;
+    }
+    new
+}
+
 /// The library pages a `LibraryChanged` scope makes stale.
 fn scope_covers(scope: LibraryScope, target: &BrowseTarget) -> bool {
     match scope {
@@ -332,6 +436,8 @@ struct Private {
     event_loop: Option<AbortHandle>,
     notices: u64,
     visible: Option<Route>,
+    /// The playlist the queue was last started from, without its `VL`.
+    playing_from: Option<String>,
 }
 
 fn message(error: &ClientError) -> String {
@@ -605,6 +711,10 @@ impl MusicStore {
                 entry.fetched_at = None;
                 events.push(StoreEvent::Page(target.clone()));
             }
+            // Mixes are made for the account, and never revalidate in place.
+            state
+                .pages
+                .retain(|target, entry| !is_mix(target, entry.page.as_deref()));
             state.searches.clear();
             state.related.clear();
             state.ratings.clear();
@@ -618,8 +728,37 @@ impl MusicStore {
     }
 
     /// The main pane says what it shows, so a library change refetches it.
+    /// A mix that comes back after a long time off screen is dropped here, so
+    /// its new list loads in place of the old one instead of swapping in
+    /// under the user.
     pub fn set_visible(&self, route: Route) {
-        self.inner.private.lock().visible = Some(route);
+        let (left, playing_from) = {
+            let mut private = self.inner.private.lock();
+            (
+                private.visible.replace(route.clone()),
+                private.playing_from.clone(),
+            )
+        };
+        self.inner.update(|state, events| {
+            if let Some(Route::Browse(left)) = left.filter(|left| *left != route)
+                && let Some(entry) = state.pages.get_mut(&left)
+            {
+                entry.hidden_at = Some(Instant::now());
+            }
+            let Route::Browse(target) = &route else {
+                return;
+            };
+            let Some(entry) = state.pages.get_mut(target) else {
+                return;
+            };
+            if is_mix(target, entry.page.as_deref())
+                && mix_may_refresh(target, entry, playing_from.as_deref())
+            {
+                entry.page = None;
+                events.push(StoreEvent::Page(target.clone()));
+            }
+            entry.hidden_at = None;
+        });
     }
 
     fn revalidate_visible(&self) {
@@ -670,8 +809,15 @@ impl MusicStore {
     /// Marks `target` loading when it is missing or stale; false when a
     /// fetch is already out or the cached page is fresh.
     fn claim(&self, target: &BrowseTarget) -> bool {
+        let playing_from = self.inner.private.lock().playing_from.clone();
         self.inner.update(|state, events| {
             let entry = state.pages.entry(target.clone()).or_default();
+            if is_mix(target, entry.page.as_deref())
+                && entry.page.is_some()
+                && !mix_may_refresh(target, entry, playing_from.as_deref())
+            {
+                return false;
+            }
             if entry.loading
                 || (entry.page.is_some()
                     && entry
@@ -704,6 +850,15 @@ impl MusicStore {
                 entry.loading = false;
                 match result {
                     Ok(Reply::Page(page)) => {
+                        let page = match &entry.page {
+                            Some(old)
+                                if matches!(target, BrowseTarget::Playlist(_))
+                                    && !is_mix(&target, Some(old)) =>
+                            {
+                                keep_rows(old, page)
+                            }
+                            _ => page,
+                        };
                         entry.page = Some(Arc::new(page));
                         entry.error = None;
                         entry.fetched_at = Some(Instant::now());
@@ -1021,6 +1176,10 @@ impl MusicStore {
     }
 
     pub fn play(&self, source: PlaySource, start_index: usize, shuffle: bool, radio: bool) {
+        self.inner.private.lock().playing_from = match &source {
+            PlaySource::Playlist { playlist_id, .. } => Some(bare_playlist(playlist_id).to_owned()),
+            _ => None,
+        };
         self.send(Command::Play {
             source,
             start_index,
@@ -2080,6 +2239,128 @@ mod tests {
         store.rated("t", 1, Some("refused".into()));
         assert_eq!(store.state().rating(&track), Rating::Indifferent);
         assert!(!store.state().ratings.contains_key("t"));
+    }
+
+    fn list_page(target: BrowseTarget, ids: &str) -> Page {
+        Page {
+            target,
+            header: None,
+            chips: Vec::new(),
+            sections: vec![formalmusic_api::Section {
+                title: None,
+                strapline: None,
+                layout: SectionLayout::List,
+                items: ids
+                    .split(' ')
+                    .map(|id| Item::Track(rated_track(id, None)))
+                    .collect(),
+                more: None,
+                continuation: None,
+            }],
+            continuation: None,
+        }
+    }
+
+    fn row_ids(page: &Page) -> String {
+        page.sections[0]
+            .items
+            .iter()
+            .filter_map(row_key)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_refetched_playlist_keeps_its_rows_where_they_were() {
+        let target = BrowseTarget::Playlist("PL1".into());
+        let page = |ids| list_page(target.clone(), ids);
+        let kept = |old, new| row_ids(&keep_rows(&page(old), page(new)));
+        // Only moved: the old order stays.
+        assert_eq!(kept("a b c", "c a b"), "a b c");
+        // Added and removed rows come through in place.
+        assert_eq!(kept("a b c", "a c d"), "a c d");
+        assert_eq!(kept("a b c", "z a b c"), "z a b c");
+        // Moved and added: the old order, then the new rows.
+        assert_eq!(kept("a b c", "c d a b"), "a b c d");
+
+        // A first page that matches keeps the rows loaded past it.
+        let mut loaded = page("a b c d");
+        loaded.sections[0].continuation = Some(Continuation("past d".into()));
+        let mut first = page("a b");
+        first.sections[0].continuation = Some(Continuation("past b".into()));
+        let kept = keep_rows(&loaded, first);
+        assert_eq!(row_ids(&kept), "a b c d");
+        assert_eq!(
+            kept.sections[0].continuation,
+            Some(Continuation("past d".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mix_never_changes_while_it_shows_or_plays() {
+        let store = store();
+        let mix = BrowseTarget::Playlist("VLRDTMAK5uy_supermix".into());
+        let old = Instant::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap();
+        store.inner.update(|state, _| {
+            state.pages.insert(
+                mix.clone(),
+                PageEntry {
+                    page: Some(Arc::new(list_page(mix.clone(), "a b c"))),
+                    fetched_at: Some(old),
+                    ..PageEntry::default()
+                },
+            );
+        });
+        let loading = |store: &MusicStore| store.state().pages[&mix].loading;
+
+        // On screen, however old: a library change or a retry keeps it.
+        store.set_visible(Route::Browse(mix.clone()));
+        store.open(mix.clone());
+        store.refresh(mix.clone());
+        assert!(!loading(&store));
+
+        // Off screen for a moment: still kept.
+        store.set_visible(Route::Browse(BrowseTarget::Home));
+        store.open(mix.clone());
+        assert!(!loading(&store));
+
+        // The queue playing from it keeps it however long it was away.
+        store.play(
+            PlaySource::Playlist {
+                playlist_id: "RDTMAK5uy_supermix".into(),
+                tracks: Vec::new(),
+            },
+            0,
+            false,
+            false,
+        );
+        store.inner.update(|state, _| {
+            state.pages.get_mut(&mix).unwrap().hidden_at = Some(old);
+        });
+        store.set_visible(Route::Browse(mix.clone()));
+        assert!(store.state().page(&mix).is_some());
+        assert!(!loading(&store));
+
+        // Away half an hour and not playing: coming back loads it afresh
+        // instead of swapping the list in under the user.
+        store.set_visible(Route::Browse(BrowseTarget::Home));
+        store.play(
+            PlaySource::Radio {
+                video_id: "x".into(),
+            },
+            0,
+            false,
+            true,
+        );
+        store.inner.update(|state, _| {
+            state.pages.get_mut(&mix).unwrap().hidden_at = Some(old);
+        });
+        store.set_visible(Route::Browse(mix.clone()));
+        assert!(store.state().page(&mix).is_none());
+        store.open(mix.clone());
+        assert!(loading(&store));
     }
 
     #[tokio::test]
