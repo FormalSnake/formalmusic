@@ -96,7 +96,9 @@ pub struct PageView {
     columns: (usize, usize),
 }
 
-const SEARCH_FILTERS: [(&str, Option<SearchFilter>); 8] = [
+/// The web app's filter chips, then its Library tab, which searches only
+/// what you saved.
+const SEARCH_FILTERS: [(&str, Option<SearchFilter>); 11] = [
     ("All", None),
     ("Songs", Some(SearchFilter::Songs)),
     ("Videos", Some(SearchFilter::Videos)),
@@ -108,6 +110,9 @@ const SEARCH_FILTERS: [(&str, Option<SearchFilter>); 8] = [
     ),
     ("Featured playlists", Some(SearchFilter::FeaturedPlaylists)),
     ("Podcasts", Some(SearchFilter::Podcasts)),
+    ("Episodes", Some(SearchFilter::Episodes)),
+    ("Profiles", Some(SearchFilter::Profiles)),
+    ("Library", Some(SearchFilter::Library)),
 ];
 
 impl PageView {

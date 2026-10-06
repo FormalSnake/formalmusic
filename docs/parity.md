@@ -35,8 +35,8 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Episodes for Later | `SE` playlist in sidebar | no | No entry; the playlist would browse generically |
 | Search results | `/search?q=` | yes | `desktop/src/topbar.rs`, `desktop/src/page.rs` |
 | Search suggestions and history | dropdown | yes | `desktop/src/topbar.rs` (`Suggestion::Query`, `from_history`) |
-| Search filters | Songs, Videos, Albums, Featured playlists, Community playlists, Artists, Podcasts, Episodes, Profiles | partial | UI has 7 of 9 (`desktop/src/page.rs`); Episodes and Profiles exist in `api/src/model.rs` only |
-| Search within library | library search | partial | `SearchFilter::Library` exists, no UI |
+| Search filters | Songs, Videos, Albums, Featured playlists, Community playlists, Artists, Podcasts, Episodes, Profiles | yes | `desktop/src/page.rs` (`SEARCH_FILTERS`) |
+| Search within library | library search | yes | Library chip in `desktop/src/page.rs`; `innertube/src/parse/search.rs` reads the selected tab |
 | Delete a search history entry | x on suggestion | no | ytmusicapi `remove_search_suggestions`, not in `api` |
 | Search top result card | Top result | yes | `desktop/src/shelves.rs` |
 | Album page | `/browse/MPREb...` | yes | `desktop/src/header.rs`, `desktop/src/page.rs` |
@@ -45,7 +45,7 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Playlist page | `/playlist?list=` | yes | `desktop/src/header.rs`, `desktop/src/page.rs` |
 | Podcast page | `/podcast/` | partial | Browses and lists episodes; no follow button of its own beyond `Save to library` |
 | Episode page | `/episode/` | partial | `BrowseTarget::Episode` browses, plays as `TrackKind::Episode`; no resume position, no "save for later" |
-| Channel and user pages | `get_user`, `get_channel` | partial | Reached only as artist or podcast links; no Profiles search |
+| Channel and user pages | `get_user`, `get_channel` | partial | Reached as artist or podcast links and from the Profiles search filter; no page of their own |
 | Watch page, Up next | `/watch` | yes | `desktop/src/now_playing.rs` (`QueueView`) |
 | Watch page, Lyrics | tab | yes | `desktop/src/lyrics.rs`, `extras/src/lyrics/`; word-synced, beyond the web app |
 | Watch page, Related | tab | yes | `desktop/src/now_playing.rs`, `core/src/store.rs` (`load_related`) |
@@ -155,7 +155,6 @@ are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
 Most used first.
 
 4. Playlist editing UI: rename, description, privacy, delete, reorder (all in `PlaylistEdit`). ~a day.
-8. Search filters Episodes and Profiles, plus library search. ~2 hours.
 9. Clear queue and save queue as playlist. ~2 hours.
 10. Episodes for Later entry, podcast resume position, episode save. ~a day.
 11. Share and copy link, desktop notifications on track change. ~half a day.

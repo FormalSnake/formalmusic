@@ -52,3 +52,37 @@ pub fn parse_search(
         continuation,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A library search answers with the YouTube Music and Library tabs, the
+    /// second one selected.
+    #[test]
+    fn a_library_search_reads_the_selected_tab() {
+        let shelf = |title: &str| {
+            json!({"musicShelfRenderer": {
+                "title": {"runs": [{"text": title}]},
+                "contents": [{"musicResponsiveListItemRenderer": {
+                    "flexColumns": [{"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{
+                        "text": "Song",
+                        "navigationEndpoint": {"watchEndpoint": {"videoId": "abc"}}
+                    }]}}}],
+                    "playlistItemData": {"videoId": "abc"}
+                }}]
+            }})
+        };
+        let tab = |selected: bool, title: &str| json!({"tabRenderer": {"selected": selected, "content": {"sectionListRenderer": {"contents": [shelf(title)]}}}});
+        let response = json!({"contents": {"tabbedSearchResultsRenderer": {"tabs": [
+            tab(false, "From YouTube Music"),
+            tab(true, "From your library")
+        ]}}});
+        let results = parse_search("abc", Some(SearchFilter::Library), &response).unwrap();
+        assert_eq!(
+            results.sections[0].title.as_deref(),
+            Some("From your library")
+        );
+    }
+}
