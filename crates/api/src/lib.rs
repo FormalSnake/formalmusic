@@ -328,6 +328,9 @@ pub enum Event {
     Notice {
         message: String,
     },
+    /// The daemon is exiting because the user quit FormalMusic (the tray's
+    /// Quit). Windows close instead of reconnecting or starting a new one.
+    Quit,
 }
 
 #[cfg(test)]

@@ -243,6 +243,8 @@ pub enum StoreEvent {
     Ratings,
     Notice,
     Scrobbling,
+    /// The daemon quit at the user's request; the app exits with it.
+    Quit,
 }
 
 impl StoreEvent {
@@ -689,6 +691,9 @@ impl MusicStore {
                 }
             }
             Event::Notice { message } => self.notice(message),
+            Event::Quit => {
+                let _ = self.inner.events.send(StoreEvent::Quit);
+            }
         }
     }
 

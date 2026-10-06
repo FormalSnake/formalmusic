@@ -100,6 +100,10 @@ async fn main() -> anyhow::Result<()> {
         _ = quit.notified() => {
             tracing::info!("quit from the tray, shutting down");
             daemon.playback.pause("tray quit");
+            let _ = daemon.events.send(formalmusic_api::Event::Quit);
+            // Long enough for subscribed windows to read it before the
+            // socket goes away.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
     }
     server.abort();
