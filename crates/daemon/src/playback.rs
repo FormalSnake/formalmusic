@@ -31,6 +31,9 @@ use tokio::sync::{Notify, broadcast};
 const RESTART_AFTER_MS: u64 = 3_000;
 /// Queue entries resolved before they are needed.
 const RESOLVE_AHEAD: usize = 2;
+/// A broken yt-dlp or network fails every track the same way; stop rather
+/// than skip through the whole queue.
+const MAX_FAILURES_IN_A_ROW: usize = 3;
 /// Position events go out this often while playing, plus on every play,
 /// pause, seek and track change; clients interpolate in between.
 const POSITION_EVERY: Duration = Duration::from_secs(1);
@@ -556,6 +559,15 @@ impl Playback {
             message: format!("Skipped \"{title}\": {message}"),
         });
         st.failures += 1;
+        if st.failures >= MAX_FAILURES_IN_A_ROW {
+            self.emit(Event::Notice {
+                message: format!(
+                    "Stopped after {MAX_FAILURES_IN_A_ROW} tracks in a row failed to play"
+                ),
+            });
+            self.stop(st);
+            return;
+        }
         match st.queue.next_index(false) {
             Some(index) if st.failures < st.queue.len() => {
                 st.queue.jump(index);
@@ -1069,7 +1081,10 @@ async fn queue_playlist(
         tracks.extend(fresh);
         token = more.continuation;
     }
-    let album = tracks.first().and_then(|t| t.album.as_ref()).map(|a| a.text.clone());
+    let album = tracks
+        .first()
+        .and_then(|t| t.album.as_ref())
+        .map(|a| a.text.clone());
     let title = album.filter(|album| {
         tracks
             .iter()
