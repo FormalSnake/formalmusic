@@ -44,6 +44,9 @@ pub struct VideoFormat {
 
 type Slot = Arc<OnceCell<Result<Resolved, String>>>;
 
+/// How long a refused web_music URL keeps Premium on yt-dlp's own clients.
+const FAST_PATH_PAUSE: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
 pub struct Resolver {
     inner: Arc<Inner>,
 }
@@ -61,6 +64,10 @@ struct Inner {
     gated: Mutex<HashSet<String>>,
     gated_tx: broadcast::Sender<String>,
     http: reqwest::Client,
+    /// Set once googlevideo refuses a URL: until then a Premium session asks
+    /// the web_music client alone, which needs no PO token only for as long
+    /// as YouTube says so. After a refusal yt-dlp picks its own clients.
+    fast_path_off_until: Mutex<Option<std::time::Instant>>,
 }
 
 /// `$FORMALMUSIC_YTDLP`, else `yt-dlp` from `PATH`.
@@ -104,6 +111,7 @@ impl Resolver {
                 gated: Mutex::new(HashSet::new()),
                 gated_tx: broadcast::channel(16).0,
                 http: reqwest::Client::new(),
+                fast_path_off_until: Mutex::new(None),
             }),
         }
     }
@@ -333,6 +341,8 @@ impl Inner {
                         video_id,
                         "googlevideo gates this url after the first megabyte, resolving again"
                     );
+                    *self.fast_path_off_until.lock() =
+                        Some(std::time::Instant::now() + FAST_PATH_PAUSE);
                 }
                 gated
             }
@@ -345,7 +355,11 @@ impl Inner {
 
     async fn run_once(&self, video_id: &str, cookies: Option<&str>) -> Result<Resolved, String> {
         let cookie_file = cookies.map(|header| self.cookie_file(header)).transpose()?;
-        let premium = cookies.is_some() && self.session.info().premium;
+        let fast_path_on = self
+            .fast_path_off_until
+            .lock()
+            .is_none_or(|until| std::time::Instant::now() >= until);
+        let premium = cookies.is_some() && self.session.info().premium && fast_path_on;
         let started = std::time::Instant::now();
         let answer = self
             .worker
