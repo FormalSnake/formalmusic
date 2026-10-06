@@ -341,6 +341,7 @@ mod tests {
             cookies: crate::session::cookie_header(&std::fs::read_to_string(path).unwrap()),
             page_id: None,
             profile: None,
+            info: None,
         };
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");

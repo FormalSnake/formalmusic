@@ -20,6 +20,11 @@ pub struct Stored {
     /// side did not rotate it last, so the daemon reads it again from there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ImportedFrom>,
+    /// Who the cookies belonged to when YouTube last answered, so a restart
+    /// shows the account at once instead of a signed-out moment while the
+    /// check runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info: Option<SessionInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,9 +68,12 @@ impl Session {
             })?,
             None => Client::anonymous()?,
         };
-        let info = SessionInfo {
-            signed_in: client.is_signed_in(),
-            ..SessionInfo::default()
+        let info = match stored.as_ref().and_then(|s| s.info.clone()) {
+            Some(info) if client.is_signed_in() => info,
+            _ => SessionInfo {
+                signed_in: client.is_signed_in(),
+                ..SessionInfo::default()
+            },
         };
         Ok(Self {
             path,
@@ -135,6 +143,16 @@ impl Session {
         // A sign-in that raced this request owns the state now.
         if state.generation == generation {
             state.info = info.clone();
+            if let Some(stored) = state
+                .stored
+                .as_mut()
+                .filter(|s| s.info.as_ref() != Some(&info))
+            {
+                stored.info = info.signed_in.then(|| info.clone());
+                if let Err(e) = save(&self.path, Some(stored)) {
+                    tracing::warn!("saving the session: {e}");
+                }
+            }
         }
         Ok(info)
     }
@@ -169,6 +187,7 @@ impl Session {
             cookies: cookies.trim().to_owned(),
             page_id,
             profile,
+            info: Some(info.clone()),
         };
         save(&self.path, Some(&stored))
             .map_err(|e| ApiError::BadRequest(format!("saving the session: {e}")))?;
@@ -291,6 +310,7 @@ mod tests {
                 browser: "firefox".into(),
                 profile: "/p".into(),
             }),
+            info: None,
         };
         save(&path, Some(&stored)).unwrap();
         let session = Session::load(path.clone()).unwrap();
