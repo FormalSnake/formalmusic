@@ -161,16 +161,16 @@ async fn run(
     let filter = format!(
         "fps={rate:.4},scale={side}:{side}:force_original_aspect_ratio=increase:flags=bilinear,crop={side}:{side}"
     );
-    let spawned = tokio::process::Command::new("ffmpeg")
-        .args([
-            "-v",
-            "error",
-            "-nostdin",
-            "-threads",
-            "1",
-            "-stream_loop",
-            "-1",
-        ])
+    let mut command = tokio::process::Command::new("ffmpeg");
+    command.args(["-v", "error", "-nostdin", "-threads", "1"]);
+    // Apple's covers are at most 768 px. At half that or less the scaler
+    // averages deblocking artifacts away, so the decoder skips that pass,
+    // about a sixth of its time.
+    if side <= 384 {
+        command.args(["-skip_loop_filter", "all"]);
+    }
+    let spawned = command
+        .args(["-stream_loop", "-1"])
         .args(["-ss", &format!("{start:.3}"), "-i"])
         .arg(&path)
         .args([

@@ -257,7 +257,11 @@ impl Render for NowPlaying {
                     .child(label)
             }));
         let body = match self.tab {
-            Tab::UpNext => self.queue.clone().into_any_element(),
+            // Cached: the animated cover repaints this view up to 24 times
+            // a second, and the queue has nothing new to draw for it.
+            Tab::UpNext => AnyView::from(self.queue.clone())
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
             Tab::Lyrics => self.lyrics.clone().into_any_element(),
             Tab::Related => self.related(palette, cx),
         };
