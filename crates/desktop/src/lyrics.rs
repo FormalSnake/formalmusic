@@ -8,8 +8,10 @@
 //! Rows never change size with their state, so the column's travel is the
 //! only thing that moves it.
 //!
-//! Frames are asked for only while the tab is painted and the track plays,
-//! or while a transition is still settling; paused, the pane is still.
+//! Frames are asked for every vsync only while a transition settles. While
+//! the track plays and only a word wipes, they come at `WIPE_FPS`; between
+//! words nothing is painted until the next one starts. Paused, the pane is
+//! still.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -39,6 +41,8 @@ const GLOW_DECAY: f64 = 0.6;
 /// The glow comes up over the opacity fade rather than in one frame.
 const GLOW_RISE: f64 = 0.2;
 const GLOW_QUANTUM: f32 = 0.05;
+/// A word wipes a few pixels per frame at this rate, which reads as smooth.
+const WIPE_FPS: f64 = 30.;
 
 // Layout.
 const COMFORT_OFFSET: f32 = 0.42;
@@ -371,6 +375,44 @@ impl Model {
                 || (line_active_at(line, t, self.limit[i]) && (line.background || active.is_some()))
         }));
         active
+    }
+
+    /// Seconds from `t` until the pane next looks different: zero while a
+    /// word wipes or glows, a half pixel of an interlude's note, else the
+    /// next time a row lights or a word starts. `None` once nothing will.
+    fn still_for(&self, t: f64, lit: &[bool], reduce: bool) -> Option<f64> {
+        let mut next = f64::INFINITY;
+        for (index, line) in self.lines.iter().enumerate() {
+            let chunks = &self.chunks[index];
+            let events = [Some(line.start), line.end, self.limit[index]];
+            for at in events
+                .into_iter()
+                .flatten()
+                .chain(chunks.iter().map(|c| c.0))
+            {
+                if at > t {
+                    next = next.min(at);
+                }
+            }
+            if !lit[index] || reduce {
+                continue;
+            }
+            if line.interlude {
+                if let Some(end) = line.end.filter(|end| *end > t) {
+                    let step = (end - line.start) / f64::from(NOTE_SIZE * 2.);
+                    next = next.min(t + step);
+                }
+                continue;
+            }
+            for &(start, end) in chunks {
+                let wiping = chunk_fill((start, end), t, line.estimated, false) < 1.;
+                let glowing = t < start + GLOW_RISE || (t >= end && t < end + GLOW_DECAY);
+                if t >= start && (wiping || glowing) {
+                    return Some(0.);
+                }
+            }
+        }
+        next.is_finite().then_some(next - t)
     }
 }
 
@@ -1045,6 +1087,8 @@ struct Pane {
     /// When the last running transition settles.
     settle: Instant,
     snap: bool,
+    /// The repaint asked for once the pane next changes.
+    wake: Option<Task<()>>,
     stats: Stats,
 }
 
@@ -1074,6 +1118,7 @@ impl Pane {
             hits: Vec::new(),
             settle: now,
             snap: true,
+            wake: None,
             stats: Stats::default(),
         }
     }
@@ -1155,11 +1200,23 @@ impl Pane {
         }
         self.bounds = bounds;
         let sprites = self.paint_model(&model, frame, window, cx);
+        let still = frame
+            .playing
+            .then(|| model.still_for(frame.t, &self.lit, frame.reduce))
+            .flatten();
         self.model = Some(model);
 
         let now = Instant::now();
-        if frame.playing || now < self.settle {
+        self.wake = None;
+        if now < self.settle {
             window.request_animation_frame();
+        } else if let Some(still) = still {
+            let delay = Duration::from_secs_f64(still.max(1. / WIPE_FPS));
+            let view = window.current_view();
+            self.wake = Some(window.spawn(cx, async move |cx| {
+                cx.background_executor().timer(delay).await;
+                let _ = cx.update(|_, cx| cx.notify(view));
+            }));
         }
         if crate::trace::enabled() {
             let spent = now - started;
@@ -2096,5 +2153,41 @@ mod tests {
         let model = Model::new(&lyrics(vec![timed]));
         assert!(!model.lines[0].estimated);
         assert_eq!(model.chunks[0], vec![(1.0, 1.5), (1.5, 3.0)]);
+    }
+
+    #[::core::prelude::v1::test]
+    fn the_pane_is_still_between_words_and_lines() {
+        let mut first = line(1_000, Some(6_000), "one two");
+        first.words = vec![
+            LyricWord {
+                start_ms: 1_000,
+                end_ms: 1_500,
+                text: "one".into(),
+                joins_next: false,
+            },
+            LyricWord {
+                start_ms: 1_500,
+                end_ms: 2_000,
+                text: "two".into(),
+                joins_next: false,
+            },
+        ];
+        let model = Model::new(&lyrics(vec![first, line(20_000, None, "three")]));
+        let still = |t: f64| {
+            let mut lit = Vec::new();
+            model.lit_at(t, &mut lit);
+            model.still_for(t, &lit, false)
+        };
+        assert_eq!(still(0.5), Some(0.5));
+        assert_eq!(still(1.2), Some(0.));
+        // "two" has wiped and glows steadily until the line ends.
+        assert_eq!(still(4.0), Some(2.0));
+        // The interlude's note fills over 14 s, a half pixel at a time.
+        let step = still(8.0).unwrap();
+        assert!(
+            (step - 14. / f64::from(NOTE_SIZE * 2.)).abs() < 1e-9,
+            "{step}"
+        );
+        assert_eq!(still(25.0), None);
     }
 }
