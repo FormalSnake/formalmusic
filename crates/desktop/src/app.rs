@@ -765,7 +765,9 @@ impl Render for AppRoot {
 /// playlist scrolled to its end, then the expanded player, a few seconds
 /// each, then Home paused for eight seconds and playing after that, so the
 /// memory and CPU after a browse can be read from outside on a machine
-/// nobody is clicking on. Each step goes to the trace log.
+/// nobody is clicking on. Ten seconds into playback the expanded player
+/// opens again, for the animated cover's figure. Each step goes to the
+/// trace log.
 fn tour(window: &mut Window, cx: &mut Context<AppRoot>) {
     cx.spawn_in(window, async move |this, cx| {
         let executor = cx.background_executor().clone();
@@ -815,6 +817,11 @@ fn tour(window: &mut Window, cx: &mut Context<AppRoot>) {
         let _ = this.update(cx, |this, _| {
             crate::trace::log("tour: play");
             this.store.toggle();
+        });
+        executor.timer(std::time::Duration::from_secs(10)).await;
+        let _ = this.update(cx, |this, cx| {
+            crate::trace::log("tour: expanded playing");
+            this.set_expanded(Some(Tab::UpNext), cx);
         });
     })
     .detach();

@@ -4,6 +4,7 @@ mod art;
 mod bridge;
 mod chrome;
 mod clock;
+mod cover_video;
 mod fonts;
 mod header;
 mod icons;

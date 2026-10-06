@@ -1321,6 +1321,38 @@ impl Default for DemoTransport {
 
 /// Sends a position four times a second while playing and moves on at the
 /// end of a track. Parked on `wake` while paused, so a paused demo costs nothing.
+/// Every demo album shares one animated cover: `demo/animated-cover.mp4` in
+/// the cache dir, rendered by ffmpeg the first time it is asked for. Copy a
+/// real Apple Music cover over it to measure with real footage.
+async fn demo_cover() -> Option<String> {
+    static COVER: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
+    COVER
+        .get_or_init(|| async {
+            let path = crate::paths::cache_dir()
+                .join("demo")
+                .join("animated-cover.mp4");
+            if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+                tokio::fs::create_dir_all(path.parent()?).await.ok()?;
+                let partial = path.with_extension("part.mp4");
+                let status = tokio::process::Command::new("ffmpeg")
+                    .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i"])
+                    .arg("gradients=s=768x768:r=24:d=12:speed=0.02:n=4,noise=alls=10:allf=t")
+                    .args(["-c:v", "libx264", "-b:v", "2M", "-pix_fmt", "yuv420p"])
+                    .arg(&partial)
+                    .status()
+                    .await
+                    .ok()?;
+                if !status.success() {
+                    return None;
+                }
+                tokio::fs::rename(&partial, &path).await.ok()?;
+            }
+            Some(path.to_string_lossy().into_owned())
+        })
+        .await
+        .clone()
+}
+
 async fn tick(shared: Arc<DemoShared>) {
     loop {
         let playing = shared.state.lock().player.status == Status::Playing;
@@ -1500,7 +1532,7 @@ impl Transport for DemoTransport {
                 Reply::Lyrics(Some(lyrics(&video_id, duration)))
             }
             Command::Related { .. } => Reply::Page(fixtures::related().unwrap_or_else(related)),
-            Command::AnimatedCover { .. } => Reply::AnimatedCover(None),
+            Command::AnimatedCover { .. } => Reply::AnimatedCover(demo_cover().await),
             Command::Rate { .. } => {
                 shared.emit(Event::LibraryChanged {
                     scope: LibraryScope::Likes,

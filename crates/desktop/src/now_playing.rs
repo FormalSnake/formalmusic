@@ -13,6 +13,7 @@ use gpui_kit::*;
 use crate::actions::{self, MenuContext};
 use crate::art;
 use crate::bridge::{Bridge, Topic};
+use crate::cover_video::CoverVideo;
 use crate::icons::{Icon, IconName};
 use crate::primitives::IconButton;
 use crate::shelves::{self, Env};
@@ -27,10 +28,14 @@ pub enum Tab {
 
 const PANEL_WIDTH: Pixels = px(440.);
 const QUEUE_ROW: Pixels = px(56.);
+/// The animated cover is drawn up to 640 px wide; past 24 fps the eye gains
+/// nothing and the CPU pays for every frame.
+const COVER_FPS: f64 = 24.;
 
 pub struct NowPlaying {
     store: MusicStore,
     tab: Tab,
+    cover: Entity<CoverVideo>,
     queue: Entity<QueueView>,
     lyrics: Entity<LyricsView>,
     related_scroll: ScrollHandle,
@@ -43,11 +48,14 @@ impl NowPlaying {
         let weak = cx.entity().downgrade();
         Bridge::watch(cx, Topic::NowPlaying, weak.clone().into());
         Bridge::watch(cx, Topic::Player, weak.into());
+        let cover =
+            cx.new(|cx| CoverVideo::new(store.clone(), px(400.), radius::CARD, COVER_FPS, cx));
         let queue = cx.new(|cx| QueueView::new(store.clone(), cx));
         let lyrics = cx.new(|cx| LyricsView::new(store.clone(), cx));
         let mut this = Self {
             store,
             tab,
+            cover,
             queue,
             lyrics,
             related_scroll: ScrollHandle::new(),
@@ -209,6 +217,8 @@ impl Render for NowPlaying {
         let art_size = (viewport.height - crate::theme::PLAYER_HEIGHT - px(160.))
             .min(viewport.width - PANEL_WIDTH - px(160.))
             .clamp(px(200.), px(640.));
+        self.cover
+            .update(cx, |cover, cx| cover.set_size(art_size, cx));
         let tabs = [
             (Tab::UpNext, "Up next"),
             (Tab::Lyrics, "Lyrics"),
@@ -326,18 +336,14 @@ impl Render for NowPlaying {
                             .flex_col()
                             .items_center()
                             .justify_center()
-                            .children(track.as_ref().map(|track| {
-                                div()
-                                    .rounded(radius::CARD)
-                                    .shadow(crate::primitives::overlay_shadows(&palette))
-                                    .child(art::cover(
-                                        &track.thumbnails,
-                                        art_size,
-                                        radius::CARD,
-                                        false,
-                                        &palette,
-                                    ))
-                            }))
+                            .when(track.is_some(), |el| {
+                                el.child(
+                                    div()
+                                        .rounded(radius::CARD)
+                                        .shadow(crate::primitives::overlay_shadows(&palette))
+                                        .child(self.cover.clone()),
+                                )
+                            })
                             .children(caption),
                     )
                     .child(

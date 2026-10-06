@@ -85,6 +85,16 @@ pub struct LyricsEntry {
     pub missing: bool,
 }
 
+/// An album's animated cover, by `(artist, album)`.
+#[derive(Clone, Debug, Default)]
+pub struct CoverEntry {
+    /// The local mp4.
+    pub path: Option<Arc<std::path::Path>>,
+    pub loading: bool,
+    /// Loaded, and Apple Music has none for this album.
+    pub missing: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Suggestions {
     pub query: String,
@@ -112,6 +122,7 @@ pub struct AppState {
     pub lyrics: HashMap<String, LyricsEntry>,
     /// Index into the current track's synced lyrics.
     pub lyric_line: Option<usize>,
+    pub animated_covers: HashMap<(String, String), CoverEntry>,
     /// The player's "Related" tab, keyed by its browse id.
     pub related: HashMap<String, PageEntry>,
     /// Likes made here, ahead of the pages that still carry the old rating.
@@ -190,6 +201,8 @@ pub enum StoreEvent {
     Library(LibraryScope),
     Lyrics(String),
     LyricLine,
+    /// An animated cover finished loading, whether there was one or not.
+    AnimatedCover,
     Related(String),
     Ratings,
     Notice,
@@ -1114,6 +1127,44 @@ impl MusicStore {
                 }
                 events.push(StoreEvent::Lyrics(video_id));
                 update_lyric_line(state, events);
+            });
+        });
+    }
+
+    /// Asks the daemon for the album's animated cover once. The daemon has
+    /// usually warmed it already, so this is a cache read.
+    pub fn load_animated_cover(&self, key: (String, String)) {
+        let fetch = self.inner.update(|state, _| {
+            let entry = state.animated_covers.entry(key.clone()).or_default();
+            if entry.loading || entry.path.is_some() || entry.missing {
+                return false;
+            }
+            entry.loading = true;
+            true
+        });
+        if !fetch {
+            return;
+        }
+        let store = self.clone();
+        self.spawn(async move {
+            let (artist, album) = key.clone();
+            let result = store
+                .inner
+                .transport
+                .call(Command::AnimatedCover { artist, album })
+                .await;
+            store.inner.update(|state, events| {
+                let entry = state.animated_covers.entry(key).or_default();
+                entry.loading = false;
+                match result {
+                    Ok(Reply::AnimatedCover(Some(path))) => {
+                        entry.path = Some(std::path::PathBuf::from(path).into())
+                    }
+                    // A failed lookup is not asked again this session: the
+                    // static cover is a fine answer, and the bar renders often.
+                    _ => entry.missing = true,
+                }
+                events.push(StoreEvent::AnimatedCover);
             });
         });
     }

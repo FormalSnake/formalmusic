@@ -28,3 +28,8 @@ pub fn config_dir() -> PathBuf {
 pub fn theme_file() -> PathBuf {
     config_dir().join("theme.json")
 }
+
+/// The client's own settings; `daemon.json` beside it is the daemon's.
+pub fn settings_file() -> PathBuf {
+    config_dir().join("config.json")
+}

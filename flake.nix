@@ -62,7 +62,7 @@
           default = pkgs.mkShell {
             # symphonia-adapter-libopus links the system libopus through pkg-config
             # on every platform, macOS included.
-            packages = [ pkgs.yt-dlp pkgs.socat pkgs.pkg-config pkgs.libopus ]
+            packages = [ pkgs.yt-dlp pkgs.socat pkgs.pkg-config pkgs.libopus pkgs.ffmpeg-headless ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.fontconfig pkgs.fontconfig.dev pkgs.grim ] ++ linuxLibs);
             # The binary is built outside the Nix sandbox, so the dlopened
             # libraries go on LD_LIBRARY_PATH for both linking and running.

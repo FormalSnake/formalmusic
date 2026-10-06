@@ -10,12 +10,14 @@ use std::rc::Rc;
 use formalmusic_api::{Repeat, Status};
 use formalmusic_core::MusicStore;
 use formalmusic_core::format::duration;
+use formalmusic_core::settings::Settings;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::actions::{self, MenuContext};
 use crate::art;
 use crate::bridge::{Bridge, Topic};
+use crate::cover_video::CoverVideo;
 use crate::header::{link_text, rating_buttons};
 use crate::icons::{Icon, IconName};
 use crate::primitives::IconButton;
@@ -233,10 +235,16 @@ impl Render for TimeLabel {
     }
 }
 
+/// The bar's cover is 48 px; a slow 12 fps reads as motion at that size.
+const COVER_FPS: f64 = 12.;
+const COVER_SIZE: Pixels = px(48.);
+
 pub struct PlayerBar {
     store: MusicStore,
     seek: Entity<SeekBar>,
     time: Entity<TimeLabel>,
+    /// `None` when `animatedCoverInBar` is off.
+    cover: Option<Entity<CoverVideo>>,
     volume_bounds: Rc<Cell<Bounds<Pixels>>>,
     volume_drag: bool,
     expanded: bool,
@@ -248,10 +256,17 @@ impl PlayerBar {
         Bridge::watch(cx, Topic::Player, weak.into());
         let seek = cx.new(|cx| SeekBar::new(store.clone(), cx));
         let time = cx.new(|cx| TimeLabel::new(store.clone(), cx));
+        let settings = Settings::load(&formalmusic_core::paths::settings_file());
+        let cover = settings.animated_cover_in_bar.then(|| {
+            cx.new(|cx| {
+                CoverVideo::new(store.clone(), COVER_SIZE, radius::ART_SMALL, COVER_FPS, cx)
+            })
+        });
         Self {
             store,
             seek,
             time,
+            cover,
             volume_bounds: Rc::default(),
             volume_drag: false,
             expanded: false,
@@ -261,6 +276,11 @@ impl PlayerBar {
     pub fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         if self.expanded != expanded {
             self.expanded = expanded;
+            // The expanded player plays the same cover large; the bar's
+            // copy holds still meanwhile.
+            if let Some(cover) = &self.cover {
+                cover.update(cx, |cover, cx| cover.set_paused(expanded, cx));
+            }
             cx.notify();
         }
     }
@@ -475,13 +495,17 @@ impl Render for PlayerBar {
                 .items_center()
                 .gap(spacing::X3)
                 .min_w(px(0.))
-                .child(art::cover(
-                    &track.thumbnails,
-                    px(48.),
-                    radius::ART_SMALL,
-                    false,
-                    &palette,
-                ))
+                .child(match &self.cover {
+                    Some(cover) => cover.clone().into_any_element(),
+                    None => art::cover(
+                        &track.thumbnails,
+                        COVER_SIZE,
+                        radius::ART_SMALL,
+                        false,
+                        &palette,
+                    )
+                    .into_any_element(),
+                })
                 .child(
                     div()
                         .flex()

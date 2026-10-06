@@ -17,6 +17,7 @@
   libxi,
   libxrandr,
   xdg-utils,
+  ffmpeg-headless,
   yt-dlp,
 }:
 
@@ -73,7 +74,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   # GPUI dlopens the windowing and GPU libraries at runtime. The daemon shells
   # out to yt-dlp for stream URLs, so it gets the pinned one, not whatever is
-  # on the user's PATH.
+  # on the user's PATH. The app decodes animated covers with ffmpeg and
+  # ffprobe; the headless build has the native H.264 decoder they need.
   postFixup = ''
     patchelf $out/bin/formalmusic --add-rpath ${
       lib.makeLibraryPath [
@@ -88,7 +90,12 @@ rustPlatform.buildRustPackage (finalAttrs: {
         libxrandr
       ]
     }
-    wrapProgram $out/bin/formalmusic --suffix PATH : ${lib.makeBinPath [ xdg-utils ]}
+    wrapProgram $out/bin/formalmusic --suffix PATH : ${
+      lib.makeBinPath [
+        xdg-utils
+        ffmpeg-headless
+      ]
+    }
     wrapProgram $out/bin/formalmusicd --prefix PATH : ${lib.makeBinPath [ yt-dlp ]}
   '';
 
