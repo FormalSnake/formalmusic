@@ -100,6 +100,7 @@ fn timeout_for(command: &Command) -> Duration {
         | Command::Related { .. }
         | Command::Play { .. }
         | Command::SignIn { .. }
+        | Command::ImportCookies { .. }
         | Command::Lyrics { .. } => SLOW_REQUEST_TIMEOUT,
         Command::BrowserSignIn { .. } => SIGN_IN_TIMEOUT,
         _ => REQUEST_TIMEOUT,

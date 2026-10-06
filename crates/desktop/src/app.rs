@@ -568,9 +568,10 @@ impl Render for AppRoot {
                 let store = self.store.clone();
                 self.sign_in = Some(cx.new(|cx| SignIn::new(store, close, window, cx)));
             }
-            if self.store.state().signed_in() {
+            // Asked for while signed in, it is a switch to another profile
+            // and closes itself once that worked.
+            if self.store.state().signed_in() && !self.sign_in_wanted {
                 self.sign_in = None;
-                self.sign_in_wanted = false;
             }
         } else {
             self.sign_in = None;

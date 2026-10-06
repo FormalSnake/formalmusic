@@ -1321,7 +1321,6 @@ fn session(signed_in: bool, page_id: Option<String>) -> SessionInfo {
 }
 
 struct DemoShared {
-
     state: Mutex<DemoState>,
     events: Mutex<Option<mpsc::UnboundedSender<TransportEvent>>>,
     wake: Notify,
@@ -1525,6 +1524,29 @@ impl Transport for DemoTransport {
                 Reply::Session(session)
             }
             Command::CancelSignIn => Reply::Ok,
+            Command::BrowserProfiles => Reply::BrowserProfiles(vec![ProfileBrowser {
+                browser: Browser {
+                    id: "helium".into(),
+                    name: "Helium".into(),
+                },
+                profiles: vec![
+                    BrowserProfile {
+                        path: "Default".into(),
+                        name: "Personal".into(),
+                        email: Some("demo@example.com".into()),
+                    },
+                    BrowserProfile {
+                        path: "Profile 1".into(),
+                        name: "Work".into(),
+                        email: None,
+                    },
+                ],
+            }]),
+            Command::ImportCookies { .. } => {
+                let session = session(true, None);
+                shared.state.lock().session = session.clone();
+                Reply::Session(session)
+            }
             Command::SignOut => {
                 let session = session(false, None);
                 shared.state.lock().session = session.clone();

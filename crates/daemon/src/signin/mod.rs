@@ -9,6 +9,7 @@
 mod browsers;
 mod cdp;
 mod gecko;
+mod profiles;
 
 use browsers::{Browser, Engine, Launcher};
 use formalmusic_api::{ApiError, Browsers};
@@ -73,6 +74,43 @@ impl BrowserSignIn {
                 .collect(),
             default: default.map(|b| b.id().into()),
         }
+    }
+
+    /// Browsers with profiles a session can be imported from.
+    pub fn profiles(&self) -> Vec<formalmusic_api::ProfileBrowser> {
+        let mut groups: Vec<formalmusic_api::ProfileBrowser> = Vec::new();
+        for profile in profiles::list() {
+            let entry = formalmusic_api::BrowserProfile {
+                path: profile.dir.to_string_lossy().into_owned(),
+                name: profile.name,
+                email: profile.email,
+            };
+            match groups
+                .iter_mut()
+                .find(|g| g.browser.id == profile.browser.id())
+            {
+                Some(group) => group.profiles.push(entry),
+                None => groups.push(formalmusic_api::ProfileBrowser {
+                    browser: formalmusic_api::Browser {
+                        id: profile.browser.id().into(),
+                        name: profile.browser.name().into(),
+                    },
+                    profiles: vec![entry],
+                }),
+            }
+        }
+        groups
+    }
+
+    /// The `Cookie` header of the YouTube session in one of [`Self::profiles`].
+    pub async fn import(&self, browser: &str, path: &str) -> Result<String, ApiError> {
+        let profile = profiles::list()
+            .into_iter()
+            .find(|p| p.browser.id() == browser && p.dir.as_os_str() == path)
+            .ok_or_else(|| ApiError::NotFound(format!("browser profile {browser} {path}")))?;
+        profiles::import(&profile, &self.dir.join("import"))
+            .await
+            .map_err(ApiError::BadRequest)
     }
 
     /// Closes the browser of the running sign-in, if there is one.
@@ -351,9 +389,12 @@ fn cdp_cookie(value: &serde_json::Value) -> Option<Cookie> {
     })
 }
 
-fn is_youtube(domain: &str) -> bool {
+/// Cookies a browser would send to music.youtube.com. A profile in daily use
+/// also holds large ones for other YouTube hosts, which push the header past
+/// what YouTube accepts.
+fn sent_to_music(domain: &str) -> bool {
     let host = domain.strip_prefix('.').unwrap_or(domain);
-    host == "youtube.com" || host.ends_with(".youtube.com")
+    host == "youtube.com" || host == "music.youtube.com"
 }
 
 /// Bytes a `Cookie` header can carry without quoting.
@@ -371,7 +412,7 @@ pub fn signed_in_header(cookies: &[Cookie]) -> Option<String> {
     let mut kept: Vec<&Cookie> = Vec::new();
     let mut youtube: Vec<&Cookie> = cookies
         .iter()
-        .filter(|c| is_youtube(&c.domain) && header_safe(&c.name) && header_safe(&c.value))
+        .filter(|c| sent_to_music(&c.domain) && header_safe(&c.name) && header_safe(&c.value))
         .collect();
     youtube.sort_by_key(|c| c.domain != ".youtube.com");
     for cookie in youtube {
@@ -413,6 +454,7 @@ mod tests {
             cookie(".google.com", "NID", "n"),
             cookie("notyoutube.com", "HSID", "x"),
             cookie("youtube.com.evil.test", "SSID", "x"),
+            cookie("www.youtube.com", "ST-1x", "x"),
             cookie(".youtube.com", "EMPTY", ""),
             cookie(".youtube.com", "LIST", "a,b"),
         ];
@@ -619,6 +661,57 @@ mod live {
         assert!(google, "Google's sign-in page never loaded");
         assert!(matches!(error, ApiError::BadRequest(m) if m.contains("cancelled")));
         assert!(files_under(state.path()).is_empty(), "profile left behind");
+    }
+
+    /// Lists every profile, then imports the session from the one named by
+    /// `FORMALMUSIC_LIVE_IMPORT` (`<browser>:<profile name>`), if set.
+    #[tokio::test]
+    #[ignore = "reads the real browser profiles"]
+    async fn imports_from_a_profile() {
+        let state = tempfile::tempdir().unwrap();
+        let signin = BrowserSignIn::new(state.path().join("signin"));
+        let groups = signin.profiles();
+        for group in &groups {
+            let names: Vec<_> = group
+                .profiles
+                .iter()
+                .map(|p| (&p.name, p.email.is_some()))
+                .collect();
+            eprintln!("live: {} {names:?}", group.browser.name);
+        }
+        let Ok(wanted) = std::env::var("FORMALMUSIC_LIVE_IMPORT") else {
+            return;
+        };
+        let (browser, name) = wanted.split_once(':').unwrap();
+        let profile = groups
+            .iter()
+            .filter(|g| g.browser.id == browser)
+            .flat_map(|g| &g.profiles)
+            .find(|p| p.name == name)
+            .expect("no such profile");
+        let cookies = signin.import(browser, &profile.path).await.unwrap();
+        eprintln!(
+            "live: header has {} cookies, {} bytes",
+            cookies.split("; ").count(),
+            cookies.len()
+        );
+        assert!(
+            files_under(state.path()).is_empty(),
+            "cookie file left behind"
+        );
+        let session = crate::session::Session::load(state.path().join("session.json")).unwrap();
+        let info = session.sign_in(&cookies, None).await.unwrap();
+        eprintln!(
+            "live: imported signed_in={} premium={} account={:?}",
+            info.signed_in,
+            info.premium,
+            info.account.as_ref().map(|a| &a.name)
+        );
+        assert!(info.signed_in);
+        assert_eq!(
+            files_under(state.path()),
+            vec![state.path().join("session.json")]
+        );
     }
 
     /// The Chromium store is encrypted, but its host column is not.

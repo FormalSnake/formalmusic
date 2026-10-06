@@ -33,13 +33,17 @@ pub struct Resolver {
     http: reqwest::Client,
 }
 
+/// `$FORMALMUSIC_YTDLP`, else `yt-dlp` from `PATH`.
+pub fn ytdlp_program() -> PathBuf {
+    std::env::var_os("FORMALMUSIC_YTDLP")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| "yt-dlp".into())
+}
+
 impl Resolver {
     pub fn new(cookie_dir: PathBuf, quality: Quality) -> Self {
-        let program = std::env::var_os("FORMALMUSIC_YTDLP")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| "yt-dlp".into());
         Self {
-            program,
+            program: ytdlp_program(),
             cookie_dir,
             quality,
             cache: Mutex::new(HashMap::new()),

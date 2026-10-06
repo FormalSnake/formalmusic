@@ -476,6 +476,22 @@ pub struct Browsers {
     pub default: Option<String>,
 }
 
+/// A browser and its profiles, for [`crate::Command::ImportCookies`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileBrowser {
+    pub browser: Browser,
+    pub profiles: Vec<BrowserProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserProfile {
+    /// The profile directory, which identifies it to the daemon.
+    pub path: String,
+    pub name: String,
+    /// The Google account the browser itself is signed in to, when it says.
+    pub email: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Account {
     pub name: String,

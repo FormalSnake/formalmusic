@@ -197,6 +197,10 @@ impl TopBar {
         }
         items.push(MenuItem::Separator);
         if state.signed_in() {
+            items.push(
+                MenuItem::item("Sign in again", |_, cx| crate::app::show_sign_in(cx))
+                    .icon(IconName::Account),
+            );
             let store = self.store.clone();
             items.push(
                 MenuItem::item("Sign out", move |_, _| store.sign_out()).icon(IconName::SignOut),

@@ -32,10 +32,11 @@ single app's team.
   Typed parsers per renderer, each tested against a recorded response in
   `crates/innertube/fixtures/`. Responses keep YouTube Music's own shape
   (shelves, chips, header variants), not a flattened track list.
-- **Auth:** the daemon opens the user's browser in a throwaway profile at
-  Google's sign-in page and reads the session cookies back (DevTools pipe for
-  Chromium browsers, `cookies.sqlite` for Firefox ones), or the user pastes a
-  cookie header in a fallback, with cookies stored in
+- **Auth:** the daemon copies the session out of a browser profile the user
+  picks (yt-dlp `--cookies-from-browser`), or opens the user's browser in a
+  throwaway profile at Google's sign-in page and reads the session cookies
+  back (DevTools pipe for Chromium browsers, `cookies.sqlite` for Firefox
+  ones), or the user pastes a cookie header in a fallback, with cookies stored in
   `$XDG_STATE_HOME/formalmusicd/session.json` (chmod 600). Brand accounts use the
   `X-Goog-PageId` header. The same cookies go to yt-dlp via `--cookies`, so
   Premium bitrates work.

@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use formalmusic_api::{
     Account, BrowseTarget, Browsers, Command, Continuation, EnqueuePosition, Event, Item,
     LibraryScope, LibraryTab, Lyrics, Page, PlaySource, PlayerState, PlaylistEdit, Privacy,
-    QueueState, RateTarget, Rating, Repeat, Reply, SearchFilter, SearchResults, SessionInfo,
-    Status, Suggestion, Track,
+    ProfileBrowser, QueueState, RateTarget, Rating, Repeat, Reply, SearchFilter, SearchResults,
+    SessionInfo, Status, Suggestion, Track,
 };
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use tokio::sync::{broadcast, mpsc};
@@ -1331,6 +1331,37 @@ impl MusicStore {
             Ok(Reply::Session(session)) if session.signed_in => {
                 self.apply(Event::Session(session));
                 Ok(())
+            }
+            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
+            Err(error) => Err(message(&error)),
+        }
+    }
+
+    pub async fn browser_profiles(&self) -> Result<Vec<ProfileBrowser>, String> {
+        match self.inner.transport.call(Command::BrowserProfiles).await {
+            Ok(Reply::BrowserProfiles(profiles)) => Ok(profiles),
+            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
+            Err(error) => Err(message(&error)),
+        }
+    }
+
+    /// Takes the session from a browser profile and answers with the name of
+    /// the account it belongs to.
+    pub async fn import_cookies(&self, browser: String, profile: String) -> Result<String, String> {
+        match self
+            .inner
+            .transport
+            .call(Command::ImportCookies { browser, profile })
+            .await
+        {
+            Ok(Reply::Session(session)) if session.signed_in => {
+                let name = session
+                    .account
+                    .as_ref()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default();
+                self.apply(Event::Session(session));
+                Ok(name)
             }
             Ok(_) => Err(message(&ClientError::UnexpectedReply)),
             Err(error) => Err(message(&error)),

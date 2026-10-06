@@ -92,10 +92,14 @@ is running.
 
 ## Signing in
 
-On first launch, sign in to music.youtube.com in a browser, copy the `Cookie`
-request header from the developer tools' Network tab, and paste it into the
-sign-in screen. The daemon keeps it in `$XDG_STATE_HOME/formalmusic/session.json`
-(mode 0600). Without signing in, everything that doesn't need an account works.
+On first launch, pick a browser profile that is already signed in to YouTube
+Music and the daemon copies its session with yt-dlp, which works while the
+browser is open. Otherwise it opens your browser in a throwaway profile at
+Google's sign-in page and keeps the cookies once you are in. Pasting the
+`Cookie` request header of a signed-in music.youtube.com tab still works as a
+last resort. The daemon keeps the session in
+`$XDG_STATE_HOME/formalmusic/session.json` (mode 0600). Without signing in,
+everything that doesn't need an account works.
 
 `FORMALMUSIC_DEMO=1 formalmusic` runs on recorded responses with no daemon.
 

@@ -111,6 +111,14 @@ pub enum Command {
     /// Close the browser of a running [`Command::BrowserSignIn`], which then
     /// fails.
     CancelSignIn,
+    /// Profiles of the browsers on this machine, for [`Command::ImportCookies`].
+    BrowserProfiles,
+    /// Take the YouTube session from a profile the user is already signed in
+    /// to. The browser can stay open.
+    ImportCookies {
+        browser: String,
+        profile: String,
+    },
     SignOut,
     /// Brand accounts and channels under the signed-in Google account.
     Accounts,
@@ -236,6 +244,7 @@ pub enum Reply {
     },
     Session(SessionInfo),
     Browsers(Browsers),
+    BrowserProfiles(Vec<ProfileBrowser>),
     Accounts(Vec<Account>),
     Page(Page),
     Continuation(ContinuationPage),

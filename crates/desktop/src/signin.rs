@@ -1,8 +1,9 @@
-//! Sign in through the browser: the daemon opens it in a throwaway profile at
-//! Google's sign-in page and keeps the cookies once the user is in. Pasting
-//! the Cookie header of a signed-in music.youtube.com tab stays as a fallback.
+//! Sign in to YouTube Music. In order of preference: take the session from a
+//! browser profile that is already signed in, sign in to Google in a new
+//! browser window the daemon opens, or paste the Cookie header of a signed-in
+//! music.youtube.com tab.
 
-use formalmusic_api::Browsers;
+use formalmusic_api::{Browsers, ProfileBrowser};
 use formalmusic_core::MusicStore;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -28,6 +29,9 @@ pub struct SignIn {
     /// `None` until the daemon has listed them.
     browsers: Option<Browsers>,
     browser: Option<String>,
+    profiles: Vec<ProfileBrowser>,
+    /// The profile path being imported from.
+    importing: Option<String>,
     /// The browser the user is signing in with, while the daemon waits.
     waiting: Option<SharedString>,
     cancelling: bool,
@@ -55,13 +59,18 @@ impl SignIn {
         });
         let task = store.runtime().spawn({
             let store = store.clone();
-            async move { store.browsers().await }
+            async move { (store.browsers().await, store.browser_profiles().await) }
         });
         cx.spawn(async move |this, cx| {
-            let browsers = task.await.ok().and_then(Result::ok).unwrap_or_default();
+            let (browsers, profiles) = task.await.unwrap_or_else(|_| {
+                let lost = || "Sign in stopped unexpectedly.".to_owned();
+                (Err(lost()), Err(lost()))
+            });
+            let browsers = browsers.unwrap_or_default();
             let _ = this.update(cx, |this, cx| {
                 this.browser = browsers.default.clone();
                 this.browsers = Some(browsers);
+                this.profiles = profiles.unwrap_or_default();
                 cx.notify();
             });
         })
@@ -74,6 +83,8 @@ impl SignIn {
             busy: false,
             browsers: None,
             browser: None,
+            profiles: Vec::new(),
+            importing: None,
             waiting: None,
             cancelling: false,
             on_close: std::rc::Rc::new(on_close),
@@ -91,7 +102,56 @@ impl SignIn {
             .map(|b| b.name.clone().into())
     }
 
-    fn sign_in_with_browser(&mut self, cx: &mut Context<Self>) {
+    /// Names the account that signed in, so a wrong profile is easy to spot,
+    /// and closes the screen.
+    fn signed_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self
+            .store
+            .state()
+            .session
+            .as_ref()
+            .and_then(|s| s.account.as_ref())
+            .map(|a| a.name.clone());
+        if let Some(name) = name {
+            self.store.notice(format!("Signed in as {name}"));
+        }
+        (self.on_close)(window, cx);
+    }
+
+    fn import(
+        &mut self,
+        browser: String,
+        profile: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.importing.is_some() || self.waiting.is_some() {
+            return;
+        }
+        self.importing = Some(profile.clone());
+        self.error = None;
+        cx.notify();
+        let task = self.store.runtime().spawn({
+            let store = self.store.clone();
+            async move { store.import_cookies(browser, profile).await }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task
+                .await
+                .unwrap_or_else(|_| Err("Sign in stopped unexpectedly.".into()));
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.importing = None;
+                match result {
+                    Ok(_) => this.signed_in(window, cx),
+                    Err(error) => this.error = Some(error.into()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn sign_in_with_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(name) = self.browser_name() else {
             return;
         };
@@ -104,16 +164,16 @@ impl SignIn {
             let store = self.store.clone();
             async move { store.browser_sign_in(browser).await }
         });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = task
                 .await
                 .unwrap_or_else(|_| Err("Sign in stopped unexpectedly.".into()));
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.waiting = None;
-                if let Err(error) = result
-                    && !this.cancelling
-                {
-                    this.error = Some(error.into());
+                match result {
+                    Ok(()) => this.signed_in(window, cx),
+                    Err(error) if !this.cancelling => this.error = Some(error.into()),
+                    Err(_) => {}
                 }
                 cx.notify();
             });
@@ -142,7 +202,7 @@ impl SignIn {
         cx.notify();
     }
 
-    fn submit(&mut self, cx: &mut Context<Self>) {
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let cookies = self.input.read(cx).value().trim().to_owned();
         if cookies.is_empty() {
             self.error = Some("Paste the Cookie header first.".into());
@@ -157,14 +217,15 @@ impl SignIn {
             let store = store.clone();
             async move { store.sign_in(cookies).await }
         });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = task
                 .await
                 .unwrap_or_else(|_| Err("Sign in stopped unexpectedly.".into()));
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
-                if let Err(error) = result {
-                    this.error = Some(error.into());
+                match result {
+                    Ok(()) => this.signed_in(window, cx),
+                    Err(error) => this.error = Some(error.into()),
                 }
                 cx.notify();
             });
@@ -172,65 +233,198 @@ impl SignIn {
         .detach();
     }
 
-    fn browser_picker(&self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let installed = &self.browsers.as_ref()?.installed;
-        if installed.len() < 2 {
+    /// One row per profile of every browser the user may already be signed
+    /// in to; a click takes the session from it.
+    fn profile_list(&self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.profiles.is_empty() {
             return None;
         }
-        let locked = self.waiting.is_some();
+        let locked = self.importing.is_some() || self.waiting.is_some();
+        let rows = self
+            .profiles
+            .iter()
+            .flat_map(|group| group.profiles.iter().map(move |profile| (group, profile)));
         Some(
             div()
                 .flex()
                 .flex_col()
                 .gap(spacing::X2)
-                .child(
-                    div()
-                        .text_size(type_scale::CAPTION.font_size)
-                        .text_color(palette.secondary)
-                        .child("Browser"),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .flex_wrap()
-                        .gap(spacing::X2)
-                        .children(installed.iter().map(|browser| {
-                            let selected = self.browser.as_ref() == Some(&browser.id);
-                            let id = browser.id.clone();
-                            div()
-                                .id(SharedString::from(format!("browser-{}", browser.id)))
-                                .h(px(28.))
-                                .px(spacing::X3)
-                                .flex()
-                                .items_center()
-                                .rounded(radius::CONTROL)
-                                .bg(if selected {
-                                    palette.text
-                                } else {
-                                    palette.press_wash
-                                })
-                                .text_size(type_scale::BODY.font_size)
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(if selected {
-                                    palette.canvas
-                                } else {
-                                    palette.text
-                                })
-                                .when(locked && !selected, |el| el.opacity(0.4))
-                                .when(!locked && !selected, |el| {
-                                    el.cursor_pointer()
-                                        .hover(move |style| style.bg(palette.raised_hover))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.browser = Some(id.clone());
-                                            cx.notify();
-                                        }))
-                                })
-                                .child(browser.name.clone())
-                        })),
-                )
+                .child(caption(
+                    "Use a browser you're already signed in to",
+                    palette,
+                ))
+                .child(div().flex().flex_col().gap(spacing::X1).children(rows.map(
+                    |(group, profile)| {
+                        let busy = self.importing.as_ref() == Some(&profile.path);
+                        let detail = match &profile.email {
+                            Some(email) => format!("{} \u{b7} {email}", group.browser.name),
+                            None => group.browser.name.clone(),
+                        };
+                        let (browser, path) = (group.browser.id.clone(), profile.path.clone());
+                        div()
+                            .id(SharedString::from(format!(
+                                "profile-{}-{}",
+                                group.browser.id, profile.path
+                            )))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(spacing::X3)
+                            .px(spacing::X3)
+                            .py(spacing::X2)
+                            .rounded(radius::CONTROL)
+                            .bg(palette.press_wash)
+                            .when(locked && !busy, |el| el.opacity(0.4))
+                            .when(!locked, |el| {
+                                el.cursor_pointer()
+                                    .hover(move |style| style.bg(palette.raised_hover))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.import(browser.clone(), path.clone(), window, cx)
+                                    }))
+                            })
+                            .child(
+                                Icon::new(IconName::Account)
+                                    .size(px(16.))
+                                    .color(palette.secondary),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_grow(1.)
+                                    .min_w(px(0.))
+                                    .child(
+                                        div()
+                                            .text_size(type_scale::BODY.font_size)
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(palette.text)
+                                            .truncate()
+                                            .child(profile.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(type_scale::CAPTION.font_size)
+                                            .line_height(type_scale::CAPTION.line_height)
+                                            .text_color(palette.secondary)
+                                            .truncate()
+                                            .child(detail),
+                                    ),
+                            )
+                            .when(busy, |el| {
+                                el.child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_size(type_scale::CAPTION.font_size)
+                                        .text_color(palette.secondary)
+                                        .child("Signing in\u{2026}"),
+                                )
+                            })
+                    },
+                )))
                 .into_any_element(),
         )
+    }
+
+    fn browser_picker(&self, palette: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let installed = &self.browsers.as_ref()?.installed;
+        if installed.len() < 2 {
+            return None;
+        }
+        let locked = self.waiting.is_some() || self.importing.is_some();
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap(spacing::X2)
+                .children(installed.iter().map(|browser| {
+                    let selected = self.browser.as_ref() == Some(&browser.id);
+                    let id = browser.id.clone();
+                    div()
+                        .id(SharedString::from(format!("browser-{}", browser.id)))
+                        .h(px(28.))
+                        .px(spacing::X3)
+                        .flex()
+                        .items_center()
+                        .rounded(radius::CONTROL)
+                        .bg(if selected {
+                            palette.text
+                        } else {
+                            palette.press_wash
+                        })
+                        .text_size(type_scale::BODY.font_size)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if selected {
+                            palette.canvas
+                        } else {
+                            palette.text
+                        })
+                        .when(locked && !selected, |el| el.opacity(0.4))
+                        .when(!locked && !selected, |el| {
+                            el.cursor_pointer()
+                                .hover(move |style| style.bg(palette.raised_hover))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.browser = Some(id.clone());
+                                    cx.notify();
+                                }))
+                        })
+                        .child(browser.name.clone())
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn new_window(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let no_browser = self
+            .browsers
+            .as_ref()
+            .is_some_and(|b| b.installed.is_empty());
+        let kind = if self.profiles.is_empty() {
+            ButtonKind::Primary
+        } else {
+            ButtonKind::Secondary
+        };
+        let actions = if self.waiting.is_some() {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(spacing::X2)
+                .child(
+                    Button::new("browser-sign-in", "Waiting for sign-in\u{2026}")
+                        .kind(kind)
+                        .disabled(true),
+                )
+                .child(
+                    Button::new("cancel-sign-in", "Cancel")
+                        .disabled(self.cancelling)
+                        .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                )
+        } else {
+            div().flex().flex_row().child(
+                Button::new("browser-sign-in", "Sign in with a new browser window")
+                    .kind(kind)
+                    .disabled(self.browser.is_none() || self.importing.is_some())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.sign_in_with_browser(window, cx)),
+                    ),
+            )
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::X2)
+            .when(!self.profiles.is_empty(), |el| el.child(caption("Or sign in to Google", palette)))
+            .children(self.browser_picker(palette, cx))
+            .when(no_browser, |el| {
+                el.child(div().text_size(type_scale::BODY.font_size).line_height(px(20.)).text_color(palette.secondary).child("No supported browser found. Install Firefox, Chromium or Helium, or paste cookies instead."))
+            })
+            .when_some(self.waiting.clone(), |el, name| {
+                el.child(div().text_size(type_scale::BODY.font_size).line_height(px(20.)).text_color(palette.text).child(format!("Finish signing in in the {name} window.")))
+            })
+            .child(actions)
+            .into_any_element()
     }
 }
 
@@ -244,6 +438,13 @@ impl Drop for SignIn {
                 .spawn(async move { store.cancel_sign_in().await });
         }
     }
+}
+
+fn caption(text: &'static str, palette: Palette) -> impl IntoElement {
+    div()
+        .text_size(type_scale::CAPTION.font_size)
+        .text_color(palette.secondary)
+        .child(text)
 }
 
 fn step(n: usize, text: &'static str, palette: Palette) -> impl IntoElement {
@@ -301,14 +502,11 @@ impl Render for SignIn {
         let palette = Theme::get(cx);
         let on_close = self.on_close.clone();
         let close_button = self.on_close.clone();
-        let no_browser = self
-            .browsers
-            .as_ref()
-            .is_some_and(|b| b.installed.is_empty());
+        let browse = self.on_close.clone();
         let subtitle = if self.paste {
             "Your library, likes and recommendations come from your account. The cookies stay on this computer."
         } else {
-            "Your library, likes and recommendations come from your account. Sign in with Google in a browser window. The session stays on this computer."
+            "Your library, likes and recommendations come from your account. The session stays on this computer."
         };
 
         let body = if self.paste {
@@ -329,12 +527,7 @@ impl Render for SignIn {
                         .flex()
                         .flex_col()
                         .gap(spacing::X1)
-                        .child(
-                            div()
-                                .text_size(type_scale::CAPTION.font_size)
-                                .text_color(palette.secondary)
-                                .child("Cookie header"),
-                        )
+                        .child(caption("Cookie header", palette))
                         .child(
                             div()
                                 .rounded(radius::CONTROL)
@@ -344,77 +537,39 @@ impl Render for SignIn {
                                 .child(Textarea::new(&self.input).appearance(false)),
                         ),
                 )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(spacing::X2)
+                        .child(
+                            Button::new(
+                                "sign-in-button",
+                                if self.busy {
+                                    "Signing in\u{2026}"
+                                } else {
+                                    "Sign in"
+                                },
+                            )
+                            .kind(ButtonKind::Primary)
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
+                        )
+                        .child(
+                            Button::new("browse-signed-out", "Browse without signing in")
+                                .on_click(move |_, window, cx| on_close(window, cx)),
+                        ),
+                )
                 .into_any_element()
         } else {
             div()
                 .flex()
                 .flex_col()
                 .gap(spacing::X5)
-                .children(self.browser_picker(palette, cx))
-                .when(no_browser, |el| {
-                    el.child(div().text_size(type_scale::BODY.font_size).line_height(px(20.)).text_color(palette.secondary).child("No supported browser found. Install Firefox, Chromium or Helium, or paste cookies instead."))
-                })
-                .when_some(self.waiting.clone(), |el, name| {
-                    el.child(div().text_size(type_scale::BODY.font_size).line_height(px(20.)).text_color(palette.text).child(format!("Finish signing in in the {name} window.")))
-                })
+                .children(self.profile_list(palette, cx))
+                .child(self.new_window(palette, cx))
                 .into_any_element()
-        };
-
-        let actions = if self.paste {
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(spacing::X2)
-                .child(
-                    Button::new(
-                        "sign-in-button",
-                        if self.busy {
-                            "Signing in\u{2026}"
-                        } else {
-                            "Sign in"
-                        },
-                    )
-                    .kind(ButtonKind::Primary)
-                    .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
-                )
-                .child(
-                    Button::new("browse-signed-out", "Browse without signing in")
-                        .on_click(move |_, window, cx| on_close(window, cx)),
-                )
-        } else if self.waiting.is_some() {
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(spacing::X2)
-                .child(
-                    Button::new("browser-sign-in", "Waiting for sign-in\u{2026}")
-                        .kind(ButtonKind::Primary)
-                        .disabled(true),
-                )
-                .child(
-                    Button::new("cancel-sign-in", "Cancel")
-                        .disabled(self.cancelling)
-                        .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
-                )
-        } else {
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(spacing::X2)
-                .child(
-                    Button::new("browser-sign-in", "Sign in with your browser")
-                        .kind(ButtonKind::Primary)
-                        .disabled(self.browser.is_none())
-                        .on_click(cx.listener(|this, _, _, cx| this.sign_in_with_browser(cx))),
-                )
-                .child(
-                    Button::new("browse-signed-out", "Browse without signing in")
-                        .on_click(move |_, window, cx| on_close(window, cx)),
-                )
         };
 
         let paste = self.paste;
@@ -428,11 +583,14 @@ impl Render for SignIn {
             .bg(palette.canvas)
             .child(
                 div()
+                    .id("sign-in-card")
                     .flex()
                     .flex_col()
                     .gap(spacing::X5)
                     .w(px(520.))
                     .max_w_full()
+                    .max_h_full()
+                    .overflow_y_scroll()
                     .p(spacing::X8)
                     .rounded(radius::CARD)
                     .bg(palette.sidebar)
@@ -505,7 +663,6 @@ impl Render for SignIn {
                                 ),
                         )
                     })
-                    .child(actions)
                     .child(if paste {
                         text_link(
                             "use-browser",
@@ -514,12 +671,25 @@ impl Render for SignIn {
                             cx.listener(|this, _, window, cx| this.show_paste(false, window, cx)),
                         )
                     } else {
-                        text_link(
-                            "paste-cookies",
-                            "Paste cookies instead",
-                            palette,
-                            cx.listener(|this, _, window, cx| this.show_paste(true, window, cx)),
-                        )
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(spacing::X4)
+                            .child(text_link(
+                                "paste-cookies",
+                                "Paste cookies instead",
+                                palette,
+                                cx.listener(|this, _, window, cx| {
+                                    this.show_paste(true, window, cx)
+                                }),
+                            ))
+                            .child(text_link(
+                                "browse-signed-out",
+                                "Browse without signing in",
+                                palette,
+                                move |_, window, cx| browse(window, cx),
+                            ))
+                            .into_any_element()
                     }),
             )
     }
