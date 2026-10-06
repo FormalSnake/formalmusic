@@ -10,7 +10,7 @@ mod client;
 mod endpoints;
 pub mod parse;
 
-pub use client::{Client, NextResult, PlaybackTracking};
+pub use client::{Client, NextResult, PlaybackTracking, client_playback_nonce};
 pub use formalmusic_api as api;
 
 pub type Result<T> = std::result::Result<T, api::ApiError>;

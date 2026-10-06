@@ -4,17 +4,13 @@
 //! flushes at `videostatsScheduledFlushWalltimeSeconds` (10, 20 and 30 s) and
 //! then every `videostatsDefaultFlushIntervalSeconds` (40 s).
 
-use formalmusic_innertube::PlaybackTracking;
-use sha1::{Digest, Sha1};
-use std::hash::{BuildHasher, RandomState};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use formalmusic_innertube::{PlaybackTracking, client_playback_nonce};
+use std::time::Instant;
 
 const SCHEDULED_FLUSH_MS: [u64; 3] = [10_000, 20_000, 30_000];
 const FLUSH_INTERVAL_MS: u64 = 40_000;
 /// Position steps larger than this are seeks, not playback.
 const MAX_STEP_MS: u64 = 2_000;
-const ORIGIN: &str = "https://music.youtube.com";
-const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
 /// One play of one track, from start to the moment it stops being current.
 #[derive(Debug)]
@@ -123,72 +119,6 @@ fn secs(ms: u64) -> String {
     format!("{}.{:03}", ms / 1000, ms % 1000)
 }
 
-/// The 16-character client playback nonce the web player makes up per play.
-fn client_playback_nonce() -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let random = RandomState::new();
-    (0..16u64)
-        .map(|i| ALPHABET[(random.hash_one(i) & 63) as usize] as char)
-        .collect()
-}
-
-/// Sends the pings with the headers the player response asks for
-/// (`USER_AUTH`, `PLUS_PAGE_ID`): the session cookies, a SAPISIDHASH and the
-/// brand account.
-#[derive(Clone)]
-pub struct Reporter {
-    http: reqwest::Client,
-}
-
-impl Reporter {
-    pub fn new() -> anyhow::Result<Self> {
-        Ok(Self {
-            http: reqwest::Client::builder().user_agent(USER_AGENT).build()?,
-        })
-    }
-
-    pub async fn ping(&self, url: &str, cookies: &str, page_id: Option<&str>) {
-        let mut request = self
-            .http
-            .get(url)
-            .header(reqwest::header::COOKIE, cookies)
-            .header("Origin", ORIGIN)
-            .header("Referer", format!("{ORIGIN}/"))
-            .header("X-Goog-AuthUser", "0");
-        if let Some(auth) = authorization(cookies) {
-            request = request.header(reqwest::header::AUTHORIZATION, auth);
-        }
-        if let Some(page_id) = page_id {
-            request = request.header("X-Goog-PageId", page_id);
-        }
-        match request.send().await {
-            Ok(response) if response.status().is_success() => {
-                tracing::debug!(
-                    url = url.split('?').next().unwrap_or(url),
-                    "reported playback"
-                )
-            }
-            Ok(response) => tracing::warn!(status = %response.status(), "playback report refused"),
-            Err(e) => tracing::warn!("playback report failed: {e}"),
-        }
-    }
-}
-
-/// `SAPISIDHASH <ts>_<sha1("<ts> <SAPISID> <origin>")>`.
-fn authorization(cookies: &str) -> Option<String> {
-    let value = |name: &str| {
-        cookies.split(';').find_map(|pair| {
-            let (key, value) = pair.trim().split_once('=')?;
-            (key == name).then_some(value)
-        })
-    };
-    let sapisid = value("SAPISID").or_else(|| value("__Secure-3PAPISID"))?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let digest = Sha1::digest(format!("{now} {sapisid} {ORIGIN}").as_bytes());
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    Some(format!("SAPISIDHASH {now}_{hex}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,15 +185,5 @@ mod tests {
                 assert_eq!(param(&url, "cpn"), param(&start, "cpn"));
             }
         }
-    }
-
-    #[test]
-    fn hash_needs_sapisid() {
-        assert!(authorization("SID=1").is_none());
-        assert!(
-            authorization("SID=1; SAPISID=abc")
-                .unwrap()
-                .starts_with("SAPISIDHASH ")
-        );
     }
 }

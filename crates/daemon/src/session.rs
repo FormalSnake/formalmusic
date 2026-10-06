@@ -75,14 +75,6 @@ impl Session {
         self.state.read().info.clone()
     }
 
-    pub fn page_id(&self) -> Option<String> {
-        self.state
-            .read()
-            .stored
-            .as_ref()
-            .and_then(|s| s.page_id.clone())
-    }
-
     pub fn cookies(&self) -> Option<String> {
         self.state.read().stored.as_ref().map(|s| s.cookies.clone())
     }

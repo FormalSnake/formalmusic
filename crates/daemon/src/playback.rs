@@ -11,7 +11,7 @@ use crate::config::{Config, Paths, write_private};
 use crate::queue::{Queue, RADIO_LOW_WATER, Removed};
 use crate::session::Session;
 use crate::streams::Resolver;
-use crate::tracking::{Reporter, Watch};
+use crate::tracking::Watch;
 use formalmusic_api::{
     ApiError, Continuation, EnqueuePosition, Event, Item, PlaySource, PlayerState, QueueState,
     Repeat, Status, Track,
@@ -46,7 +46,6 @@ pub struct Playback {
     resolver: Resolver,
     session: Arc<Session>,
     config: Config,
-    reporter: Reporter,
     events: broadcast::Sender<Event>,
     /// Seek targets, for the MPRIS `Seeked` signal.
     seeked: broadcast::Sender<u64>,
@@ -166,7 +165,6 @@ impl Playback {
             resolver: Resolver::new(paths.state.clone(), config.preferred_quality),
             session,
             config,
-            reporter: Reporter::new()?,
             events,
             seeked,
             tracking: Mutex::new(HashMap::new()),
@@ -914,13 +912,16 @@ impl Playback {
     }
 
     fn send_report(&self, url: String) {
-        let Some(cookies) = self.session.cookies() else {
-            return;
-        };
-        let page_id = self.session.page_id();
-        let reporter = self.reporter.clone();
-        self.rt
-            .spawn(async move { reporter.ping(&url, &cookies, page_id.as_deref()).await });
+        let client = self.session.client();
+        self.rt.spawn(async move {
+            match client.report_tracking(&url).await {
+                Ok(()) => tracing::debug!(
+                    url = url.split('?').next().unwrap_or(&url),
+                    "reported playback"
+                ),
+                Err(e) => tracing::warn!("playback report failed: {e}"),
+            }
+        });
     }
 
     // Persistence

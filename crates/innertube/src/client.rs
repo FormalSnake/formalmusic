@@ -399,15 +399,13 @@ impl Client {
         parse::player::parse_player(video_id, &json)
     }
 
-    /// Pings the playback URL the way the web app does when a track starts,
-    /// which adds it to the account's History.
-    pub async fn report_playback(&self, tracking: &PlaybackTracking) -> Result<()> {
+    /// Sends one of the playback-tracking pings, a [`PlaybackTracking`] URL
+    /// with the caller's `cpn`, `cmt`, `st`/`et` and friends appended, with
+    /// the headers the player response asks for (`USER_AUTH`, `VISITOR_ID`,
+    /// `PLUS_PAGE_ID`). The playback ping is what lands a play in History.
+    pub async fn report_tracking(&self, url: &str) -> Result<()> {
         let config = self.config().await;
-        let request = self.inner.http.get(&tracking.playback_url).query(&[
-            ("ver", "2"),
-            ("c", "WEB_REMIX"),
-            ("cpn", &client_playback_nonce()),
-        ]);
+        let request = self.inner.http.get(url);
         let response = self
             .with_session_headers(request, &config)
             .send()
@@ -720,7 +718,8 @@ fn edit_action(edit: &PlaylistEdit) -> Value {
 }
 
 /// The 16-character client playback nonce the web player makes up per play.
-fn client_playback_nonce() -> String {
+/// Every tracking ping of one play carries the same one.
+pub fn client_playback_nonce() -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let random = RandomState::new();
     (0..16u64)
