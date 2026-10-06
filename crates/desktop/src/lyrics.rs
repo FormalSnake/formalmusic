@@ -36,6 +36,8 @@ const LINE_ASSUMED: f64 = 7.0;
 const CHUNK_FALLBACK: f64 = 0.35;
 const WIPE_MAX: f64 = 1.2;
 const GLOW_DECAY: f64 = 0.6;
+/// The glow comes up over the opacity fade rather than in one frame.
+const GLOW_RISE: f64 = 0.2;
 const GLOW_QUANTUM: f32 = 0.05;
 
 // Layout.
@@ -56,7 +58,6 @@ const SCALE_LIT: f32 = 1.0;
 const SCALE_LIT_SECONDARY: f32 = 0.9;
 const DEPTH_OPACITY: [f32; 4] = [1.0, 0.7, 0.45, 0.25];
 const BACKGROUND_ALPHA: f32 = 0.7;
-const ARRIVAL_FROM: f32 = 0.68;
 const BLUR_MAX_PX: f32 = 6.0;
 const BLUR_QUANTUM_PX: f32 = 0.5;
 const INTERLUDE_BASE_ALPHA: f32 = 0.35;
@@ -395,10 +396,11 @@ fn chunk_glow((start, end): (f64, f64), t: f64) -> f32 {
     if t < start {
         return 0.;
     }
+    let rise = (t - start) / GLOW_RISE;
     let glow = if t <= end {
-        1.
+        rise
     } else {
-        1. - (t - end) / GLOW_DECAY
+        rise.min(1. - (t - end) / GLOW_DECAY)
     };
     ((glow.clamp(0., 1.) as f32) / GLOW_QUANTUM).round() * GLOW_QUANTUM
 }
@@ -866,6 +868,15 @@ struct RowMotion {
     arrival: Tween,
 }
 
+/// Where a row's motion is headed this frame.
+#[derive(Clone, Copy)]
+struct RowTarget {
+    lit: bool,
+    scale: f32,
+    depth: f32,
+    blur: f32,
+}
+
 impl RowMotion {
     fn new(now: Instant) -> Self {
         Self {
@@ -877,6 +888,62 @@ impl RowMotion {
             arrival: Tween::at(1., now),
         }
     }
+
+    fn settled(target: RowTarget, now: Instant) -> Self {
+        Self {
+            lit: target.lit,
+            scale: Tween::at(target.scale, now),
+            depth: Tween::at(target.depth, now),
+            blur: Tween::at(target.blur, now),
+            ink: Tween::at(if target.lit { 1. } else { 0. }, now),
+            arrival: Tween::at(1., now),
+        }
+    }
+
+    /// Steps every tween toward `target` and returns when they all land.
+    fn follow(
+        &mut self,
+        target: RowTarget,
+        timed: bool,
+        motion: &impl Fn(Motion) -> Motion,
+        now: Instant,
+    ) -> Instant {
+        let mut settle = now;
+        if target.lit != self.lit {
+            self.lit = target.lit;
+            if target.lit {
+                // The arrival fade takes over the depth ramp from whatever
+                // opacity the row shows now. Restarting it at a fixed floor
+                // (0.68 in both references) would dim a near row in one
+                // frame before fading it back up.
+                let shown = self.opacity(now);
+                self.depth = Tween::at(1., now);
+                settle = self.arrival.restart(shown, 1., motion(ARRIVAL), now);
+            }
+        }
+        // Timed rows light at once and wipe from there, their first chunk
+        // still unsung; a row with no timing crossfades its ink both ways.
+        let ink = if target.lit { 1. } else { 0. };
+        if target.lit && timed {
+            self.ink = Tween::at(1., now);
+        } else {
+            settle = settle.max(self.ink.toward(ink, motion(INK), now));
+        }
+        settle = settle.max(self.scale.toward(target.scale, motion(SCALE_ANIM), now));
+        settle = settle.max(self.depth.toward(target.depth, motion(FADE), now));
+        settle.max(self.blur.toward(target.blur, motion(FADE), now))
+    }
+
+    fn opacity(&self, now: Instant) -> f32 {
+        self.arrival.value(now) * self.depth.value(now)
+    }
+}
+
+/// How far a row's blur copies share their alpha out. Zero at the 1px step
+/// where the copies start, so the stack covers exactly what the single sharp
+/// copy below it did and a row easing in or out of blur never steps.
+fn spread_for(blur: f32) -> f32 {
+    ((blur - 1.) / 0.5).clamp(0., 1.)
 }
 
 fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
@@ -1165,39 +1232,17 @@ impl Pane {
             } else {
                 blur_for(distance, span)
             };
+            let target = RowTarget {
+                lit: is_lit,
+                scale,
+                depth,
+                blur,
+            };
             if self.snap {
-                *state = RowMotion {
-                    lit: is_lit,
-                    scale: Tween::at(scale, now),
-                    depth: Tween::at(depth, now),
-                    blur: Tween::at(blur, now),
-                    ink: Tween::at(if is_lit { 1. } else { 0. }, now),
-                    arrival: Tween::at(1., now),
-                };
+                *state = RowMotion::settled(target, now);
                 continue;
             }
-            if is_lit != state.lit {
-                state.lit = is_lit;
-                if is_lit {
-                    settle = settle.max(state.arrival.restart(
-                        ARRIVAL_FROM,
-                        1.,
-                        motion(ARRIVAL),
-                        now,
-                    ));
-                }
-            }
-            // Timed rows light at once and wipe from there; a row with no
-            // timing crossfades its ink both ways.
-            let ink = if is_lit { 1. } else { 0. };
-            if is_lit && !line.words.is_empty() {
-                state.ink = Tween::at(1., now);
-            } else {
-                settle = settle.max(state.ink.toward(ink, motion(INK), now));
-            }
-            settle = settle.max(state.scale.toward(scale, motion(SCALE_ANIM), now));
-            settle = settle.max(state.depth.toward(depth, motion(FADE), now));
-            settle = settle.max(state.blur.toward(blur, motion(FADE), now));
+            settle = settle.max(state.follow(target, !line.words.is_empty(), &motion, now));
         }
 
         // The column: the anchor's top at the comfort offset while following,
@@ -1308,7 +1353,7 @@ impl Pane {
             } else {
                 &cheap
             };
-            painter.spread = (blur / 1.5).clamp(0., 1.);
+            painter.spread = spread_for(blur);
             if line.interlude {
                 let progress = if lit[index] {
                     let end = line.end.unwrap_or(line.start);
@@ -1917,9 +1962,75 @@ mod tests {
     #[::core::prelude::v1::test]
     fn glow_holds_through_the_chunk_then_decays() {
         assert_eq!(chunk_glow((1.0, 2.0), 0.5), 0.);
+        assert_eq!(chunk_glow((1.0, 2.0), 1.1), 0.5);
         assert_eq!(chunk_glow((1.0, 2.0), 1.5), 1.);
         assert!((chunk_glow((1.0, 2.0), 2.3) - 0.5).abs() < 1e-6);
         assert_eq!(chunk_glow((1.0, 2.0), 3.0), 0.);
+    }
+
+    /// What the first glyph of a row paints at its centre, as brightness over
+    /// a black pane: the row's opacity, the coverage of its blur copies where
+    /// they all overlap, and its ink (unsung at the first chunk's start).
+    fn first_glyph(state: &RowMotion, timed: bool, now: Instant) -> f32 {
+        let (unsung, sung) = (hsla(0., 0., 0.6, 1.), hsla(0., 0., 1., 1.));
+        let ink = state.ink.value(now);
+        let color = if timed {
+            unsung
+        } else {
+            mix(unsung, sung, ink)
+        };
+        let blur = state.blur.value(now);
+        let copies = if blur < 1. { 1 } else { taps(0.).len() };
+        let tap = copy(fade(color, state.opacity(now)), copies, spread_for(blur));
+        let coverage = 1. - (1. - tap.a).powi(copies as i32);
+        coverage * color.to_rgb().r
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_row_lighting_up_never_steps_its_ink() {
+        let motion = |m: Motion| m;
+        let unlit = RowTarget {
+            lit: false,
+            scale: SCALE_UNLIT,
+            depth: depth_opacity(1., 6.),
+            blur: blur_for(1., 6.),
+        };
+        let lit = RowTarget {
+            lit: true,
+            scale: SCALE_LIT,
+            depth: 1.,
+            blur: 0.,
+        };
+        assert!(unlit.blur >= 1., "the case under test starts blurred");
+        for timed in [true, false] {
+            let start = Instant::now();
+            let mut state = RowMotion::settled(unlit, start);
+            let mut last = first_glyph(&state, timed, start);
+            for step in 1..=125 {
+                let now = start + Duration::from_millis(step * 4);
+                let target = if step > 25 { lit } else { unlit };
+                state.follow(target, timed, &motion, now);
+                let painted = first_glyph(&state, timed, now);
+                assert!(
+                    painted >= last - 1e-4 && painted - last < 0.03,
+                    "timed {timed}: {last} to {painted} at {} ms",
+                    step * 4
+                );
+                last = painted;
+            }
+            assert!((last - if timed { 0.6 } else { 1. }).abs() < 1e-3);
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn glow_comes_up_without_a_step() {
+        let mut last = 0.;
+        for ms in 0..=400 {
+            let glow = chunk_glow((1.0, 2.0), 1.0 + ms as f64 / 1000.);
+            assert!(glow >= last && glow - last <= GLOW_QUANTUM + 1e-6);
+            last = glow;
+        }
+        assert_eq!(last, 1.);
     }
 
     #[::core::prelude::v1::test]

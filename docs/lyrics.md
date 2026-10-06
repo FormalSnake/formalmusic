@@ -388,7 +388,7 @@ Replace the `list(...)` in `LyricsView` with one custom-painted column:
 | --- | --- | --- |
 | Row scale 0.85 / 0.9 / 1.0 about left, right or centre | Paint glyphs at `font_size * s` and position `origin + (glyph_pos - origin) * s`, origin = row's transform origin. Layout stays at s = 1. Quantise animated `s` so `font_size * s` lands on 0.25px steps to bound glyph-atlas entries during the 350ms animation | Exact geometry. Hinting differs slightly per size; text may shimmer a little mid-animation |
 | Scale curve (0.42, 1.67, 0.21, 0.9), 350ms, overshoot | Per-row `(from, to, started)` stepped with `motion::cubic_bezier`; restart from current value on change | Exact |
-| Opacity ramp, background 0.7, arrival 0.68 to 1, edge fade | Multiply into each glyph's `Hsla.a`; arrival and ramp changes tweened with `cubic_bezier` (0.34, 0.8, 0.34, 1) 200ms and (0.34, 0.88, 0.34, 1) 300ms | Exact |
+| Opacity ramp, background 0.7, arrival fade, edge fade | Multiply into each glyph's `Hsla.a`; arrival and ramp changes tweened with `cubic_bezier` (0.34, 0.8, 0.34, 1) 200ms and (0.34, 0.88, 0.34, 1) 300ms. The arrival starts from the opacity the row shows when it lights, not from 0.68: both references restart at 0.68 and so dim a near row for one frame before fading it up, which reads as the line darkening as it lights. The word glow rises over 200ms instead of switching on, and blur copies share their alpha out only above 1px, so a row easing out of blur never steps | Deliberate deviation |
 | Unlit/lit ink colour crossfade 300ms | Lerp `secondary` to `text` per glyph | Exact |
 | Word wipe with soft edge | Three clip regions per chunk text-row, painted with the same glyphs: left of `edge_lo` in sung ink, right of `edge_hi` in unsung ink, and the band between split into 8 vertical strips, each clipped with `with_content_mask` and painted in `lerp(unsung, sung, strip_centre)`. Regions do not overlap, so alpha stays correct | Band quantised to 8 steps over 17.6% of the chunk (about 2 to 4px per step at 22px); invisible at normal reading distance |
 | Wrapped chunk wipe | Same per band, using `row_wipe` progress (FS-M:1204-1219) | Exact |
@@ -437,7 +437,6 @@ const SCALE_LIT: f32 = 1.0;
 const SCALE_LIT_SECONDARY: f32 = 0.9;        // background lines, interludes
 const DEPTH_OPACITY: [f32; 4] = [1.0, 0.7, 0.45, 0.25];
 const BACKGROUND_ALPHA: f32 = 0.7;
-const ARRIVAL_FROM: f32 = 0.68;
 const BLUR_MAX_PX: f32 = 6.0;
 const BLUR_QUANTUM_PX: f32 = 0.5;
 const INTERLUDE_BASE_ALPHA: f32 = 0.35;
