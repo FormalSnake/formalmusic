@@ -152,7 +152,7 @@ impl AppState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum StoreEvent {
     Connection,
     Session,

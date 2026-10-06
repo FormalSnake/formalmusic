@@ -4,5 +4,21 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+frame-overlay = ["gpui-kit/profiler"]
+screenshot = ["gpui-kit/test-support"]
+
 [dependencies]
 formalmusic-api.workspace = true
+formalmusic-core.workspace = true
+gpui-kit.workspace = true
+gpui-base.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

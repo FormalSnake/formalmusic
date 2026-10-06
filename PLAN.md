@@ -133,8 +133,9 @@ package from `claude-code-nix`, and starts headless Claude Code with
    with what changed and the check output, and merges it into main with
    `gh pr merge` once step 3 passes. A run that fails step 3 leaves its PR
    open as a draft for you instead. Then `just ui formalmusic` in
-   `~/.config/nix`, a rebuild of g815, a push, and the e1504g one-shot rebuild
-   from that repo's CLAUDE.md.
+   `~/.config/nix`, a rebuild of g815, a push, then e1504g's closure built on
+   g815 and pushed over with `nixos-rebuild switch --flake .#e1504g
+   --target-host e1504g --sudo`. Nothing ever builds on e1504g itself.
 6. **Wait for offline hosts:** if the e1504g is unreachable, it retries over
    Tailscale every 30 minutes for up to 48 hours, then gives up and says so.
 7. **Report:** sends a desktop notification on g815 with one line per host
