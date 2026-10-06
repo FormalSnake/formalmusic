@@ -253,6 +253,13 @@ pub enum Command {
     },
     PlayerState,
     QueueState,
+
+    // Desktop
+    /// Show or hide the tray icon, which the daemon owns so it outlives the
+    /// window. Linux only; elsewhere the daemon takes it and does nothing.
+    SetTray {
+        shown: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

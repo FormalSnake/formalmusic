@@ -994,6 +994,10 @@ impl MusicStore {
         self.send(Command::Next);
     }
 
+    pub fn set_tray(&self, shown: bool) {
+        self.send(Command::SetTray { shown });
+    }
+
     pub fn previous(&self) {
         self.send(Command::Previous);
     }

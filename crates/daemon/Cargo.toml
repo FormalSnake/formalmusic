@@ -25,6 +25,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.9"
+ksni = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

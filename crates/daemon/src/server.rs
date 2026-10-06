@@ -240,6 +240,7 @@ mod tests {
         let paths = Paths {
             state: dir.path().join("state"),
             config: dir.path().join("daemon.json"),
+            app_settings: dir.path().join("config.json"),
         };
         let player = Player::with_output(OutputKind::Null {
             sample_rate: 48_000,

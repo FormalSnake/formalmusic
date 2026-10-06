@@ -16,6 +16,8 @@ mod session;
 mod signin;
 mod streams;
 mod tracking;
+#[cfg(target_os = "linux")]
+mod tray;
 
 use anyhow::Context;
 use config::{Config, Paths};
@@ -69,6 +71,16 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
+    // The tray's Quit: pause and exit 0, which `Restart=on-failure` leaves
+    // stopped.
+    let quit = std::sync::Arc::new(tokio::sync::Notify::new());
+    #[cfg(target_os = "linux")]
+    tokio::spawn(tray::run(
+        daemon.playback.clone(),
+        daemon.events.subscribe(),
+        daemon.tray.subscribe(),
+        quit.clone(),
+    ));
     let server = tokio::spawn(server::serve(listener, daemon.clone()));
 
     let mut term = signal(SignalKind::terminate())?;
@@ -76,6 +88,10 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         _ = term.recv() => tracing::info!("SIGTERM, shutting down"),
         _ = int.recv() => tracing::info!("SIGINT, shutting down"),
+        _ = quit.notified() => {
+            tracing::info!("quit from the tray, shutting down");
+            daemon.playback.pause();
+        }
     }
     server.abort();
     daemon.playback.save_now();

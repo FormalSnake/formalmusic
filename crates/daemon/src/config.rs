@@ -1,5 +1,6 @@
 //! `daemon.json` and the directories the daemon keeps its files in. The
-//! daemon only reads the config; Home Manager or the user owns it.
+//! daemon only reads the config; Home Manager or the user owns it. It also
+//! reads the one key of the app's `config.json` that it acts on.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -57,11 +58,36 @@ impl Config {
     }
 }
 
+/// The keys of the app's `config.json` the daemon acts on.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AppSettings {
+    pub show_in_tray: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self { show_in_tray: true }
+    }
+}
+
+impl AppSettings {
+    /// Defaults when the file is missing or broken; the app warns about it.
+    pub fn load(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Paths {
     /// `$XDG_STATE_HOME/formalmusic`: session, cookies, queue.
     pub state: PathBuf,
     pub config: PathBuf,
+    /// The app's `config.json`, beside `daemon.json`.
+    pub app_settings: PathBuf,
 }
 
 impl Paths {
@@ -70,11 +96,14 @@ impl Paths {
             .or_else(dirs::data_local_dir)
             .unwrap_or_else(std::env::temp_dir)
             .join("formalmusic");
-        let config = dirs::config_dir()
+        let dir = dirs::config_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("formalmusic")
-            .join("daemon.json");
-        Self { state, config }
+            .join("formalmusic");
+        Self {
+            state,
+            config: dir.join("daemon.json"),
+            app_settings: dir.join("config.json"),
+        }
     }
 
     pub fn session(&self) -> PathBuf {

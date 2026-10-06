@@ -84,20 +84,31 @@ impl Settings {
         }
     }
 
-    fn set_keep_playing(&mut self, on: bool, cx: &mut Context<Self>) {
+    /// Writes one switch to `config.json`; `apply` records it here once it
+    /// is saved.
+    fn set_client(
+        &mut self,
+        key: &str,
+        on: bool,
+        apply: fn(&mut ClientSettings, bool),
+        cx: &mut Context<Self>,
+    ) -> bool {
         let path = formalmusic_core::paths::settings_file();
-        match ClientSettings::write(&path, "keepPlayingWhenClosed", on.into()) {
+        let saved = ClientSettings::write(&path, key, on.into());
+        match &saved {
             Ok(()) => {
-                self.client.keep_playing_when_closed = on;
+                apply(&mut self.client, on);
                 self.client_error = None;
             }
             Err(error) => self.client_error = Some(format!("Unable to save: {error}").into()),
         }
         cx.notify();
+        saved.is_ok()
     }
 
     fn playback(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let weak = cx.entity().downgrade();
+        let keep = cx.entity().downgrade();
+        let tray = keep.clone();
         div()
             .flex()
             .flex_col()
@@ -117,9 +128,37 @@ impl Settings {
                         self.client.keep_playing_when_closed,
                         palette,
                         move |on, cx| {
-                            let _ = weak.update(cx, |this, cx| this.set_keep_playing(on, cx));
+                            let _ = keep.update(cx, |this, cx| {
+                                this.set_client(
+                                    "keepPlayingWhenClosed",
+                                    on,
+                                    |client, on| client.keep_playing_when_closed = on,
+                                    cx,
+                                )
+                            });
                         },
                     ))
+                    // The daemon draws the tray, over StatusNotifierItem.
+                    .when(cfg!(target_os = "linux"), |el| {
+                        el.child(switch(
+                            "show-in-tray".into(),
+                            "Show in the system tray",
+                            self.client.show_in_tray,
+                            palette,
+                            move |on, cx| {
+                                let _ = tray.update(cx, |this, cx| {
+                                    if this.set_client(
+                                        "showInTray",
+                                        on,
+                                        |client, on| client.show_in_tray = on,
+                                        cx,
+                                    ) {
+                                        this.store.set_tray(on);
+                                    }
+                                });
+                            },
+                        ))
+                    })
                     .when_some(self.client_error.clone(), |el, error| {
                         el.child(
                             div()

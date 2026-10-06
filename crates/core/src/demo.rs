@@ -1691,7 +1691,8 @@ impl Transport for DemoTransport {
             Command::EditPlaylist { .. }
             | Command::DeletePlaylist { .. }
             | Command::SetInLibrary { .. }
-            | Command::RemoveFromHistory { .. } => Reply::Ok,
+            | Command::RemoveFromHistory { .. }
+            | Command::SetTray { .. } => Reply::Ok,
             Command::Play {
                 source,
                 start_index,

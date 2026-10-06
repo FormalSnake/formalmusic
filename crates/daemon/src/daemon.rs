@@ -9,7 +9,7 @@ use crate::signin::BrowserSignIn;
 use formalmusic_api::{ApiError, Command, Event, LibraryScope, RateTarget, Reply};
 use formalmusic_player::Player;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 pub struct Daemon {
     pub session: Arc<Session>,
@@ -18,6 +18,8 @@ pub struct Daemon {
     signin: BrowserSignIn,
     scrobbler: Arc<Scrobbler>,
     pub events: broadcast::Sender<Event>,
+    /// Whether the tray icon should show while a track is loaded.
+    pub tray: watch::Sender<bool>,
 }
 
 impl Daemon {
@@ -34,6 +36,8 @@ impl Daemon {
             events.subscribe(),
         ));
         let scrobbler = Scrobbler::new(paths, session.clone(), events.clone())?;
+        let (tray, _) =
+            watch::channel(crate::config::AppSettings::load(&paths.app_settings).show_in_tray);
         tokio::spawn(scrobbler.clone().run(playback.clone()));
         Ok(Arc::new(Self {
             session,
@@ -42,6 +46,7 @@ impl Daemon {
             signin: BrowserSignIn::new(paths.signin()),
             scrobbler,
             events,
+            tray,
         }))
     }
 
@@ -242,6 +247,10 @@ impl Daemon {
             }
             Command::Pause => {
                 playback.pause();
+                Ok(Reply::Ok)
+            }
+            Command::SetTray { shown } => {
+                self.tray.send_replace(shown);
                 Ok(Reply::Ok)
             }
             Command::Resume => {

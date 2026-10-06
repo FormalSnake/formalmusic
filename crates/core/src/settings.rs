@@ -14,6 +14,8 @@ pub struct Settings {
     /// Leave the daemon playing when the last window closes, instead of
     /// pausing it.
     pub keep_playing_when_closed: bool,
+    /// Show the daemon's tray icon while a track is loaded (Linux).
+    pub show_in_tray: bool,
 }
 
 impl Default for Settings {
@@ -21,6 +23,7 @@ impl Default for Settings {
         Self {
             animated_cover_in_bar: true,
             keep_playing_when_closed: false,
+            show_in_tray: true,
         }
     }
 }
@@ -80,6 +83,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"animatedCoverInBar":false}"#).unwrap();
         assert!(!settings.animated_cover_in_bar);
         assert!(!settings.keep_playing_when_closed);
+        assert!(settings.show_in_tray);
     }
 
     #[test]
