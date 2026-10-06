@@ -242,6 +242,16 @@ impl WgpuAtlasTextures {
     }
 
     fn upload_texture(&mut self, id: AtlasTextureId, bounds: Bounds<DevicePixels>, bytes: &[u8]) {
+        // FormalMusic: bytes that need no swizzle go to the queue now rather
+        // than through a copy kept until the next frame. A music video
+        // replaces a 1-4 MB image every frame, and that copy was a sixth of
+        // the app's CPU while one played.
+        if let Some(texture) = self.storage.get(id)
+            && texture.format != wgpu::TextureFormat::Rgba8Unorm
+        {
+            write_tile(&self.queue, texture, bounds, bytes);
+            return;
+        }
         let data = self
             .storage
             .get(id)
@@ -257,33 +267,41 @@ impl WgpuAtlasTextures {
             let Some(texture) = self.storage.get(upload.id) else {
                 continue;
             };
-            let bytes_per_pixel = texture.bytes_per_pixel();
-
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: upload.bounds.origin.x.0 as u32,
-                        y: upload.bounds.origin.y.0 as u32,
-                        z: 0,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &upload.data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(upload.bounds.size.width.0 as u32 * bytes_per_pixel as u32),
-                    rows_per_image: None,
-                },
-                wgpu::Extent3d {
-                    width: upload.bounds.size.width.0 as u32,
-                    height: upload.bounds.size.height.0 as u32,
-                    depth_or_array_layers: 1,
-                },
-            );
+            write_tile(&self.queue, texture, upload.bounds, &upload.data);
         }
     }
+}
+
+fn write_tile(
+    queue: &wgpu::Queue,
+    texture: &WgpuAtlasTexture,
+    bounds: Bounds<DevicePixels>,
+    bytes: &[u8],
+) {
+    let bytes_per_pixel = texture.bytes_per_pixel();
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture.texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: bounds.origin.x.0 as u32,
+                y: bounds.origin.y.0 as u32,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bounds.size.width.0 as u32 * bytes_per_pixel as u32),
+            rows_per_image: None,
+        },
+        wgpu::Extent3d {
+            width: bounds.size.width.0 as u32,
+            height: bounds.size.height.0 as u32,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 #[derive(Default)]
