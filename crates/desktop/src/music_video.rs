@@ -18,6 +18,7 @@ use image::{Frame, RgbaImage};
 use tokio::sync::mpsc;
 
 use crate::bridge::{Bridge, Topic};
+use crate::clock::{self, Surface};
 
 const FRAME_QUEUE: usize = 2;
 
@@ -37,6 +38,7 @@ pub struct MusicVideo {
     /// Asked yt-dlp again once already after googlevideo refused the URL.
     refreshed: bool,
     run: Option<Synced>,
+    surface: Option<Surface>,
     receiver: Option<Task<()>>,
     frame: Option<Arc<RenderImage>>,
     visibility: Option<Subscription>,
@@ -64,6 +66,7 @@ impl MusicVideo {
             requesting: false,
             refreshed: false,
             run: None,
+            surface: None,
             receiver: None,
             frame: None,
             visibility: None,
@@ -191,6 +194,7 @@ impl MusicVideo {
             audible.then(|| state.position_now() as f64 / 1000.)
         });
         let (tx, mut rx) = mpsc::channel::<VideoFrame>(FRAME_QUEUE);
+        self.surface = Some(clock::Clock::surface(cx));
         self.run = Some(Synced::start(
             self.store.runtime(),
             stream,
@@ -213,6 +217,7 @@ impl MusicVideo {
     fn stop(&mut self) {
         self.run = None;
         self.receiver = None;
+        self.surface = None;
     }
 
     /// The decoder gave up while it was still wanted: googlevideo refused
@@ -245,6 +250,7 @@ impl MusicVideo {
             cx.drop_image(previous, None);
         }
         cx.notify();
+        clock::Clock::frame(cx);
     }
 }
 

@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 
 use crate::art;
 use crate::bridge::{Bridge, Topic};
+use crate::clock::{Clock, Surface};
 use crate::motion::{self, DURATION_BASE};
 use crate::theme::Theme;
 
@@ -43,6 +44,7 @@ pub struct CoverVideo {
     path: Option<Arc<Path>>,
     info: Option<VideoInfo>,
     run: Option<Loop>,
+    surface: Option<Surface>,
     receiver: Option<Task<()>>,
     frame: Option<Arc<RenderImage>>,
     /// Seconds into the file where the next run starts.
@@ -83,6 +85,7 @@ impl CoverVideo {
             path: None,
             info: None,
             run: None,
+            surface: None,
             receiver: None,
             frame: None,
             position: 0.,
@@ -229,6 +232,7 @@ impl CoverVideo {
         };
         let side = (f32::from(self.size) * self.scale).round() as u32;
         let (tx, mut rx) = mpsc::channel::<VideoFrame>(FRAME_QUEUE);
+        self.surface = Some(Clock::surface(cx));
         self.run = Some(Loop::start(
             self.store.runtime(),
             path,
@@ -252,6 +256,7 @@ impl CoverVideo {
             self.position = run.position();
         }
         self.receiver = None;
+        self.surface = None;
     }
 
     fn release(&mut self, cx: &mut Context<Self>) {
@@ -270,6 +275,7 @@ impl CoverVideo {
             None => self.shown += 1,
         }
         cx.notify();
+        Clock::frame(cx);
     }
 }
 
