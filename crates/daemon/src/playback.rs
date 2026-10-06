@@ -1130,6 +1130,9 @@ impl Playback {
                 }
                 st.position_at = Some(Instant::now());
                 st.status = status;
+                if status == Status::Playing {
+                    let _ = self.seeked.send(st.position_ms);
+                }
                 self.emit_player(&st);
                 self.emit_position(&mut st, 0);
                 if status != Status::Playing {
@@ -1184,8 +1187,11 @@ impl Playback {
                 if st.want_play {
                     st.status = Status::Playing;
                 }
-                // Audio starts now, not when the load was asked for.
+                // Audio starts now, not when the load was asked for. MPRIS
+                // readers started counting when the metadata changed, which
+                // was when the track was asked for, so tell them where it is.
                 st.position_at = Some(Instant::now());
+                let _ = self.seeked.send(st.position_ms);
                 self.emit_player(&st);
                 self.emit_position(&mut st, 0);
                 self.track_started(&mut st);
