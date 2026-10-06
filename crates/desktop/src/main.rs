@@ -17,6 +17,7 @@ mod now_playing;
 mod page;
 mod player_bar;
 mod primitives;
+mod settings;
 mod shelves;
 mod sidebar;
 mod signin;

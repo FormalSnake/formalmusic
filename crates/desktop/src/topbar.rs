@@ -196,6 +196,12 @@ impl TopBar {
             }
         }
         items.push(MenuItem::Separator);
+        items.push(
+            MenuItem::item("Settings", |window, cx| {
+                crate::app::show_settings(window, cx)
+            })
+            .icon(IconName::Settings),
+        );
         if state.signed_in() {
             items.push(
                 MenuItem::item("Sign in again", |_, cx| crate::app::show_sign_in(cx))

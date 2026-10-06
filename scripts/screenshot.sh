@@ -4,7 +4,7 @@
 #   scripts/screenshot.sh [out.png] [scene]     default docs/images/formalmusic.png
 #
 # Scenes: home (default), album, artist, playlist, explore, library, search,
-# suggest, queue, lyrics, lyrics-duet, related, signin, menu, collapsed.
+# suggest, queue, lyrics, lyrics-duet, related, signin, settings, menu, collapsed.
 #
 # macOS renders the frame offscreen with Metal (the `screenshot` feature);
 # Linux runs the release build inside scripts/linux-headless.sh's own sway.

@@ -19,6 +19,7 @@ use crate::new_playlist::NewPlaylist;
 use crate::now_playing::{NowPlaying, Tab};
 use crate::page::PageView;
 use crate::player_bar::PlayerBar;
+use crate::settings::Settings;
 use crate::sidebar::Sidebar;
 use crate::signin::SignIn;
 use crate::theme::{PLAYER_HEIGHT, SIDEBAR_COLLAPSED, SIDEBAR_WIDTH, TITLEBAR_HEIGHT, Theme};
@@ -127,6 +128,25 @@ pub fn new_playlist(window: &mut Window, cx: &mut App) {
     });
 }
 
+pub fn show_settings(window: &mut Window, cx: &mut App) {
+    let Some(root) = root(cx) else { return };
+    let weak = root.downgrade();
+    let store = root.read(cx).store.clone();
+    let close = move |window: &mut Window, cx: &mut App| {
+        let _ = weak.update(cx, |this, cx| {
+            this.settings = None;
+            this.root_focus.focus(window, cx);
+            cx.notify();
+        });
+    };
+    let dialog = cx.new(|cx| Settings::new(store, close, window, cx));
+    root.update(cx, |this, cx| {
+        this.menu = None;
+        this.settings = Some(dialog);
+        cx.notify();
+    });
+}
+
 pub struct AppRoot {
     store: MusicStore,
     history: Vec<Route>,
@@ -144,6 +164,7 @@ pub struct AppRoot {
     /// "Browse without signing in" was chosen this session.
     sign_in_dismissed: bool,
     new_playlist: Option<Entity<NewPlaylist>>,
+    settings: Option<Entity<Settings>>,
     menu: Option<Entity<ContextMenu>>,
     toast: Option<(u64, SharedString)>,
     toast_shown: Presence<SharedString>,
@@ -245,6 +266,7 @@ impl AppRoot {
             sign_in_wanted: false,
             sign_in_dismissed: false,
             new_playlist: None,
+            settings: None,
             menu: None,
             toast: None,
             toast_shown: Presence::new(DURATION_FAST),
@@ -380,8 +402,10 @@ impl AppRoot {
     /// Escape closes the topmost thing, in this order, then leaves the
     /// search field.
     fn on_dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.take().is_some() {
-        } else if self.new_playlist.take().is_some() {
+        if self.menu.take().is_some()
+            || self.new_playlist.take().is_some()
+            || self.settings.take().is_some()
+        {
         } else if self.sign_in.is_some() {
             self.close_sign_in();
         } else if self.expanded.is_some() {
@@ -404,6 +428,7 @@ impl AppRoot {
         self.topbar.read(cx).typing(window, cx)
             || self.sign_in.is_some()
             || self.new_playlist.is_some()
+            || self.settings.is_some()
     }
 
     /// music.youtube.com's single-key shortcuts. They stand down while a
@@ -745,6 +770,7 @@ impl Render for AppRoot {
             )
             .children(expanded)
             .when_some(self.new_playlist.clone(), |el, dialog| el.child(dialog))
+            .when_some(self.settings.clone(), |el, dialog| el.child(dialog))
             .when_some(self.sign_in.clone(), |el, screen| {
                 el.child(div().absolute().inset_0().child(screen))
             })
@@ -924,6 +950,7 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
             }
             "related" => this.set_expanded(Some(Tab::Related), cx),
             "signin" => {}
+            "settings" => window.defer(cx, show_settings),
             "collapsed" => this.sidebar.update(cx, |sidebar, cx| sidebar.toggle(cx)),
             "menu" => {
                 let track = catalog.albums[2].tracks[0].clone();

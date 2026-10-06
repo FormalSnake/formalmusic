@@ -59,6 +59,7 @@ pub enum IconName {
     History,
     Open,
     Resync,
+    Settings,
 }
 
 /// Resolves to the bundled Lucide glyph.
@@ -109,6 +110,7 @@ pub fn glyph(name: IconName) -> Glyph {
         History => Glyph::Clock,
         Open => Glyph::ExternalLink,
         Resync => Glyph::RefreshCw,
+        Settings => Glyph::Settings,
     }
 }
 

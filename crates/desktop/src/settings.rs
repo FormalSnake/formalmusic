@@ -1,0 +1,513 @@
+//! The Settings dialog. Its one section is Scrobbling: Last.fm and
+//! ListenBrainz, each with its account, a switch for scrobbling and one for
+//! now playing, and a line for plays still waiting to go out.
+
+use formalmusic_api::{ListenBrainzSource, ProfileBrowser, ScrobbleAccount, ScrobbleService};
+use formalmusic_core::MusicStore;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+
+use crate::bridge::{Bridge, Topic};
+use crate::icons::{Icon, IconName};
+use crate::primitives::{Button, ButtonKind, overlay_shadows};
+use crate::theme::{Palette, Theme, radius, spacing, type_scale};
+
+type OnClose = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
+
+pub struct Settings {
+    store: MusicStore,
+    token: Entity<InputState>,
+    /// The ListenBrainz connect panel is open.
+    picking: bool,
+    profiles: Vec<ProfileBrowser>,
+    /// The profile path or "token" while a ListenBrainz connect runs.
+    connecting: Option<String>,
+    lastfm_error: Option<SharedString>,
+    listenbrainz_error: Option<SharedString>,
+    on_close: OnClose,
+    _subscription: Subscription,
+}
+
+impl Settings {
+    pub fn new(
+        store: MusicStore,
+        on_close: impl Fn(&mut Window, &mut App) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let weak = cx.entity().downgrade();
+        Bridge::watch(cx, Topic::Scrobbling, weak.into());
+        store.load_scrobbling();
+        let token = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("00000000-0000-0000-0000-000000000000")
+        });
+        let subscription = cx.subscribe_in(
+            &token,
+            window,
+            |this: &mut Self, _, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.connect_token(window, cx),
+                InputEvent::Change if this.listenbrainz_error.is_some() => {
+                    this.listenbrainz_error = None;
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
+        Self {
+            store,
+            token,
+            picking: false,
+            profiles: Vec::new(),
+            connecting: None,
+            lastfm_error: None,
+            listenbrainz_error: None,
+            on_close: std::rc::Rc::new(on_close),
+            _subscription: subscription,
+        }
+    }
+
+    fn connect_lastfm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.lastfm_error = None;
+        cx.notify();
+        let task = self.store.runtime().spawn({
+            let store = self.store.clone();
+            async move { store.connect_lastfm().await }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task
+                .await
+                .unwrap_or_else(|_| Err("Unable to reach Last.fm.".into()));
+            let _ = this.update(cx, |this, cx| {
+                if let Err(error) = result {
+                    this.lastfm_error = Some(error.into());
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn open_picker(&mut self, cx: &mut Context<Self>) {
+        self.picking = true;
+        self.listenbrainz_error = None;
+        cx.notify();
+        let task = self.store.runtime().spawn({
+            let store = self.store.clone();
+            async move { store.browser_profiles().await }
+        });
+        cx.spawn(async move |this, cx| {
+            let profiles = task.await.ok().and_then(Result::ok).unwrap_or_default();
+            let _ = this.update(cx, |this, cx| {
+                this.profiles = profiles;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn connect_token(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let token = self.token.read(cx).value().trim().to_owned();
+        if token.is_empty() {
+            return;
+        }
+        self.connect_listenbrainz(
+            ListenBrainzSource::Token { token },
+            "token".into(),
+            window,
+            cx,
+        );
+    }
+
+    fn connect_listenbrainz(
+        &mut self,
+        source: ListenBrainzSource,
+        key: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.connecting.is_some() {
+            return;
+        }
+        self.connecting = Some(key);
+        self.listenbrainz_error = None;
+        cx.notify();
+        let task = self.store.runtime().spawn({
+            let store = self.store.clone();
+            async move { store.connect_listenbrainz(source).await }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task
+                .await
+                .unwrap_or_else(|_| Err("Unable to reach ListenBrainz.".into()));
+            let _ = this.update(cx, |this, cx| {
+                this.connecting = None;
+                match result {
+                    Ok(()) => this.picking = false,
+                    Err(error) => this.listenbrainz_error = Some(error.into()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn service_row(
+        &self,
+        service: ScrobbleService,
+        account: &ScrobbleAccount,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (name, id) = match service {
+            ScrobbleService::LastFm => ("Last.fm", "lastfm"),
+            ScrobbleService::ListenBrainz => ("ListenBrainz", "listenbrainz"),
+        };
+        let local_error = match service {
+            ScrobbleService::LastFm => self.lastfm_error.clone(),
+            ScrobbleService::ListenBrainz => self.listenbrainz_error.clone(),
+        };
+        let (detail, detail_color): (SharedString, Hsla) = if let Some(error) = &account.error {
+            (error.clone().into(), palette.danger)
+        } else if account.connecting {
+            (
+                "Allow access in your browser to finish connecting.".into(),
+                palette.secondary,
+            )
+        } else if let Some(user) = &account.username {
+            (format!("Connected as {user}").into(), palette.secondary)
+        } else {
+            ("Not connected".into(), palette.secondary)
+        };
+        let connected = account.username.is_some();
+        let store = self.store.clone();
+        let action = if connected || account.connecting {
+            Button::new(
+                SharedString::from(format!("{id}-disconnect")),
+                if account.connecting {
+                    "Cancel"
+                } else {
+                    "Disconnect"
+                },
+            )
+            .on_click(move |_, _, _| store.disconnect_scrobbler(service))
+            .into_any_element()
+        } else {
+            Button::new(SharedString::from(format!("{id}-connect")), "Connect")
+                .kind(ButtonKind::Primary)
+                .disabled(service == ScrobbleService::ListenBrainz && self.picking)
+                .on_click(cx.listener(move |this, _, window, cx| match service {
+                    ScrobbleService::LastFm => this.connect_lastfm(window, cx),
+                    ScrobbleService::ListenBrainz => this.open_picker(cx),
+                }))
+                .into_any_element()
+        };
+        let (scrobble, now_playing) = (account.scrobble, account.now_playing);
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::X3)
+            .p(spacing::X4)
+            .rounded(radius::CARD)
+            .bg(palette.press_wash)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(spacing::X3)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_grow(1.)
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .text_size(type_scale::BODY.font_size)
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette.text)
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .text_size(type_scale::CAPTION.font_size)
+                                    .line_height(type_scale::CAPTION.line_height)
+                                    .text_color(detail_color)
+                                    .child(detail),
+                            ),
+                    )
+                    .child(action),
+            )
+            .when_some(local_error, |el, error| {
+                el.child(
+                    div()
+                        .text_size(type_scale::CAPTION.font_size)
+                        .line_height(type_scale::CAPTION.line_height)
+                        .text_color(palette.danger)
+                        .child(error),
+                )
+            })
+            .when(connected, |el| {
+                let (a, b) = (self.store.clone(), self.store.clone());
+                el.child(switch(
+                    SharedString::from(format!("{id}-scrobble")),
+                    "Scrobble tracks you play",
+                    scrobble,
+                    palette,
+                    move |on| a.set_scrobbling(service, on, now_playing),
+                ))
+                .child(switch(
+                    SharedString::from(format!("{id}-now-playing")),
+                    "Show what's playing now",
+                    now_playing,
+                    palette,
+                    move |on| b.set_scrobbling(service, scrobble, on),
+                ))
+            })
+            .into_any_element()
+    }
+
+    fn picker(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let locked = self.connecting.is_some();
+        let rows = self
+            .profiles
+            .iter()
+            .flat_map(|group| group.profiles.iter().map(move |profile| (group, profile)));
+        let token_busy = self.connecting.as_deref() == Some("token");
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::X3)
+            .child(caption(
+                "Use a browser signed in to listenbrainz.org",
+                palette,
+            ))
+            .child(div().flex().flex_col().gap(spacing::X1).children(rows.map(
+                |(group, profile)| {
+                    let busy = self.connecting.as_ref() == Some(&profile.path);
+                    let (browser, path) = (group.browser.id.clone(), profile.path.clone());
+                    div()
+                        .id(SharedString::from(format!(
+                            "lb-profile-{}-{}",
+                            group.browser.id, profile.path
+                        )))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(spacing::X3)
+                        .px(spacing::X3)
+                        .py(spacing::X2)
+                        .rounded(radius::CONTROL)
+                        .bg(palette.press_wash)
+                        .when(locked && !busy, |el| el.opacity(0.4))
+                        .when(!locked, |el| {
+                            el.cursor_pointer()
+                                .hover(move |style| style.bg(palette.raised_hover))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    let source = ListenBrainzSource::Profile {
+                                        browser: browser.clone(),
+                                        profile: path.clone(),
+                                    };
+                                    this.connect_listenbrainz(source, path.clone(), window, cx)
+                                }))
+                        })
+                        .child(
+                            Icon::new(IconName::Account)
+                                .size(px(16.))
+                                .color(palette.secondary),
+                        )
+                        .child(
+                            div()
+                                .flex_grow(1.)
+                                .min_w(px(0.))
+                                .text_size(type_scale::BODY.font_size)
+                                .line_height(px(20.))
+                                .text_color(palette.text)
+                                .truncate()
+                                .child(format!("{} \u{b7} {}", profile.name, group.browser.name)),
+                        )
+                        .when(busy, |el| {
+                            el.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(type_scale::CAPTION.font_size)
+                                    .text_color(palette.secondary)
+                                    .child("Connecting\u{2026}"),
+                            )
+                        })
+                },
+            )))
+            .child(caption(
+                "Or paste the user token from listenbrainz.org/settings",
+                palette,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(spacing::X2)
+                    .child(
+                        div()
+                            .flex_grow(1.)
+                            .child(Input::new(&self.token).bordered(true)),
+                    )
+                    .child(
+                        Button::new(
+                            "listenbrainz-token-connect",
+                            if token_busy {
+                                "Connecting\u{2026}"
+                            } else {
+                                "Connect"
+                            },
+                        )
+                        .kind(ButtonKind::Primary)
+                        .disabled(locked)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.connect_token(window, cx)),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+impl Render for Settings {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = Theme::get(cx);
+        let status = self.store.state().scrobbling.clone().unwrap_or_default();
+        let on_close = self.on_close.clone();
+        let outside = self.on_close.clone();
+        let queued = match status.queued {
+            0 => None,
+            1 => Some("1 play is waiting to be sent.".to_owned()),
+            n => Some(format!("{n} plays are waiting to be sent.")),
+        };
+        let listenbrainz_open = self.picking && status.listenbrainz.username.is_none();
+        div()
+            .id("settings-layer")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(palette.scrim)
+            .occlude()
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| outside(window, cx))
+            .child(
+                div()
+                    .id("settings-dialog")
+                    .w(px(460.))
+                    .max_h(relative(0.85))
+                    .overflow_y_scroll()
+                    .p(spacing::X6)
+                    .flex()
+                    .flex_col()
+                    .gap(spacing::X4)
+                    .rounded(radius::CARD)
+                    .bg(palette.overlay)
+                    .border_1()
+                    .border_color(palette.overlay_border)
+                    .shadow(overlay_shadows(&palette))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .text_size(type_scale::LARGE.font_size)
+                            .line_height(type_scale::LARGE.line_height)
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(palette.text)
+                            .child("Settings"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(spacing::X2)
+                            .child(
+                                div()
+                                    .text_size(type_scale::TITLE.font_size)
+                                    .line_height(type_scale::TITLE.line_height)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(palette.text)
+                                    .child("Scrobbling"),
+                            )
+                            .child(self.service_row(
+                                ScrobbleService::LastFm,
+                                &status.lastfm,
+                                palette,
+                                cx,
+                            ))
+                            .child(self.service_row(
+                                ScrobbleService::ListenBrainz,
+                                &status.listenbrainz,
+                                palette,
+                                cx,
+                            ))
+                            .when(listenbrainz_open, |el| el.child(self.picker(palette, cx)))
+                            .when_some(queued, |el, text| el.child(caption(text, palette))),
+                    )
+                    .child(
+                        div().flex().flex_row().justify_end().child(
+                            Button::new("settings-done", "Done")
+                                .on_click(move |_, window, cx| on_close(window, cx)),
+                        ),
+                    ),
+            )
+    }
+}
+
+/// A labelled on/off switch; the label says what happens when it is on.
+fn switch(
+    id: SharedString,
+    label: &'static str,
+    on: bool,
+    palette: Palette,
+    toggle: impl Fn(bool) + 'static,
+) -> AnyElement {
+    let track = if on { palette.accent } else { palette.ghost };
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(spacing::X3)
+        .cursor_pointer()
+        .on_click(move |_, _, _| toggle(!on))
+        .child(
+            div()
+                .flex_grow(1.)
+                .min_w(px(0.))
+                .text_size(type_scale::BODY.font_size)
+                .line_height(px(20.))
+                .text_color(palette.text)
+                .child(label),
+        )
+        .child(
+            div()
+                .w(px(32.))
+                .h(px(18.))
+                .flex_shrink_0()
+                .p(px(2.))
+                .rounded(radius::PILL)
+                .bg(track)
+                .flex()
+                .flex_row()
+                .when(on, |el| el.justify_end())
+                .child(
+                    div()
+                        .size(px(14.))
+                        .rounded(radius::PILL)
+                        .bg(palette.on_accent),
+                ),
+        )
+        .into_any_element()
+}
+
+fn caption(text: impl Into<SharedString>, palette: Palette) -> impl IntoElement {
+    div()
+        .text_size(type_scale::CAPTION.font_size)
+        .line_height(type_scale::CAPTION.line_height)
+        .text_color(palette.secondary)
+        .child(text.into())
+}
