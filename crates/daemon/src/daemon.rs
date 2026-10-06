@@ -102,13 +102,7 @@ impl Daemon {
             Command::BrowserProfiles => Ok(Reply::BrowserProfiles(self.signin.profiles())),
             Command::ImportCookies { browser, profile } => {
                 let cookies = self.signin.import(&browser, &profile).await?;
-                // A stale session still has its cookies but no account behind them.
-                let info = self.session.sign_in(&cookies, None).await.map_err(|e| match e {
-                    ApiError::Parse(_) => ApiError::BadRequest(
-                        "That profile's YouTube session has expired. Open music.youtube.com there to refresh it, then try again.".into(),
-                    ),
-                    e => e,
-                })?;
+                let info = self.session.sign_in(&cookies, None).await?;
                 self.session_changed();
                 Ok(Reply::Session(info))
             }

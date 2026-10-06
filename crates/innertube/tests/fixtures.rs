@@ -880,6 +880,18 @@ fn account_menu() {
     assert!(!account.name.is_empty() && !account.thumbnails.is_empty());
 }
 
+/// Recorded like `account_menu`, with cookies the browser had rotated since
+/// they were exported: YouTube answers with the signed-out menu.
+#[test]
+#[ignore = "needs fixtures/private/account_menu_signed_out.json (account/account_menu, rotated cookies)"]
+fn account_menu_signed_out() {
+    let Some(json) = recorded("account_menu_signed_out") else {
+        return;
+    };
+    let session = parse::account::parse_session(&json).unwrap();
+    assert!(!session.signed_in && session.account.is_none());
+}
+
 #[test]
 #[ignore = "needs fixtures/private/home.json (FEmusic_home, signed in)"]
 fn signed_in_home() {

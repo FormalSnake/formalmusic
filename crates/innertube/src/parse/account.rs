@@ -55,9 +55,16 @@ fn account_item(item: &Value) -> Option<Account> {
 
 /// The signed-in account from the avatar menu. Premium is not in this
 /// response; [`crate::parse::player::has_premium_audio`] tells.
+///
+/// Cookies YouTube no longer accepts, such as ones exported from a browser
+/// that has since rotated them, get the signed-out menu: no account header,
+/// and `logged_in` 0 in the tracking params.
 pub fn parse_session(json: &Value) -> Result<SessionInfo> {
     let header = &json["actions"][0]["openPopupAction"]["popup"]["multiPageMenuRenderer"]["header"]
         ["activeAccountHeaderRenderer"];
+    if !header.is_object() && logged_in(json) == Some(false) {
+        return Ok(SessionInfo::default());
+    }
     if !header.is_object() {
         return Err(missing(
             "actions[0].openPopupAction.popup.multiPageMenuRenderer.header.activeAccountHeaderRenderer",
@@ -76,6 +83,18 @@ pub fn parse_session(json: &Value) -> Result<SessionInfo> {
         account: Some(account),
         premium: false,
     })
+}
+
+/// The `logged_in` flag YouTube reports in `responseContext`.
+fn logged_in(json: &Value) -> Option<bool> {
+    json["responseContext"]["serviceTrackingParams"]
+        .as_array()?
+        .iter()
+        .filter_map(|service| service["params"].as_array())
+        .flatten()
+        .find(|param| param["key"] == "logged_in")
+        .and_then(|param| param["value"].as_str())
+        .map(|value| value == "1")
 }
 
 #[cfg(test)]
@@ -114,5 +133,19 @@ mod tests {
         let session = parse_session(&json).unwrap();
         assert!(session.signed_in);
         assert_eq!(session.account.unwrap().handle.as_deref(), Some("@kyan"));
+    }
+
+    #[test]
+    fn signed_out_menu_is_not_an_account() {
+        let json = json!({
+            "responseContext": {"serviceTrackingParams": [
+                {"service": "GFEEDBACK", "params": [{"key": "logged_in", "value": "0"}]}
+            ]},
+            "actions": [{"openPopupAction": {"popup": {"multiPageMenuRenderer": {"sections": []}}}}]
+        });
+        assert_eq!(parse_session(&json).unwrap(), SessionInfo::default());
+        let unknown =
+            json!({"actions": [{"openPopupAction": {"popup": {"multiPageMenuRenderer": {}}}}]});
+        assert!(parse_session(&unknown).is_err());
     }
 }

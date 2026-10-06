@@ -107,7 +107,7 @@ impl Session {
         let info = client.session().await?;
         if !info.signed_in {
             return Err(ApiError::BadRequest(
-                "YouTube does not consider these cookies signed in".into(),
+                "YouTube does not consider these cookies signed in. Cookies copied out of a browser stop working once it rotates them, so sign in to music.youtube.com there again and copy them anew.".into(),
             ));
         }
         let stored = Stored {
