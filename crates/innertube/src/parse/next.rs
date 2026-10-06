@@ -6,7 +6,7 @@ use super::items::{
 };
 use super::{continuation, missing, runs, text, thumbnails};
 use crate::Result;
-use formalmusic_api::{Continuation, Rating, Track, TrackKind};
+use formalmusic_api::{Continuation, Counterpart, Rating, SharedSegment, Track, TrackKind};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -91,11 +91,13 @@ fn panel_tracks(panel: &Value) -> Vec<Track> {
         .collect()
 }
 
-/// One queue row. Wrapper rows carry the album version and the music video
-/// version of a song; the primary one is what the web app plays.
+/// One queue row. Wrapper rows, which only signed-in sessions get, carry
+/// the album version and the music video version of a song: the primary one
+/// is the id that was asked for, the other becomes [`Track::counterpart`].
 pub fn panel_item(v: &Value) -> Option<Track> {
-    let r = if v["playlistPanelVideoWrapperRenderer"].is_object() {
-        &v["playlistPanelVideoWrapperRenderer"]["primaryRenderer"]["playlistPanelVideoRenderer"]
+    let wrapper = &v["playlistPanelVideoWrapperRenderer"];
+    let r = if wrapper.is_object() {
+        &wrapper["primaryRenderer"]["playlistPanelVideoRenderer"]
     } else {
         &v["playlistPanelVideoRenderer"]
     };
@@ -114,5 +116,36 @@ pub fn panel_item(v: &Value) -> Option<Track> {
     track.explicit = explicit(&r["badges"]);
     track.like = like_status(&r["menu"]);
     track.set_video_id = r["playlistSetVideoId"].as_str().map(str::to_owned);
+    track.counterpart = wrapper["counterpart"]
+        .as_array()
+        .and_then(|list| list.first())
+        .and_then(counterpart)
+        .map(Box::new);
     Some(track)
+}
+
+fn counterpart(v: &Value) -> Option<Counterpart> {
+    let r = &v["counterpartRenderer"]["playlistPanelVideoRenderer"];
+    let ms = |s: &Value, key: &str| s[key].as_str().and_then(|n| n.parse().ok());
+    let segments = v["segmentMap"]["segment"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            Some(SharedSegment {
+                start_ms: ms(s, "primaryVideoStartTimeMilliseconds")?,
+                counterpart_start_ms: ms(s, "counterpartVideoStartTimeMilliseconds")?,
+                duration_ms: ms(s, "durationMilliseconds")?,
+            })
+        })
+        .collect();
+    Some(Counterpart {
+        video_id: r["videoId"].as_str()?.to_owned(),
+        kind: video_kind(&r["navigationEndpoint"]["watchEndpoint"]).unwrap_or(TrackKind::Video),
+        thumbnails: thumbnails(&r["thumbnail"]),
+        duration_ms: text(&r["lengthText"])
+            .as_deref()
+            .and_then(super::parse_clock),
+        segments,
+    })
 }

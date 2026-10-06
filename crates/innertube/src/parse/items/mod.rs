@@ -260,6 +260,7 @@ pub(crate) fn blank_track(video_id: String, title: String) -> Track {
         set_video_id: None,
         plays: None,
         feedback_token: None,
+        counterpart: None,
     }
 }
 

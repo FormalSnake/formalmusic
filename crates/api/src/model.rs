@@ -114,6 +114,109 @@ pub struct Track {
     pub plays: Option<String>,
     /// From the History page, needed for [`crate::Command::RemoveFromHistory`].
     pub feedback_token: Option<String>,
+    /// The music video of an album track, or the album track of a music
+    /// video. Only queue rows from `next` carry it, and only for a signed-in
+    /// session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counterpart: Option<Box<Counterpart>>,
+}
+
+/// The other version of a [`Track`], as the web app's Song and Video switch
+/// plays it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Counterpart {
+    pub video_id: String,
+    pub kind: TrackKind,
+    pub thumbnails: Thumbnails,
+    pub duration_ms: Option<u64>,
+    /// Stretches where both versions play the same audio. A music video
+    /// often adds an intro or an interlude the album track does not have.
+    pub segments: Vec<SharedSegment>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedSegment {
+    /// Where the stretch starts in the track that carries the counterpart.
+    pub start_ms: u64,
+    pub counterpart_start_ms: u64,
+    pub duration_ms: u64,
+}
+
+/// Which version of a track plays: the album track, or the music video with
+/// its own audio and picture. One choice for the whole queue, as in the web app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackMode {
+    #[default]
+    Song,
+    Video,
+}
+
+impl Track {
+    /// The video id that plays in `mode`: the counterpart when it is the
+    /// kind `mode` asks for and this track is not.
+    pub fn version(&self, mode: PlaybackMode) -> &str {
+        let wanted = |kind: TrackKind| match mode {
+            PlaybackMode::Song => kind == TrackKind::Song,
+            PlaybackMode::Video => kind == TrackKind::Video,
+        };
+        match &self.counterpart {
+            Some(other) if !wanted(self.kind) && wanted(other.kind) => &other.video_id,
+            _ => &self.video_id,
+        }
+    }
+
+    /// The version with a picture worth showing, if any.
+    pub fn video_version(&self) -> Option<&str> {
+        if self.kind == TrackKind::Video {
+            return Some(&self.video_id);
+        }
+        self.counterpart
+            .as_ref()
+            .filter(|other| other.kind == TrackKind::Video)
+            .map(|other| other.video_id.as_str())
+    }
+
+    /// Thumbnails of `video_id`, this track's or its counterpart's.
+    pub fn thumbnails_of(&self, video_id: &str) -> &Thumbnails {
+        match &self.counterpart {
+            Some(other) if other.video_id == video_id => &other.thumbnails,
+            _ => &self.thumbnails,
+        }
+    }
+
+    /// `position_ms` in version `from` mapped onto version `to`, through the
+    /// shared stretch it falls in, or the nearest one when it falls in none.
+    pub fn map_position(&self, from: &str, to: &str, position_ms: u64) -> u64 {
+        let Some(other) = self.counterpart.as_ref().filter(|_| from != to) else {
+            return position_ms;
+        };
+        let forward = from == self.video_id && to == other.video_id;
+        if !forward && !(from == other.video_id && to == self.video_id) {
+            return position_ms;
+        }
+        let spans = other.segments.iter().map(|s| {
+            let (start, target) = if forward {
+                (s.start_ms, s.counterpart_start_ms)
+            } else {
+                (s.counterpart_start_ms, s.start_ms)
+            };
+            (start, target, s.duration_ms)
+        });
+        let distance = |(start, _, duration): &(u64, u64, u64)| {
+            if position_ms < *start {
+                start - position_ms
+            } else {
+                position_ms.saturating_sub(start + duration)
+            }
+        };
+        match spans.min_by_key(distance) {
+            Some((start, target, _)) => {
+                (position_ms as i64 - start as i64 + target as i64).max(0) as u64
+            }
+            None => position_ms,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

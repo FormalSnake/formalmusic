@@ -239,6 +239,7 @@ mod tests {
             set_video_id: None,
             plays: None,
             feedback_token: None,
+            counterpart: None,
         }
     }
 

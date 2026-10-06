@@ -255,6 +255,7 @@ fn build_catalog() -> Catalog {
                     set_video_id: None,
                     plays: Some(format!("{}M plays", 1 + rng.below(90))),
                     feedback_token: None,
+                    counterpart: None,
                 }
             })
             .collect();

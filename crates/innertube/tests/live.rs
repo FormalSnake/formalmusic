@@ -412,3 +412,32 @@ async fn live_mutations_round_trip() {
             .any(|i| matches!(i, Item::Playlist { playlist_id, .. } if *playlist_id == id))
     );
 }
+
+/// `fixtures/next_counterpart.json`: the `next` row of an album track with
+/// its music video as the counterpart. Only signed-in sessions get these
+/// wrapper rows, so this needs `FORMALMUSIC_COOKIES` too.
+#[tokio::test]
+#[ignore = "writes fixtures/next_counterpart.json when FORMALMUSIC_RECORD=1"]
+async fn record_counterpart_fixture() {
+    if std::env::var("FORMALMUSIC_RECORD").as_deref() != Ok("1") {
+        eprintln!("skipping: FORMALMUSIC_RECORD is not 1");
+        return;
+    }
+    let Some(client) = signed_in() else { return };
+    let body = json!({
+        "videoId": "J7p4bzqLvCw",
+        "isAudioOnly": true,
+        "enablePersistentPlaylistPanel": true,
+    });
+    let mut json = client.raw("next", body).await.unwrap();
+    // The visitor data and token jar identify the session.
+    json.as_object_mut().unwrap().remove("responseContext");
+    std::fs::write(
+        format!(
+            "{}/fixtures/next_counterpart.json",
+            env!("CARGO_MANIFEST_DIR")
+        ),
+        serde_json::to_string(&json).unwrap(),
+    )
+    .unwrap();
+}

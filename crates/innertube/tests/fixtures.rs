@@ -597,6 +597,44 @@ fn next_radio() {
 }
 
 #[test]
+fn next_counterpart() {
+    let next = parse::next::parse_next(&load("next_counterpart")).unwrap();
+    let song = &next.tracks[0];
+    assert_track(song);
+    assert_eq!(
+        (song.video_id.as_str(), song.kind),
+        ("J7p4bzqLvCw", TrackKind::Song)
+    );
+    let video = song.counterpart.as_deref().expect("the music video");
+    assert_eq!(
+        (video.video_id.as_str(), video.kind),
+        ("4NRXx6U8ABQ", TrackKind::Video)
+    );
+    assert!(!video.thumbnails.is_empty() && video.duration_ms.is_some());
+    assert_eq!(
+        video.segments,
+        [
+            SharedSegment {
+                start_ms: 0,
+                counterpart_start_ms: 22_498,
+                duration_ms: 127_378
+            },
+            SharedSegment {
+                start_ms: 127_881,
+                counterpart_start_ms: 153_000,
+                duration_ms: 69_884
+            },
+        ]
+    );
+    assert_eq!(song.version(PlaybackMode::Video), "4NRXx6U8ABQ");
+    assert_eq!(
+        song.map_position("J7p4bzqLvCw", "4NRXx6U8ABQ", 60_000),
+        82_498
+    );
+    assert!(next.tracks[1..].iter().all(|t| t.counterpart.is_none()));
+}
+
+#[test]
 fn lyrics_from_web_client() {
     let lyrics = parse::lyrics::parse_plain(&load("lyrics")).unwrap();
     assert!(!lyrics.synced);

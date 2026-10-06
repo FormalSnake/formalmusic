@@ -358,6 +358,7 @@ mod tests {
             set_video_id: None,
             plays: None,
             feedback_token: None,
+            counterpart: None,
         };
         let suggestion = Suggestion::Item(Item::Track(track));
         let json = serde_json::to_string(&suggestion).unwrap();
@@ -365,6 +366,68 @@ mod tests {
             serde_json::from_str::<Suggestion>(&json).unwrap(),
             suggestion
         );
+    }
+
+    fn album_track() -> Track {
+        Track {
+            video_id: "song".into(),
+            title: "t".into(),
+            artists: vec![],
+            album: None,
+            duration_ms: Some(222_000),
+            thumbnails: vec![],
+            explicit: false,
+            kind: TrackKind::Song,
+            like: None,
+            set_video_id: None,
+            plays: None,
+            feedback_token: None,
+            counterpart: Some(Box::new(Counterpart {
+                video_id: "video".into(),
+                kind: TrackKind::Video,
+                thumbnails: vec![],
+                duration_ms: Some(260_000),
+                segments: vec![
+                    SharedSegment {
+                        start_ms: 0,
+                        counterpart_start_ms: 22_498,
+                        duration_ms: 127_378,
+                    },
+                    SharedSegment {
+                        start_ms: 127_881,
+                        counterpart_start_ms: 153_000,
+                        duration_ms: 69_884,
+                    },
+                ],
+            })),
+        }
+    }
+
+    #[test]
+    fn modes_pick_the_version() {
+        let track = album_track();
+        assert_eq!(track.version(PlaybackMode::Song), "song");
+        assert_eq!(track.version(PlaybackMode::Video), "video");
+        assert_eq!(track.video_version(), Some("video"));
+        let mut lone = track.clone();
+        lone.counterpart = None;
+        assert_eq!(lone.version(PlaybackMode::Video), "song");
+        assert_eq!(lone.video_version(), None);
+        lone.kind = TrackKind::Video;
+        assert_eq!(lone.version(PlaybackMode::Song), "song");
+        assert_eq!(lone.video_version(), Some("song"));
+    }
+
+    #[test]
+    fn positions_map_through_the_shared_stretches() {
+        let track = album_track();
+        assert_eq!(track.map_position("song", "video", 10_000), 32_498);
+        assert_eq!(track.map_position("song", "video", 130_000), 155_119);
+        assert_eq!(track.map_position("video", "song", 32_498), 10_000);
+        // The video's intro has no song under it: the song starts over.
+        assert_eq!(track.map_position("video", "song", 5_000), 0);
+        assert_eq!(track.map_position("song", "song", 7), 7);
+        assert_eq!(track.map_position("song", "elsewhere", 7), 7);
     }
 
     #[test]
