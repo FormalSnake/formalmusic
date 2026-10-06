@@ -17,6 +17,10 @@ use tokio::sync::OnceCell;
 const TIMEOUT: Duration = Duration::from_secs(60);
 /// A URL this close to expiry is resolved again rather than started.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(10 * 60);
+/// yt-dlp runs per track before giving up on a URL that is not gated.
+const MAX_ATTEMPTS: usize = 3;
+/// Bytes asked for at the end of the stream to check the whole of it is served.
+const PROBE_BYTES: u64 = 1024;
 
 type Slot = Arc<OnceCell<Result<StreamSource, String>>>;
 
@@ -26,6 +30,7 @@ pub struct Resolver {
     quality: Quality,
     cache: Mutex<HashMap<String, Slot>>,
     runs: AtomicU64,
+    http: reqwest::Client,
 }
 
 impl Resolver {
@@ -39,6 +44,7 @@ impl Resolver {
             quality,
             cache: Mutex::new(HashMap::new()),
             runs: AtomicU64::new(0),
+            http: reqwest::Client::new(),
         }
     }
 
@@ -81,7 +87,59 @@ impl Resolver {
         self.cache.lock().clear();
     }
 
+    /// Runs yt-dlp until it hands out a URL googlevideo serves in full.
+    ///
+    /// Some of the URLs yt-dlp's default client (`c=VISIONOS` as of
+    /// 2026.08.19) gets for a signed-out session are gated behind a GVS PO
+    /// token that yt-dlp does not know is needed: googlevideo serves the
+    /// first ~65 s of audio (about 1.1 MB) and answers 403 to any range past
+    /// it. About one run in ten is gated, at random, so asking again works.
     async fn run(&self, video_id: &str, cookies: Option<&str>) -> Result<StreamSource, String> {
+        for attempt in 1..=MAX_ATTEMPTS {
+            let source = self.run_once(video_id, cookies).await?;
+            match self.serves_the_end(&source).await {
+                Ok(true) => return Ok(source),
+                Ok(false) => {
+                    tracing::info!(
+                        video_id,
+                        attempt,
+                        "googlevideo gates this url after the first megabyte, resolving again"
+                    )
+                }
+                // The probe is a check, not a requirement; the player retries
+                // its own network errors.
+                Err(e) => {
+                    tracing::debug!(video_id, "could not probe the stream: {e}");
+                    return Ok(source);
+                }
+            }
+        }
+        Err(format!(
+            "googlevideo refused the end of the stream {MAX_ATTEMPTS} times"
+        ))
+    }
+
+    /// False when googlevideo refuses the last bytes of the stream.
+    async fn serves_the_end(&self, source: &StreamSource) -> Result<bool, reqwest::Error> {
+        let Some(len) = source.content_length.filter(|len| *len > PROBE_BYTES) else {
+            return Ok(true);
+        };
+        let mut request = self.http.get(&source.url).header(
+            reqwest::header::RANGE,
+            format!("bytes={}-{}", len - PROBE_BYTES, len - 1),
+        );
+        for (name, value) in &source.headers {
+            request = request.header(name, value);
+        }
+        let status = request.send().await?.status();
+        Ok(status != reqwest::StatusCode::FORBIDDEN && status != reqwest::StatusCode::GONE)
+    }
+
+    async fn run_once(
+        &self,
+        video_id: &str,
+        cookies: Option<&str>,
+    ) -> Result<StreamSource, String> {
         let url = format!("https://music.youtube.com/watch?v={video_id}");
         let mut command = Command::new(&self.program);
         command
@@ -249,5 +307,92 @@ mod tests {
             })
             .count();
         assert_eq!(leftovers, 0);
+    }
+}
+
+/// Against the real YouTube: resolves a radio's worth of tracks the way the
+/// daemon does (two ahead of the one starting) and opens each in the player.
+/// `cargo test -p formalmusicd -- --ignored --nocapture live_`
+#[cfg(test)]
+mod live {
+    use super::*;
+    use formalmusic_player::{OutputKind, Player, PlayerEvent};
+    use std::sync::Arc;
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "runs yt-dlp and streams from googlevideo"]
+    async fn live_fifty_tracks_open_without_403() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("formalmusic_player=warn,formalmusicd=debug")
+            .with_test_writer()
+            .try_init();
+        let client = formalmusic_innertube::Client::anonymous().unwrap();
+        let mut ids: Vec<String> = Vec::new();
+        let mut radio = client.radio("IluRBvnYMoY").await.unwrap();
+        while ids.len() < 50 {
+            ids.extend(radio.tracks.iter().map(|t| t.video_id.clone()));
+            ids.dedup();
+            let (Some(playlist), Some(token)) = (&radio.playlist_id, &radio.continuation) else {
+                break;
+            };
+            radio = client.next_continuation(playlist, token).await.unwrap();
+        }
+        ids.truncate(50);
+
+        let dir = tempfile::tempdir().unwrap();
+        let resolver = Arc::new(Resolver::new(dir.path().to_owned(), Quality::High));
+        let player = Player::with_output(OutputKind::Null {
+            sample_rate: 48_000,
+            channels: 2,
+        })
+        .unwrap();
+        let mut events = player.subscribe();
+        let mut failures = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            for ahead in ids.iter().skip(i + 1).take(2) {
+                let ahead = ahead.clone();
+                let resolver = resolver.clone();
+                tokio::spawn(async move { resolver.resolve(&ahead, None).await });
+            }
+            let source = match resolver.resolve(id, None).await {
+                Ok(source) => source,
+                Err(e) => {
+                    failures.push(format!("{id}: resolve: {e}"));
+                    continue;
+                }
+            };
+            let track = player.load(source, 0, None);
+            let outcome = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    match events.recv().await {
+                        Ok(PlayerEvent::TrackStarted { track: t, .. }) if t == track => {
+                            return Ok(());
+                        }
+                        Ok(PlayerEvent::Error {
+                            track: Some(t),
+                            error,
+                        }) if t == track => return Err(error.to_string()),
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| Err("no start within 30 s".into()));
+            eprintln!(
+                "{:2} {id} {}",
+                i + 1,
+                outcome.as_ref().map_or_else(|e| e.as_str(), |_| "ok")
+            );
+            if let Err(e) = outcome {
+                failures.push(format!("{id}: {e}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} failed: {failures:#?}",
+            failures.len(),
+            ids.len()
+        );
     }
 }
