@@ -58,7 +58,7 @@ single app's team.
 
 ```
 crates/innertube     InnerTube requests, renderer parsers, fixtures
-crates/formalmusicd          daemon: session, streams, audio, queue, MPRIS, gRPC server
+crates/daemon        binary `formalmusicd`: session, streams, queue, MPRIS, socket server
 crates/api           wire types and JSON-lines framing shared by both ends
 crates/player        streaming decode and audio output
 crates/core          app store, StoreEvent, StateCache, socket client
