@@ -279,6 +279,8 @@ fn album() {
             Some(BrowseTarget::Album("MPREb_K8qWMWVqXGi".into()))
         );
         assert!(t.set_video_id.is_some() && !t.artists.is_empty());
+        // Every row here links a music video; the album still lists songs.
+        assert_eq!(t.kind, TrackKind::Song, "{}", t.title);
     }
 }
 

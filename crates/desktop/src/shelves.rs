@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use formalmusic_api::{Chip, Item, Rating, Section, Track};
+use formalmusic_api::{Chip, Item, Link, Rating, Section, Track};
 use formalmusic_core::MusicStore;
 use formalmusic_core::format::{byline, duration, names};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -575,12 +575,14 @@ fn row_art(
         .into_any_element()
 }
 
-/// One row of an album, playlist or song list. `number` replaces the cover
-/// with the track number, as album pages show it.
+/// One row of an album, playlist or song list. On an album page `number`
+/// replaces the cover with the track number, and the artists show only when
+/// they are not the album's own, as the web app does.
 pub fn track_row(
     track: &Track,
     id: ElementId,
     number: Option<usize>,
+    album_artists: &[Link],
     env: &Env,
     on_play: Rc<dyn Fn(&mut App)>,
     wide: bool,
@@ -676,8 +678,7 @@ pub fn track_row(
             div()
                 .w(relative(0.3))
                 .min_w(px(0.))
-                .overflow_hidden()
-                .whitespace_nowrap()
+                .truncate()
                 .text_size(type_scale::BODY.font_size)
                 .text_color(palette.secondary)
                 .child(link_text(
@@ -729,7 +730,9 @@ pub fn track_row(
                         )
                         .when(track.explicit, |el| el.child(explicit_badge(&palette))),
                 )
-                .when(!wide || number.is_none(), |el| el.child(artists)),
+                .when(number.is_none() || track.artists != album_artists, |el| {
+                    el.child(artists)
+                }),
         )
         .children(album)
         .when_some(

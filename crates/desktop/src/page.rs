@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use formalmusic_api::{
-    BrowseTarget, Chip, Header, Item, LibraryTab, Page, PlaySource, SearchFilter, Section,
+    BrowseTarget, Chip, Header, Item, LibraryTab, Link, Page, PlaySource, SearchFilter, Section,
     SectionLayout,
 };
 use formalmusic_core::{MusicStore, Route, SearchKey};
@@ -83,6 +83,8 @@ struct Rows {
     loading_more: bool,
     has_more: bool,
     env: Option<Env>,
+    /// The header's description is expanded past its clamp.
+    description_open: bool,
 }
 
 pub struct PageView {
@@ -126,6 +128,7 @@ impl PageView {
             loading_more: false,
             has_more: false,
             env: None,
+            description_open: false,
         }));
         let this = Self {
             route,
@@ -347,6 +350,7 @@ impl PageView {
             loading_more,
             has_more,
             env,
+            description_open,
         } = &mut *guard;
         let (Some(content), Some(env), Some(row)) =
             (content.clone(), env.clone(), rows.get(index).copied())
@@ -362,12 +366,27 @@ impl PageView {
             }) as Rc<dyn Fn(&mut App)>
         };
         match row {
-            Row::Header => crate::header::header(
-                content.header().expect("header row"),
-                &env.store,
-                palette,
-                window.viewport_size().width,
-            ),
+            Row::Header => {
+                let page = page.clone();
+                let description = crate::header::Description {
+                    open: *description_open,
+                    toggle: Rc::new(move |cx: &mut App| {
+                        let _ = page.update(cx, |this, cx| {
+                            let open = &mut this.shared.borrow_mut().description_open;
+                            *open = !*open;
+                            this.list.remeasure_items(index..index + 1);
+                            cx.notify();
+                        });
+                    }),
+                };
+                crate::header::header(
+                    content.header().expect("header row"),
+                    &env.store,
+                    palette,
+                    description,
+                    window,
+                )
+            }
             Row::Chips => {
                 let on_select: Rc<dyn Fn(&Chip, &mut App)> = match route {
                     Route::Search(key) => {
@@ -453,13 +472,21 @@ impl PageView {
                 let id = ElementId::NamedInteger(format!("row-{section}").into(), item as u64);
                 match &shelf.items[item] {
                     Item::Track(track) => {
-                        let numbered =
-                            matches!(route, Route::Browse(BrowseTarget::Album(_))).then_some(item);
+                        let album = matches!(route, Route::Browse(BrowseTarget::Album(_)));
+                        let album_artists: Vec<Link> = match content.header() {
+                            Some(Header::Detail { subtitle, .. }) if album => subtitle
+                                .iter()
+                                .filter(|link| matches!(link.target, Some(BrowseTarget::Artist(_))))
+                                .cloned()
+                                .collect(),
+                            _ => Vec::new(),
+                        };
                         let on_play = play_from(&content, route, section, item, &env.store);
                         shelves::track_row(
                             track,
                             id,
-                            numbered,
+                            album.then_some(item),
+                            &album_artists,
                             &env,
                             on_play,
                             window.viewport_size().width > px(1100.),

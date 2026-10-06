@@ -9,7 +9,7 @@ use super::shelves::{section, sections};
 use super::{continuation, continuation_item, missing, renderer, text};
 use crate::Result;
 use formalmusic_api::{
-    BrowseTarget, Continuation, ContinuationPage, Header, Item, Link, Page, Section,
+    BrowseTarget, Continuation, ContinuationPage, Header, Item, Link, Page, Section, TrackKind,
 };
 use serde_json::Value;
 
@@ -80,6 +80,9 @@ pub fn parse_page(target: BrowseTarget, json: &Value) -> Result<Page> {
 
 /// Album rows leave out what the header already shows (album, artwork,
 /// artists). Tracks travel to the queue on their own, so they get it back.
+/// A row whose song has a music video links the video
+/// (`MUSIC_VIDEO_TYPE_OMV`), but the album lists it as a song, and so does
+/// the web app.
 fn fill_album_tracks(browse_id: &str, header: &Header, sections: &mut [Section]) {
     let Header::Detail {
         title,
@@ -108,6 +111,9 @@ fn fill_album_tracks(browse_id: &str, header: &Header, sections: &mut [Section])
                 }
                 if track.artists.is_empty() {
                     track.artists = artists.clone();
+                }
+                if track.kind == TrackKind::Video {
+                    track.kind = TrackKind::Song;
                 }
             }
         }

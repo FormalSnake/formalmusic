@@ -1,6 +1,8 @@
 //! Page headers in YouTube Music's three shapes: Detail (album, single,
 //! playlist), Artist (a full-bleed banner) and a plain Title.
 
+use std::rc::Rc;
+
 use formalmusic_api::{Header, Link, PlaySource, Rating};
 use formalmusic_core::MusicStore;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -14,8 +16,24 @@ use crate::theme::{PAGE_INSET, Palette, radius, spacing, type_scale, with_alpha}
 
 const DETAIL_ART: Pixels = px(232.);
 const BANNER_HEIGHT: Pixels = px(340.);
+/// The description's measure, and how many lines it shows until "More".
+const DESCRIPTION_WIDTH: Pixels = px(640.);
+const DESCRIPTION_LINES: usize = 3;
 
-pub fn header(header: &Header, store: &MusicStore, palette: Palette, width: Pixels) -> AnyElement {
+/// Whether the album or playlist description is expanded, and how to flip it.
+pub struct Description {
+    pub open: bool,
+    pub toggle: Rc<dyn Fn(&mut App)>,
+}
+
+pub fn header(
+    header: &Header,
+    store: &MusicStore,
+    palette: Palette,
+    description_state: Description,
+    window: &mut Window,
+) -> AnyElement {
+    let width = window.viewport_size().width;
     match header {
         Header::Detail {
             title,
@@ -144,17 +162,8 @@ pub fn header(header: &Header, store: &MusicStore, palette: Palette, width: Pixe
                         .when_some(second_subtitle.clone(), |el, text| {
                             el.child(caption(text, palette.secondary))
                         })
-                        .when_some(description.as_deref().map(one_paragraph), |el, text| {
-                            el.child(
-                                div()
-                                    .pt(spacing::X2)
-                                    .max_w(px(640.))
-                                    .text_size(type_scale::BODY.font_size)
-                                    .line_height(px(20.))
-                                    .text_color(palette.secondary)
-                                    .line_clamp(3)
-                                    .child(text),
-                            )
+                        .when_some(description.as_deref(), |el, text| {
+                            el.child(detail_description(text, description_state, palette, window))
                         })
                         .child(actions),
                 )
@@ -297,6 +306,7 @@ pub fn header(header: &Header, store: &MusicStore, palette: Palette, width: Pixe
                                     .line_height(px(20.))
                                     .text_color(palette.secondary)
                                     .line_clamp(2)
+                                    .text_ellipsis()
                                     .child(text),
                             )
                         })
@@ -484,8 +494,89 @@ pub fn rating_buttons(
         )
 }
 
-/// Descriptions come with blank lines and a source note; the header shows
-/// the first paragraph only, clamped.
+/// An album or playlist description: the first paragraph clamped to a few
+/// lines with an ellipsis, and "More" to read all of it, source note
+/// included, when there is more to read.
+fn detail_description(
+    text: &str,
+    state: Description,
+    palette: Palette,
+    window: &mut Window,
+) -> AnyElement {
+    let first = one_paragraph(text);
+    let more = first.len() < text.trim_end().len()
+        || wrapped_lines(&first, type_scale::BODY.font_size, window) > DESCRIPTION_LINES;
+    let body = div()
+        .max_w(DESCRIPTION_WIDTH)
+        .text_size(type_scale::BODY.font_size)
+        .line_height(px(20.))
+        .text_color(palette.secondary);
+    let body = if state.open {
+        body.flex().flex_col().gap(spacing::X2).children(
+            text.split("\n\n")
+                .map(|paragraph| paragraph.replace('\n', " ")),
+        )
+    } else {
+        body.line_clamp(DESCRIPTION_LINES)
+            .text_ellipsis()
+            .child(first)
+    };
+    let toggle = state.toggle;
+    div()
+        .pt(spacing::X2)
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(spacing::X1)
+        .child(body)
+        .when(more, |el| {
+            el.child(
+                div()
+                    .id("description-more")
+                    .cursor_pointer()
+                    .text_size(type_scale::BODY.font_size)
+                    .line_height(px(20.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(palette.text)
+                    .hover(|style| style.underline())
+                    .on_click(move |_, _, cx| toggle(cx))
+                    .child(if state.open { "Less" } else { "More" }),
+            )
+        })
+        .into_any_element()
+}
+
+/// Lines `text` wraps to at the description's measure.
+fn wrapped_lines(text: &str, font_size: Pixels, window: &mut Window) -> usize {
+    let font = window.text_style().font();
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_text(
+            text.to_owned().into(),
+            font_size,
+            &[run],
+            Some(DESCRIPTION_WIDTH),
+            None,
+        )
+        .map(|lines| {
+            lines
+                .iter()
+                .map(|line| line.wrap_boundaries().len() + 1)
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Descriptions come with blank lines and a source note; the clamped header
+/// shows the first paragraph only.
 fn one_paragraph(text: &str) -> String {
     text.split("\n\n").next().unwrap_or(text).replace('\n', " ")
 }
