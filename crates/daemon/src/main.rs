@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::spawn({
         let daemon = daemon.clone();
-        async move { daemon.check_session().await }
+        async move { daemon.session_upkeep().await }
     });
     #[cfg(target_os = "linux")]
     let _mpris = match mpris::start(daemon.playback.clone(), daemon.events.subscribe()).await {

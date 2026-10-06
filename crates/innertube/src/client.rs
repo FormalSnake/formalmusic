@@ -415,6 +415,7 @@ impl Client {
             .send()
             .await
             .map_err(network)?;
+        self.absorb(&response);
         if response.status().is_success() {
             Ok(())
         } else {
@@ -444,7 +445,46 @@ impl Client {
         })
     }
 
+    /// The session's cookies as they stand now, `Set-Cookie`s taken in.
+    pub fn cookies(&self) -> Option<String> {
+        self.inner.session.as_ref().map(Session::cookie)
+    }
+
+    /// Cookies another client of the same session (yt-dlp) was handed.
+    pub fn merge_cookies(&self, pairs: &[(String, String)]) {
+        if let Some(session) = &self.inner.session {
+            session.merge(pairs);
+        }
+    }
+
+    /// What the web app does every few minutes to keep its session from
+    /// lapsing: `verify_session`, which answers with fresh `SIDCC` cookies.
+    pub async fn keepalive(&self) -> Result<()> {
+        self.require_session()?;
+        let config = self.config().await;
+        let request = self.inner.http.get(format!("{ORIGIN}/verify_session"));
+        let response = self
+            .with_session_headers(request, &config)
+            .send()
+            .await
+            .map_err(network)?;
+        self.absorb(&response);
+        match response.status().as_u16() {
+            200..=299 => Ok(()),
+            401 | 403 => Err(ApiError::SignedOut),
+            status => Err(ApiError::Network(format!(
+                "verify_session answered {status}"
+            ))),
+        }
+    }
+
     // Plumbing
+
+    fn absorb(&self, response: &reqwest::Response) {
+        if let Some(session) = &self.inner.session {
+            session.absorb(response);
+        }
+    }
 
     fn require_session(&self) -> Result<&Session> {
         self.inner.session.as_ref().ok_or(ApiError::SignedOut)
@@ -497,6 +537,7 @@ impl Client {
         };
 
         let response = request.send().await.map_err(network)?;
+        self.absorb(&response);
         let status = response.status();
         let bytes = response.bytes().await.map_err(network)?;
         let json: Option<Value> = serde_json::from_slice(&bytes).ok();
@@ -550,10 +591,14 @@ impl Client {
 
     fn cookie_header(&self) -> String {
         match &self.inner.session {
-            Some(session) if cookie_value(&session.cookie, "SOCS").is_some() => {
-                session.cookie.clone()
+            Some(session) => {
+                let cookie = session.cookie();
+                if cookie_value(&cookie, "SOCS").is_some() {
+                    cookie
+                } else {
+                    format!("{}; {CONSENT_COOKIE}", cookie.trim_end_matches(';'))
+                }
             }
-            Some(session) => format!("{}; {CONSENT_COOKIE}", session.cookie.trim_end_matches(';')),
             None => CONSENT_COOKIE.to_owned(),
         }
     }

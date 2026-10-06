@@ -3,7 +3,10 @@
 One JSON request per line on stdin, one JSON answer per line on stdout:
 
     {"id": 1, "video_id": "...", "cookies": "/path" or null, "premium": false}
-    {"id": 1, "info": {"formats": [...]}}  or  {"id": 1, "error": "..."}
+    {"id": 1, "info": {"formats": [...]}, "cookies": {...}}  or  {"id": 1, "error": "..."}
+
+`cookies` in an answer are the youtube.com cookies yt-dlp holds after the
+request, rotated ones included, for the daemon to keep.
 
 Requests run on a few threads, so a track resolved ahead never holds up the
 one the user asked for. The interpreter, the extractors and the player JS stay
@@ -11,6 +14,7 @@ loaded between tracks; a fresh `yt-dlp -J` spends about a second on those.
 """
 
 import json
+import os
 import signal
 import sys
 import threading
@@ -55,8 +59,9 @@ class Log:
 
 
 class Pool:
-    """Idle YoutubeDL instances per (cookie file, premium). An instance is used
-    by one thread at a time; cookie files of an earlier session are dropped."""
+    """Idle YoutubeDL instances per (signed in, premium). An instance is used
+    by one thread at a time and reloads its jar when the daemon hands it a
+    newer cookie file."""
 
     def __init__(self, cache_dir):
         self.cache_dir = cache_dir
@@ -64,12 +69,20 @@ class Pool:
         self.lock = threading.Lock()
 
     def take(self, cookies, premium):
-        key = (cookies, premium)
+        key = (bool(cookies), premium)
         with self.lock:
-            for other in [k for k in self.idle if k[0] != cookies]:
-                del self.idle[other]
-            if self.idle.get(key):
-                return key, self.idle[key].pop()
+            ydl = self.idle[key].pop() if self.idle.get(key) else None
+        if ydl is None:
+            ydl = self.new(cookies, premium)
+        if cookies and os.path.exists(cookies):
+            loaded = (cookies, os.stat(cookies).st_mtime_ns)
+            if getattr(ydl, "formalmusic_cookies", None) != loaded:
+                ydl.cookiejar.clear()
+                ydl.cookiejar.load(cookies)
+                ydl.formalmusic_cookies = loaded
+        return key, ydl
+
+    def new(self, cookies, premium):
         opts = {
             "logger": Log(),
             "quiet": True,
@@ -83,11 +96,19 @@ class Pool:
             opts["cookiefile"] = cookies
         if cookies and premium:
             opts["extractor_args"] = {"youtube": PREMIUM_ARGS}
-        return key, yt_dlp.YoutubeDL(opts)
+        return yt_dlp.YoutubeDL(opts)
 
     def give(self, key, ydl):
         with self.lock:
             self.idle.setdefault(key, []).append(ydl)
+
+
+def youtube_cookies(ydl):
+    return {
+        c.name: c.value
+        for c in ydl.cookiejar
+        if c.domain.lstrip(".").endswith("youtube.com") and c.value is not None
+    }
 
 
 def formats(info):
@@ -117,9 +138,10 @@ def main():
             try:
                 url = "https://music.youtube.com/watch?v=" + request["video_id"]
                 info = ydl.sanitize_info(ydl.extract_info(url, download=False))
+                jar = youtube_cookies(ydl) if request.get("cookies") else {}
             finally:
                 pool.give(key, ydl)
-            answer({"id": rid, "info": {"formats": formats(info)}})
+            answer({"id": rid, "info": {"formats": formats(info)}, "cookies": jar})
         except Exception as e:
             answer({"id": rid, "error": str(e) or type(e).__name__})
 

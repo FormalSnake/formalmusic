@@ -273,12 +273,15 @@ impl Inner {
         let cookie_file = cookies.map(|header| self.cookie_file(header)).transpose()?;
         let premium = cookies.is_some() && self.session.info().premium;
         let started = std::time::Instant::now();
-        let info = self
+        let answer = self
             .worker
             .info(video_id, cookie_file.as_deref(), premium, TIMEOUT)
             .await
             .map_err(|e| format!("yt-dlp: {e}"))?;
-        let source = pick_format(&info, self.quality)
+        if !answer.cookies.is_empty() {
+            self.session.merge_cookies(&answer.cookies);
+        }
+        let source = pick_format(&answer.info, self.quality)
             .ok_or_else(|| "no playable audio format".to_owned())?;
         tracing::debug!(video_id, premium, format = %source.label(), elapsed_ms = started.elapsed().as_millis() as u64, "resolved");
         Ok(source)

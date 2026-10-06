@@ -18,7 +18,14 @@ use tokio::sync::oneshot;
 const SCRIPT: &str = include_str!("ytdlp_worker.py");
 
 /// Answers still owed by one process; `None` once its stdout has closed.
-type Pending = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>>;
+type Pending = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<Result<Answer, String>>>>>>;
+
+/// yt-dlp's info for a track, holding only its `formats`, and the
+/// youtube.com cookies it holds afterwards, rotated ones included.
+pub struct Answer {
+    pub info: Value,
+    pub cookies: Vec<(String, String)>,
+}
 
 pub struct Worker {
     python: PathBuf,
@@ -59,14 +66,13 @@ impl Worker {
         }
     }
 
-    /// yt-dlp's info for `video_id`, holding only its `formats`.
     pub async fn info(
         &self,
         video_id: &str,
         cookies: Option<&Path>,
         premium: bool,
         timeout: Duration,
-    ) -> Result<Value, String> {
+    ) -> Result<Answer, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut line = json!({
             "id": id,
@@ -151,7 +157,15 @@ impl Worker {
                         continue;
                     };
                     let result = match (answer.get("info"), answer["error"].as_str()) {
-                        (Some(info), _) => Ok(info.clone()),
+                        (Some(info), _) => Ok(Answer {
+                            info: info.clone(),
+                            cookies: answer["cookies"]
+                                .as_object()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                                .collect(),
+                        }),
                         (None, Some(error)) => Err(error.to_owned()),
                         (None, None) => Err("the yt-dlp worker answered nothing".into()),
                     };

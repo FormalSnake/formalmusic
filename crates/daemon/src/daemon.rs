@@ -4,12 +4,17 @@ use crate::config::{Config, Paths};
 use crate::extras::Extras;
 use crate::playback::Playback;
 use crate::scrobble::Scrobbler;
-use crate::session::Session;
+use crate::session::{ImportedFrom, Session};
 use crate::signin::BrowserSignIn;
 use formalmusic_api::{ApiError, Command, Event, LibraryScope, RateTarget, Reply};
 use formalmusic_player::Player;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
+
+/// Rotated cookies reach `session.json` within this long.
+const PERSIST_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+/// `verify_session` every five minutes, about what the web app does.
+const KEEPALIVE_TICKS: u32 = 5;
 
 pub struct Daemon {
     pub session: Arc<Session>,
@@ -64,12 +69,35 @@ impl Daemon {
         Ok(Reply::Ok)
     }
 
-    /// Checks the stored cookies once at startup.
-    pub async fn check_session(&self) {
-        if self.session.cookies().is_none() {
-            return;
+    /// Checks the stored cookies at startup, then keeps the session alive:
+    /// `verify_session` every few minutes as the web app does, and the
+    /// rotated cookies written back to disk.
+    pub async fn session_upkeep(&self) {
+        if self.session.cookies().is_some() {
+            self.check_session().await;
         }
+        let mut tick = tokio::time::interval(PERSIST_EVERY);
+        tick.tick().await;
+        let mut ticks = 0u32;
+        loop {
+            tick.tick().await;
+            ticks += 1;
+            if ticks.is_multiple_of(KEEPALIVE_TICKS) && self.session.cookies().is_some() {
+                match self.session.keepalive().await {
+                    Ok(()) => {}
+                    Err(ApiError::SignedOut) => self.check_session().await,
+                    Err(e) => tracing::debug!("session keepalive: {e}"),
+                }
+            }
+            self.session.persist();
+        }
+    }
+
+    async fn check_session(&self) {
         match self.session.refresh().await {
+            Ok(info) if !info.signed_in && self.session.imported_from().is_some() => {
+                self.reimport().await
+            }
             Ok(info) => {
                 tracing::info!(
                     signed_in = info.signed_in,
@@ -79,6 +107,30 @@ impl Daemon {
                 self.emit(Event::Session(info));
             }
             Err(e) => tracing::warn!("could not check the stored session: {e}"),
+        }
+    }
+
+    /// An imported session shares the browser's Google session, which the
+    /// browser rotates; once YouTube stops taking the daemon's copy, the
+    /// profile has the current one.
+    async fn reimport(&self) {
+        let Some(from) = self.session.imported_from() else {
+            return;
+        };
+        let signed_in = match self.signin.import(&from.browser, &from.profile).await {
+            Ok(cookies) => self.session.sign_in_from(&cookies, None, Some(from)).await,
+            Err(e) => Err(e),
+        };
+        match signed_in {
+            Ok(info) => {
+                tracing::info!("read the session again from the browser profile it came from");
+                self.playback.session_changed();
+                self.emit(Event::Session(info));
+            }
+            Err(e) => {
+                tracing::warn!("the imported session expired and the profile has none: {e}");
+                self.emit(Event::Session(self.session.info()));
+            }
         }
     }
 
@@ -102,7 +154,11 @@ impl Daemon {
             Command::BrowserProfiles => Ok(Reply::BrowserProfiles(self.signin.profiles())),
             Command::ImportCookies { browser, profile } => {
                 let cookies = self.signin.import(&browser, &profile).await?;
-                let info = self.session.sign_in(&cookies, None).await?;
+                let from = ImportedFrom { browser, profile };
+                let info = self
+                    .session
+                    .sign_in_from(&cookies, None, Some(from))
+                    .await?;
                 self.session_changed();
                 Ok(Reply::Session(info))
             }

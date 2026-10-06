@@ -15,6 +15,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub struct Stored {
     pub cookies: String,
     pub page_id: Option<String>,
+    /// The browser profile the cookies were imported from. That profile and
+    /// the daemon then share one Google session, which dies for whichever
+    /// side did not rotate it last, so the daemon reads it again from there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ImportedFrom>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportedFrom {
+    pub browser: String,
+    pub profile: String,
 }
 
 pub struct Session {
@@ -75,8 +86,42 @@ impl Session {
         self.state.read().info.clone()
     }
 
+    /// The cookies as they stand now: YouTube's `Set-Cookie`s and yt-dlp's
+    /// updates included, which [`Session::persist`] writes back.
     pub fn cookies(&self) -> Option<String> {
-        self.state.read().stored.as_ref().map(|s| s.cookies.clone())
+        let state = self.state.read();
+        state.stored.as_ref()?;
+        state.client.cookies()
+    }
+
+    /// Cookies yt-dlp was handed while it acted for this session.
+    pub fn merge_cookies(&self, pairs: &[(String, String)]) {
+        self.state.read().client.merge_cookies(pairs);
+    }
+
+    pub fn imported_from(&self) -> Option<ImportedFrom> {
+        self.state.read().stored.as_ref()?.profile.clone()
+    }
+
+    /// Writes the cookies back to disk when YouTube or yt-dlp changed them,
+    /// so a restart picks up the rotated set rather than the stale one.
+    pub fn persist(&self) {
+        let mut state = self.state.write();
+        let Some(current) = state.client.cookies() else {
+            return;
+        };
+        let Some(stored) = state.stored.as_mut().filter(|s| s.cookies != current) else {
+            return;
+        };
+        stored.cookies = current;
+        if let Err(e) = save(&self.path, Some(stored)) {
+            tracing::warn!("saving the rotated cookies: {e}");
+        }
+    }
+
+    /// Asks YouTube to keep the session from lapsing, as the web app does.
+    pub async fn keepalive(&self) -> Result<(), ApiError> {
+        self.client().keepalive().await
     }
 
     /// Asks YouTube who the stored cookies belong to.
@@ -101,6 +146,16 @@ impl Session {
         cookies: &str,
         page_id: Option<String>,
     ) -> Result<SessionInfo, ApiError> {
+        self.sign_in_from(cookies, page_id, None).await
+    }
+
+    /// [`Session::sign_in`] with cookies read out of a browser profile.
+    pub async fn sign_in_from(
+        &self,
+        cookies: &str,
+        page_id: Option<String>,
+        profile: Option<ImportedFrom>,
+    ) -> Result<SessionInfo, ApiError> {
         let header = cookie_header(cookies);
         let cookies = header.as_str();
         let client = Client::signed_in(cookies, page_id.clone())?;
@@ -113,6 +168,7 @@ impl Session {
         let stored = Stored {
             cookies: cookies.trim().to_owned(),
             page_id,
+            profile,
         };
         save(&self.path, Some(&stored))
             .map_err(|e| ApiError::BadRequest(format!("saving the session: {e}")))?;
@@ -122,7 +178,8 @@ impl Session {
 
     pub async fn switch_account(&self, page_id: Option<String>) -> Result<SessionInfo, ApiError> {
         let cookies = self.cookies().ok_or(ApiError::SignedOut)?;
-        self.sign_in(&cookies, page_id).await
+        self.sign_in_from(&cookies, page_id, self.imported_from())
+            .await
     }
 
     pub fn sign_out(&self) -> Result<SessionInfo, ApiError> {
@@ -221,6 +278,37 @@ mod tests {
             .google.com\tTRUE\t/\tTRUE\t1893456000\tNID\tzzz\n";
         assert_eq!(cookie_header(file), "SAPISID=abc; SID=def");
         assert_eq!(cookie_header(&netscape_cookies("A=1; B=2")), "A=1; B=2");
+    }
+
+    #[tokio::test]
+    async fn rotated_cookies_reach_the_session_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let stored = Stored {
+            cookies: "SAPISID=a; SIDCC=old".into(),
+            page_id: None,
+            profile: Some(ImportedFrom {
+                browser: "firefox".into(),
+                profile: "/p".into(),
+            }),
+        };
+        save(&path, Some(&stored)).unwrap();
+        let session = Session::load(path.clone()).unwrap();
+        session.persist();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            serde_json::to_vec_pretty(&stored).unwrap()
+        );
+
+        session.merge_cookies(&[("SIDCC".into(), "new".into()), ("YSC".into(), "y".into())]);
+        assert_eq!(
+            session.cookies().as_deref(),
+            Some("SAPISID=a; SIDCC=new; YSC=y")
+        );
+        session.persist();
+        let saved: Stored = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.cookies, "SAPISID=a; SIDCC=new; YSC=y");
+        assert_eq!(saved.profile, stored.profile);
     }
 
     #[test]
