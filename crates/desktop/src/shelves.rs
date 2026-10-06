@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use formalmusic_api::{Chip, Item, Link, Rating, Section, Track};
+use formalmusic_api::{Chip, Item, Link, Rating, Section, Track, TrackKind};
 use formalmusic_core::MusicStore;
 use formalmusic_core::format::{byline, duration, names};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -13,7 +13,7 @@ use gpui_kit::*;
 
 use crate::actions::{self, MenuContext};
 use crate::art;
-use crate::header::{link_text, pill_button, rating_buttons};
+use crate::header::{LinkLine, link_text, pill_button, rating_buttons};
 use crate::icons::{Icon, IconName};
 use crate::primitives::IconButton;
 use crate::theme::{
@@ -28,6 +28,18 @@ pub struct Env {
     /// The current track's video id, and whether it is playing.
     pub playing: Option<(String, bool)>,
     pub menu: MenuContext,
+}
+
+/// How a track row spreads its text across the width.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RowLayout {
+    /// Title and artists, the duration on the right.
+    Narrow,
+    /// Narrow plus the album, or the play count on an album page, in its own column.
+    Wide,
+    /// Search's mixed results: "Song \u{2022} artists \u{2022} album \u{2022} 3:07"
+    /// under the title, the way music.youtube.com lists them.
+    Byline,
 }
 
 impl Env {
@@ -585,7 +597,7 @@ pub fn track_row(
     album_artists: &[Link],
     env: &Env,
     on_play: Rc<dyn Fn(&mut App)>,
-    wide: bool,
+    layout: RowLayout,
 ) -> AnyElement {
     let palette = env.palette;
     let current = env.is_current(&track.video_id);
@@ -645,35 +657,29 @@ pub fn track_row(
         }
         None => row_art(track, current, group.clone(), &palette),
     };
+    let mut line = LinkLine::new(SharedString::from(format!("{id}-byline")), palette.text);
+    if layout == RowLayout::Byline {
+        line = line.text(kind(track)).dot();
+    }
+    line = line.names(&track.artists);
+    if layout == RowLayout::Byline {
+        if let Some(album) = &track.album {
+            line = line.dot().link(album);
+        }
+        if let Some(ms) = track.duration_ms {
+            line = line.dot().text(&duration(ms));
+        }
+    }
     let artists = div()
-        .flex()
-        .flex_row()
         .min_w(px(0.))
-        .overflow_hidden()
         .text_size(type_scale::BODY.font_size)
         .line_height(type_scale::BODY.line_height)
         .text_color(palette.secondary)
-        .whitespace_nowrap()
-        .children(track.artists.iter().enumerate().flat_map(|(n, link)| {
-            let sep = (n > 0).then(|| {
-                div()
-                    .child(if n + 1 == track.artists.len() {
-                        " & "
-                    } else {
-                        ", "
-                    })
-                    .into_any_element()
-            });
-            sep.into_iter().chain(std::iter::once(link_text(
-                link,
-                ElementId::NamedInteger(format!("{id}-artist").into(), n as u64),
-                palette.text,
-            )))
-        }));
+        .child(line);
     let album = track
         .album
         .as_ref()
-        .filter(|_| wide && number.is_none())
+        .filter(|_| layout == RowLayout::Wide && number.is_none())
         .map(|album| {
             div()
                 .w(relative(0.3))
@@ -736,7 +742,10 @@ pub fn track_row(
         )
         .children(album)
         .when_some(
-            track.plays.clone().filter(|_| wide && number.is_some()),
+            track
+                .plays
+                .clone()
+                .filter(|_| layout == RowLayout::Wide && number.is_some()),
             |el, plays| {
                 el.child(
                     div()
@@ -768,16 +777,18 @@ pub fn track_row(
                     move |rating, _| rate_store.rate(&rate_track, rating),
                 )),
         )
-        .child(
-            div()
-                .w(px(44.))
-                .flex_shrink_0()
-                .text_size(type_scale::BODY.font_size)
-                .text_color(palette.secondary)
-                .font_features(tabular())
-                .text_align(TextAlign::Right)
-                .child(track.duration_ms.map(duration).unwrap_or_default()),
-        )
+        .when(layout != RowLayout::Byline, |el| {
+            el.child(
+                div()
+                    .w(px(44.))
+                    .flex_shrink_0()
+                    .text_size(type_scale::BODY.font_size)
+                    .text_color(palette.secondary)
+                    .font_features(tabular())
+                    .text_align(TextAlign::Right)
+                    .child(track.duration_ms.map(duration).unwrap_or_default()),
+            )
+        })
         .child(
             div()
                 .opacity(0.)
@@ -857,12 +868,21 @@ pub fn item_row(item: &Item, id: ElementId, env: &Env) -> AnyElement {
         .into_any_element()
 }
 
+/// What music.youtube.com calls a track in search results.
+fn kind(track: &Track) -> &'static str {
+    match track.kind {
+        TrackKind::Song | TrackKind::Upload => "Song",
+        TrackKind::Video => "Video",
+        TrackKind::Episode => "Episode",
+    }
+}
+
 /// Search's "Top result": a large cover with the name and its own actions.
 pub fn hero(item: &Item, env: &Env) -> AnyElement {
     let palette = env.palette;
     let (title, subtitle, thumbnails, round) = card_text(item);
     let kind = match item {
-        Item::Track(_) => "Song",
+        Item::Track(track) => kind(track),
         Item::Album { .. } => "Album",
         Item::Artist { .. } => "Artist",
         Item::Playlist { .. } => "Playlist",
@@ -871,10 +891,16 @@ pub fn hero(item: &Item, env: &Env) -> AnyElement {
     };
     let target = actions::target_of(item);
     let (play_item, play_store) = (item.clone(), env.store.clone());
-    let subtitle = match subtitle {
-        Some(subtitle) if subtitle.starts_with(kind) => subtitle,
-        Some(subtitle) => format!("{kind} \u{2022} {subtitle}"),
-        None => kind.to_owned(),
+    let subtitle = match (item, subtitle) {
+        (Item::Track(track), _) => [kind.to_owned(), byline(track)]
+            .into_iter()
+            .chain(track.duration_ms.map(duration))
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" \u{2022} "),
+        (_, Some(subtitle)) if subtitle.starts_with(kind) => subtitle,
+        (_, Some(subtitle)) => format!("{kind} \u{2022} {subtitle}"),
+        (_, None) => kind.to_owned(),
     };
     div()
         .id("top-result")

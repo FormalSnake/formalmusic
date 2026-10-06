@@ -1,9 +1,10 @@
 //! Page headers in YouTube Music's three shapes: Detail (album, single,
 //! playlist), Artist (a full-bleed banner) and a plain Title.
 
+use std::ops::Range;
 use std::rc::Rc;
 
-use formalmusic_api::{Header, Link, PlaySource, Rating};
+use formalmusic_api::{BrowseTarget, Header, Link, PlaySource, Rating};
 use formalmusic_core::MusicStore;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -359,6 +360,118 @@ pub fn links(links: &[Link], color: Hsla, hover: Hsla) -> Div {
         row = row.child(link_text(link, ("byline", n), hover));
     }
     row
+}
+
+/// A row's second line, "Song \u{2022} Nadia Reyes & Kofi Mensah \u{2022} Night
+/// Drive", as one run of text so a line too long for its row ends in a single
+/// ellipsis. The linked names open their page and underline under the pointer.
+#[derive(IntoElement)]
+pub struct LinkLine {
+    id: ElementId,
+    text: String,
+    links: Vec<(Range<usize>, BrowseTarget)>,
+    hover: Hsla,
+}
+
+impl LinkLine {
+    pub fn new(id: impl Into<ElementId>, hover: Hsla) -> Self {
+        Self {
+            id: id.into(),
+            text: String::new(),
+            links: Vec::new(),
+            hover,
+        }
+    }
+
+    pub fn text(mut self, text: &str) -> Self {
+        self.text.push_str(text);
+        self
+    }
+
+    /// A bullet between what came before and what follows; nothing at the start.
+    pub fn dot(self) -> Self {
+        if self.text.is_empty() {
+            self
+        } else {
+            self.text(" \u{2022} ")
+        }
+    }
+
+    pub fn link(mut self, link: &Link) -> Self {
+        let start = self.text.len();
+        self.text.push_str(&link.text);
+        if let Some(target) = &link.target {
+            self.links.push((start..self.text.len(), target.clone()));
+        }
+        self
+    }
+
+    /// "A, B & C", the way `formalmusic_core::format::names` joins them.
+    pub fn names(mut self, links: &[Link]) -> Self {
+        for (n, link) in links.iter().enumerate() {
+            if n > 0 {
+                self = self.text(if n + 1 == links.len() { " & " } else { ", " });
+            }
+            self = self.link(link);
+        }
+        self
+    }
+}
+
+impl RenderOnce for LinkLine {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let hovered = window.use_keyed_state(self.id.clone(), cx, |_, _| None::<usize>);
+        let ranges: Vec<Range<usize>> = self.links.iter().map(|(range, _)| range.clone()).collect();
+        let lit = (*hovered.read(cx))
+            .and_then(|n| ranges.get(n))
+            .map(|range| {
+                (
+                    range.clone(),
+                    HighlightStyle {
+                        color: Some(self.hover),
+                        underline: Some(UnderlineStyle {
+                            thickness: px(1.),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )
+            });
+        let targets: Vec<BrowseTarget> = self.links.into_iter().map(|(_, target)| target).collect();
+        let (hover_ranges, on_text, on_leave) = (ranges.clone(), hovered.clone(), hovered);
+        let set = |state: &Entity<Option<usize>>, value: Option<usize>, cx: &mut App| {
+            state.update(cx, |current, cx| {
+                if *current != value {
+                    *current = value;
+                    cx.notify();
+                }
+            });
+        };
+        div()
+            .id(self.id)
+            .min_w(px(0.))
+            .truncate()
+            // The text only reports the pointer while it is over it, so
+            // leaving the line clears the underline here.
+            .on_hover(move |inside, _, cx| {
+                if !*inside {
+                    set(&on_leave, None, cx);
+                }
+            })
+            .child(
+                InteractiveText::new("text", StyledText::new(self.text).with_highlights(lit))
+                    .on_click(ranges, move |n, _, cx| {
+                        cx.stop_propagation();
+                        actions::open(targets[n].clone(), cx);
+                    })
+                    .on_hover(move |index, _, _, cx| {
+                        let n = index.and_then(|index| {
+                            hover_ranges.iter().position(|range| range.contains(&index))
+                        });
+                        set(&on_text, n, cx);
+                    }),
+            )
+    }
 }
 
 /// One name that opens its page on click, underlined on hover like a link.

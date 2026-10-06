@@ -18,7 +18,7 @@ use crate::actions::{self, MenuContext};
 use crate::art;
 use crate::bridge::{Bridge, Topic};
 use crate::cover_video::CoverVideo;
-use crate::header::{link_text, rating_buttons};
+use crate::header::{LinkLine, rating_buttons};
 use crate::icons::{Icon, IconName};
 use crate::primitives::IconButton;
 use crate::theme::{PLAYER_HEIGHT, Palette, Theme, radius, spacing, tabular, type_scale};
@@ -469,26 +469,16 @@ impl Render for PlayerBar {
         let now = track.as_ref().map(|track| {
             let (rate_store, rate_track) = (self.store.clone(), track.clone());
             let (menu_store, menu_track) = (self.store.clone(), track.clone());
-            let mut byline = div()
-                .flex()
-                .flex_row()
+            let mut line = LinkLine::new("bar-byline", palette.text).names(&track.artists);
+            if let Some(album) = &track.album {
+                line = line.dot().link(album);
+            }
+            let byline = div()
                 .min_w(px(0.))
-                .overflow_hidden()
-                .whitespace_nowrap()
                 .text_size(type_scale::CAPTION.font_size)
                 .line_height(type_scale::CAPTION.line_height)
-                .text_color(palette.secondary);
-            for (n, artist) in track.artists.iter().enumerate() {
-                if n > 0 {
-                    byline = byline.child(div().child(", "));
-                }
-                byline = byline.child(link_text(artist, ("bar-artist", n), palette.text));
-            }
-            if let Some(album) = &track.album {
-                byline = byline
-                    .child(div().px(spacing::X1).child("\u{2022}"))
-                    .child(link_text(album, "bar-album", palette.text));
-            }
+                .text_color(palette.secondary)
+                .child(line);
             div()
                 .flex()
                 .flex_row()

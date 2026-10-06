@@ -20,7 +20,7 @@ use crate::actions::MenuContext;
 use crate::bridge::{Bridge, Topic};
 use crate::icons::{Icon, IconName};
 use crate::primitives::{Button, ButtonKind};
-use crate::shelves::{self, CARD_GAP, Env, MOOD_TILE};
+use crate::shelves::{self, CARD_GAP, Env, MOOD_TILE, RowLayout};
 use crate::theme::{CARD_ART, PAGE_INSET, PLAYER_HEIGHT, Theme, spacing, type_scale};
 
 /// What a page shows, whichever command fetched it.
@@ -489,7 +489,11 @@ impl PageView {
                             &album_artists,
                             &env,
                             on_play,
-                            window.viewport_size().width > px(1100.),
+                            match route {
+                                Route::Search(SearchKey { filter: None, .. }) => RowLayout::Byline,
+                                _ if window.viewport_size().width > px(1100.) => RowLayout::Wide,
+                                _ => RowLayout::Narrow,
+                            },
                         )
                     }
                     other => shelves::item_row(other, id, &env),
