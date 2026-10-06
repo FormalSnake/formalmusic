@@ -38,11 +38,16 @@ single app's team.
   back (DevTools pipe for Chromium browsers, `cookies.sqlite` for Firefox
   ones), or the user pastes a cookie header in a fallback, with cookies stored in
   `$XDG_STATE_HOME/formalmusicd/session.json` (chmod 600). Brand accounts use the
-  `X-Goog-PageId` header. The same cookies go to yt-dlp via `--cookies`, so
-  Premium bitrates work.
-- **Streams:** `yt-dlp -J` per track, opus first. Resolve the next two queue
-  entries ahead of time so the ~1s yt-dlp startup never lands on a track
-  change. URLs expire after ~6h, so re-resolve when one is stale.
+  `X-Goog-PageId` header. yt-dlp gets the same cookies from a private copy in
+  the state dir (it rewrites any jar it reads), so Premium bitrates work.
+- **Streams:** yt-dlp's Python API in one long-lived worker process
+  (`crates/daemon/src/streams/ytdlp_worker.py`, JSON lines over stdin and
+  stdout), opus first, so interpreter start-up and the player JS are paid
+  once. A Premium session asks the `web_music` client alone and skips the
+  watch page, client configs and `next`. The tail probe for gated URLs runs
+  beside playback and swaps the URL only when it fails. Resolve the next two
+  queue entries ahead of time. URLs expire after ~6h, so re-resolve when one
+  is stale.
 - **Audio:** symphonia decoding opus/webm and aac/m4a, played through cpal
   over HTTP range reads, with gapless playback and crossfade. Volume
   normalisation uses `loudnessDb` from the player response, which is what
@@ -116,7 +121,8 @@ it never replaces the tokens. Once two apps share it,
   overlay over nixpkgs' derivation. Nixpkgs lags releases by days, and the
   curl-cffi test breakage already worked around in
   `~/.config/nix/modules/shared/mixins/nix.nix` shows that tracking unstable
-  is fragile. `formalmusicd` gets the pinned yt-dlp baked into its wrapper `PATH`.
+  is fragile. `formalmusicd` gets the pinned yt-dlp baked into its wrapper `PATH`,
+  and `FORMALMUSIC_YTDLP_PYTHON` pointing at an interpreter that imports it.
 - **`packages.formalmusic`:** builds both binaries for x86_64 and aarch64
   Linux. It copies messages' `package.nix`: the same `patchelf --add-rpath`
   for wayland, vulkan, xkbcommon and X11, plus `alsa-lib` (cpal), and `wrapProgram` putting yt-dlp on `formalmusicd`'s `PATH`.

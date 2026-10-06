@@ -182,7 +182,11 @@ impl Playback {
         let this = Arc::new(Self {
             state: Mutex::new(state),
             player,
-            resolver: Resolver::new(paths.state.clone(), config.preferred_quality),
+            resolver: Resolver::new(
+                paths.state.clone(),
+                session.clone(),
+                config.preferred_quality,
+            ),
             session,
             config,
             events,
@@ -195,7 +199,12 @@ impl Playback {
             rng: Mutex::new(fastrand::Rng::new()),
         });
         this.rt.spawn(this.clone().player_events());
+        this.rt.spawn(this.clone().gated_events());
         this.rt.spawn(this.clone().persist_loop());
+        this.rt.spawn({
+            let this = this.clone();
+            async move { this.resolver.warm().await }
+        });
         if resume {
             tracing::info!(
                 position_ms = this.state.lock().position_ms,
@@ -608,6 +617,18 @@ impl Playback {
             return;
         }
         match prepared {
+            // googlevideo refused the end of it while the track was loading.
+            Ok((source, _)) if self.resolver.is_gated(&source) => {
+                let Some(entry) = st.queue.current().filter(|e| e.uid == uid) else {
+                    return;
+                };
+                let video_id = entry.track.video_id.clone();
+                let this = self.clone();
+                self.rt.spawn(async move {
+                    let prepared = this.prepare(&video_id).await;
+                    this.on_prepared(generation, uid, prepared, start_ms, resumed);
+                });
+            }
             Ok((source, loudness)) => {
                 st.stream = Some(source.label());
                 let id = self.player.load(source, start_ms, loudness);
@@ -838,6 +859,30 @@ impl Playback {
 
     // Player events
 
+    /// Swaps the playing URL when the check that ran beside its start finds
+    /// googlevideo gating it; the resolver already has a good one coming.
+    async fn gated_events(self: Arc<Self>) {
+        let mut gated = self.resolver.gated();
+        loop {
+            match gated.recv().await {
+                Ok(video_id) => {
+                    let mut st = self.state.lock();
+                    let (Some(loaded), Some(entry)) = (st.loaded, st.queue.current().cloned())
+                    else {
+                        continue;
+                    };
+                    if entry.uid == loaded.uid && entry.track.video_id == video_id {
+                        tracing::info!(video_id, "playing url is gated, switching to a new one");
+                        let started = st.status != Status::Loading;
+                        self.reload(&mut st, entry, started);
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+
     async fn player_events(self: Arc<Self>) {
         let mut events = self.player.subscribe();
         loop {
@@ -990,6 +1035,12 @@ impl Playback {
             "stream url expired, resolving again"
         );
         self.resolver.invalidate(&entry.track.video_id);
+        self.reload(st, entry, true);
+    }
+
+    /// Loads the current entry again where it is, for a new stream URL.
+    /// `resumed` keeps a track that already started from being reported twice.
+    fn reload(self: &Arc<Self>, st: &mut State, entry: crate::queue::Entry, resumed: bool) {
         st.generation += 1;
         st.loaded = None;
         st.preload = None;
@@ -999,7 +1050,7 @@ impl Playback {
         let this = self.clone();
         self.rt.spawn(async move {
             let prepared = this.prepare(&entry.track.video_id).await;
-            this.on_prepared(generation, entry.uid, prepared, start_ms, true);
+            this.on_prepared(generation, entry.uid, prepared, start_ms, resumed);
         });
     }
 

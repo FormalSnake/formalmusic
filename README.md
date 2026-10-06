@@ -78,7 +78,8 @@ changes by days. `overlays.default` adds `pkgs.formalmusic`.
 
 ### Other Linux
 
-Needs a recent stable Rust, Vulkan, `yt-dlp` and `ffmpeg` on `PATH`, and `libxkbcommon`,
+Needs a recent stable Rust, Vulkan, `yt-dlp` and `ffmpeg` on `PATH`, a `python3` that
+can `import yt_dlp` (or `FORMALMUSIC_YTDLP_PYTHON` naming one), and `libxkbcommon`,
 `wayland`, `vulkan-loader`, `fontconfig`, `freetype`, `alsa-lib`, `libopus`.
 
 ```

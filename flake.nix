@@ -60,6 +60,7 @@
         in
         {
           default = pkgs.mkShell {
+            FORMALMUSIC_YTDLP_PYTHON = "${pkgs.formalmusic.ytdlpPython}/bin/formalmusic-ytdlp-python";
             # symphonia-adapter-libopus links the system libopus through pkg-config
             # on every platform, macOS included.
             packages = [ pkgs.yt-dlp pkgs.socat pkgs.pkg-config pkgs.libopus pkgs.ffmpeg-headless ]

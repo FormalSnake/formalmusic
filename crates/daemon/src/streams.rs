@@ -1,19 +1,20 @@
 //! Stream resolution through yt-dlp, cached until the signed URL expires.
 
+mod worker;
+
 use crate::config::{Quality, write_private};
-use crate::session::netscape_cookies;
+use crate::session::{Session, netscape_cookies};
 use formalmusic_player::{Codec, StreamSource};
 use parking_lot::Mutex;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::process::Command;
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, broadcast};
+use worker::Worker;
 
-/// yt-dlp normally answers in one to three seconds; past this it is stuck.
+/// A warm yt-dlp answers in well under two seconds; past this it is stuck.
 const TIMEOUT: Duration = Duration::from_secs(60);
 /// A URL this close to expiry is resolved again rather than started.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(10 * 60);
@@ -25,11 +26,21 @@ const PROBE_BYTES: u64 = 1024;
 type Slot = Arc<OnceCell<Result<StreamSource, String>>>;
 
 pub struct Resolver {
-    program: PathBuf,
-    cookie_dir: PathBuf,
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    worker: Worker,
+    state_dir: PathBuf,
+    session: Arc<Session>,
     quality: Quality,
     cache: Mutex<HashMap<String, Slot>>,
-    runs: AtomicU64,
+    /// The private copy of the session cookies yt-dlp reads, and the header
+    /// it was written from.
+    cookie_file: Mutex<Option<(String, PathBuf)>>,
+    /// URLs googlevideo refused the end of.
+    gated: Mutex<HashSet<String>>,
+    gated_tx: broadcast::Sender<String>,
     http: reqwest::Client,
 }
 
@@ -41,26 +52,62 @@ pub fn ytdlp_program() -> PathBuf {
 }
 
 impl Resolver {
-    pub fn new(cookie_dir: PathBuf, quality: Quality) -> Self {
-        Self {
-            program: ytdlp_program(),
-            cookie_dir,
+    /// `state_dir` holds the cookie file handed to yt-dlp; its cache (the
+    /// player JS and solved signature functions) lives under the user cache.
+    pub fn new(state_dir: PathBuf, session: Arc<Session>, quality: Quality) -> Self {
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| state_dir.clone())
+            .join("formalmusic")
+            .join("yt-dlp");
+        Self::with_worker(
+            Worker::new(worker::python(), cache_dir),
+            state_dir,
+            session,
             quality,
-            cache: Mutex::new(HashMap::new()),
-            runs: AtomicU64::new(0),
-            http: reqwest::Client::new(),
+        )
+    }
+
+    fn with_worker(
+        worker: Worker,
+        state_dir: PathBuf,
+        session: Arc<Session>,
+        quality: Quality,
+    ) -> Self {
+        remove_cookie_files(&state_dir);
+        Self {
+            inner: Arc::new(Inner {
+                worker,
+                state_dir,
+                session,
+                quality,
+                cache: Mutex::new(HashMap::new()),
+                cookie_file: Mutex::new(None),
+                gated: Mutex::new(HashSet::new()),
+                gated_tx: broadcast::channel(16).0,
+                http: reqwest::Client::new(),
+            }),
         }
+    }
+
+    /// Starts yt-dlp, so the first track does not wait for Python to load it.
+    pub async fn warm(&self) {
+        self.inner.worker.warm().await;
     }
 
     /// The stream for `video_id`. Concurrent calls for one id share a single
     /// yt-dlp run; failures are not cached.
+    ///
+    /// The URL is handed out before it is checked: the check runs beside
+    /// playback, and a URL that fails it is announced on [`Resolver::gated`]
+    /// while a good one is resolved in its place.
     pub async fn resolve(
         &self,
         video_id: &str,
         cookies: Option<&str>,
     ) -> Result<StreamSource, String> {
+        let inner = &self.inner;
         let slot = {
-            let mut cache = self.cache.lock();
+            let mut cache = inner.cache.lock();
             cache.retain(|_, slot| match slot.get() {
                 Some(Ok(source)) => !source.expires_within(EXPIRY_MARGIN),
                 Some(Err(_)) => false,
@@ -68,65 +115,128 @@ impl Resolver {
             });
             cache.entry(video_id.to_owned()).or_default().clone()
         };
+        let mut fresh = false;
         let result = slot
-            .get_or_init(|| self.run(video_id, cookies))
+            .get_or_init(|| {
+                fresh = true;
+                inner.run_once(video_id, cookies)
+            })
             .await
             .clone();
-        if result.is_err() {
-            let mut cache = self.cache.lock();
-            if cache.get(video_id).is_some_and(|s| Arc::ptr_eq(s, &slot)) {
-                cache.remove(video_id);
+        match &result {
+            Ok(source) if fresh => {
+                tokio::spawn(Inner::check(
+                    inner.clone(),
+                    video_id.to_owned(),
+                    cookies.map(str::to_owned),
+                    slot,
+                    source.clone(),
+                ));
+            }
+            Ok(_) => {}
+            Err(_) => {
+                let mut cache = inner.cache.lock();
+                if cache.get(video_id).is_some_and(|s| Arc::ptr_eq(s, &slot)) {
+                    cache.remove(video_id);
+                }
             }
         }
         result
     }
 
+    /// Video ids whose URL googlevideo gates; the next resolve of one waits
+    /// for a URL that passed the check.
+    pub fn gated(&self) -> broadcast::Receiver<String> {
+        self.inner.gated_tx.subscribe()
+    }
+
+    /// True when `source` failed the check after it was handed out.
+    pub fn is_gated(&self, source: &StreamSource) -> bool {
+        self.inner.gated.lock().contains(&source.url)
+    }
+
     /// Forgets a URL googlevideo refused, so the next resolve runs yt-dlp.
+    /// A resolve still running, such as the one replacing a gated URL, is
+    /// newer than the refused URL and stays.
     pub fn invalidate(&self, video_id: &str) {
-        self.cache.lock().remove(video_id);
+        let mut cache = self.inner.cache.lock();
+        if cache.get(video_id).is_some_and(|slot| slot.initialized()) {
+            cache.remove(video_id);
+        }
     }
 
-    /// Drops every cached URL; they were signed for the previous account.
+    /// Drops every cached URL and the cookie copy; they belong to the
+    /// previous account.
     pub fn clear(&self) {
-        self.cache.lock().clear();
+        self.inner.cache.lock().clear();
+        self.inner.gated.lock().clear();
+        if let Some((_, path)) = self.inner.cookie_file.lock().take() {
+            let _ = std::fs::remove_file(path);
+        }
     }
+}
 
-    /// Runs yt-dlp until it hands out a URL googlevideo serves in full.
-    ///
+impl Inner {
     /// Some of the URLs yt-dlp's default client (`c=VISIONOS` as of
     /// 2026.08.19) gets for a signed-out session are gated behind a GVS PO
     /// token that yt-dlp does not know is needed: googlevideo serves the
     /// first ~65 s of audio (about 1.1 MB) and answers 403 to any range past
     /// it. About one run in ten is gated, at random, so asking again works.
-    async fn run(&self, video_id: &str, cookies: Option<&str>) -> Result<StreamSource, String> {
-        for attempt in 1..=MAX_ATTEMPTS {
-            let source = self.run_once(video_id, cookies).await?;
-            match self.serves_the_end(&source).await {
-                Ok(true) => return Ok(source),
-                Ok(false) => {
-                    tracing::info!(
-                        video_id,
-                        attempt,
-                        "googlevideo gates this url after the first megabyte, resolving again"
-                    )
+    /// A gated URL is replaced in the cache by one that passed this check
+    /// before anyone sees it.
+    async fn check(
+        self: Arc<Self>,
+        video_id: String,
+        cookies: Option<String>,
+        slot: Slot,
+        source: StreamSource,
+    ) {
+        if !self.gates(&video_id, &source).await {
+            return;
+        }
+        let retry: Slot = Arc::default();
+        {
+            let mut gated = self.gated.lock();
+            if gated.len() > 64 {
+                gated.clear();
+            }
+            gated.insert(source.url.clone());
+            let mut cache = self.cache.lock();
+            match cache.get(&video_id) {
+                Some(current) if Arc::ptr_eq(current, &slot) => {
+                    cache.insert(video_id.clone(), retry.clone());
                 }
-                // The probe is a check, not a requirement; the player retries
-                // its own network errors.
-                Err(e) => {
-                    tracing::debug!(video_id, "could not probe the stream: {e}");
-                    return Ok(source);
-                }
+                _ => return,
             }
         }
-        Err(format!(
-            "googlevideo refused the end of the stream {MAX_ATTEMPTS} times"
-        ))
+        let _ = self.gated_tx.send(video_id.clone());
+        let result = retry
+            .get_or_init(|| async {
+                for _ in 1..MAX_ATTEMPTS {
+                    let source = self.run_once(&video_id, cookies.as_deref()).await?;
+                    if !self.gates(&video_id, &source).await {
+                        return Ok(source);
+                    }
+                }
+                Err(format!(
+                    "googlevideo refused the end of the stream {MAX_ATTEMPTS} times"
+                ))
+            })
+            .await;
+        if result.is_err() {
+            let mut cache = self.cache.lock();
+            if cache.get(&video_id).is_some_and(|s| Arc::ptr_eq(s, &retry)) {
+                cache.remove(&video_id);
+            }
+        }
     }
 
-    /// False when googlevideo refuses the last bytes of the stream.
-    async fn serves_the_end(&self, source: &StreamSource) -> Result<bool, reqwest::Error> {
+    /// True when googlevideo refuses the last bytes of the stream. A probe
+    /// that fails for any other reason passes: the player retries its own
+    /// network errors.
+    async fn gates(&self, video_id: &str, source: &StreamSource) -> bool {
         let Some(len) = source.content_length.filter(|len| *len > PROBE_BYTES) else {
-            return Ok(true);
+            return false;
         };
         let mut request = self.http.get(&source.url).header(
             reqwest::header::RANGE,
@@ -135,8 +245,24 @@ impl Resolver {
         for (name, value) in &source.headers {
             request = request.header(name, value);
         }
-        let status = request.send().await?.status();
-        Ok(status != reqwest::StatusCode::FORBIDDEN && status != reqwest::StatusCode::GONE)
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                let gated =
+                    status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::GONE;
+                if gated {
+                    tracing::info!(
+                        video_id,
+                        "googlevideo gates this url after the first megabyte, resolving again"
+                    );
+                }
+                gated
+            }
+            Err(e) => {
+                tracing::debug!(video_id, "could not probe the stream: {e}");
+                false
+            }
+        }
     }
 
     async fn run_once(
@@ -144,57 +270,61 @@ impl Resolver {
         video_id: &str,
         cookies: Option<&str>,
     ) -> Result<StreamSource, String> {
-        let url = format!("https://music.youtube.com/watch?v={video_id}");
-        let mut command = Command::new(&self.program);
-        command
-            .args(["-J", "--no-playlist", "--no-warnings", "--no-progress"])
-            .kill_on_drop(true)
-            .stdin(std::process::Stdio::null());
-        // yt-dlp writes the jar back when it exits, so each run gets its own copy.
-        let cookie_file = match cookies {
-            Some(header) => {
-                let n = self.runs.fetch_add(1, Ordering::Relaxed);
-                let path = self
-                    .cookie_dir
-                    .join(format!("cookies-{}-{n}.txt", std::process::id()));
-                write_private(&path, netscape_cookies(header).as_bytes(), 0o600)
-                    .map_err(|e| format!("writing the cookie file: {e}"))?;
-                command.arg("--cookies").arg(&path);
-                Some(RemoveOnDrop(path))
-            }
-            None => None,
-        };
-        command.arg(&url);
-
+        let cookie_file = cookies.map(|header| self.cookie_file(header)).transpose()?;
+        let premium = cookies.is_some() && self.session.info().premium;
         let started = std::time::Instant::now();
-        let output = tokio::time::timeout(TIMEOUT, command.output())
+        let info = self
+            .worker
+            .info(video_id, cookie_file.as_deref(), premium, TIMEOUT)
             .await
-            .map_err(|_| format!("yt-dlp took longer than {}s", TIMEOUT.as_secs()))?
-            .map_err(|e| format!("running {}: {e}", self.program.display()))?;
-        drop(cookie_file);
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let reason = stderr
-                .lines()
-                .rev()
-                .find(|l| l.starts_with("ERROR"))
-                .unwrap_or(stderr.trim());
-            return Err(format!("yt-dlp: {reason}"));
-        }
-        let info: Value = serde_json::from_slice(&output.stdout)
-            .map_err(|e| format!("yt-dlp printed invalid JSON: {e}"))?;
+            .map_err(|e| format!("yt-dlp: {e}"))?;
         let source = pick_format(&info, self.quality)
             .ok_or_else(|| "no playable audio format".to_owned())?;
-        tracing::debug!(video_id, format = %source.label(), elapsed_ms = started.elapsed().as_millis() as u64, "resolved");
+        tracing::debug!(video_id, premium, format = %source.label(), elapsed_ms = started.elapsed().as_millis() as u64, "resolved");
         Ok(source)
+    }
+
+    /// The daemon's own 0600 copy of the session cookies for yt-dlp, written
+    /// once per session. yt-dlp rewrites any jar it is given, so it never
+    /// sees the session file or a file the user handed over.
+    fn cookie_file(&self, header: &str) -> Result<PathBuf, String> {
+        let mut current = self.cookie_file.lock();
+        if let Some((written, path)) = current.as_ref()
+            && written == header
+            && path.exists()
+        {
+            return Ok(path.clone());
+        }
+        if let Some((_, old)) = current.take() {
+            let _ = std::fs::remove_file(old);
+        }
+        let path = self
+            .state_dir
+            .join(format!("ytdlp-cookies-{:016x}.txt", fastrand::u64(..)));
+        write_private(&path, netscape_cookies(header).as_bytes(), 0o600)
+            .map_err(|e| format!("writing the cookie file: {e}"))?;
+        *current = Some((header.to_owned(), path.clone()));
+        Ok(path)
     }
 }
 
-struct RemoveOnDrop(PathBuf);
-
-impl Drop for RemoveOnDrop {
+impl Drop for Inner {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        remove_cookie_files(&self.state_dir);
+    }
+}
+
+/// Cookie copies left by an earlier run that did not exit cleanly.
+fn remove_cookie_files(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("ytdlp-cookies-") {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -282,35 +412,135 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn failed_runs_are_not_cached() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = dir.path().join("yt-dlp");
-        let count = dir.path().join("count");
+    /// A stand-in for the Python worker: `answer` is a shell snippet that
+    /// prints one JSON line for the request in `$line` with id `$id`.
+    fn fake_worker(dir: &Path, answer: &str) -> Resolver {
+        let script = dir.join("python");
         std::fs::write(
             &script,
-            format!("#!/bin/sh\necho x >> {}\necho 'ERROR: [youtube] x: Video unavailable' >&2\nexit 1\n", count.display()),
+            format!(
+                "#!/bin/sh\nwhile read -r line; do\n  echo \"$line\" >> {log}\n  id=$(echo \"$line\" | sed 's/.*\"id\":\\([0-9]*\\).*/\\1/')\n  n=$(wc -l < {log} | tr -d ' ')\n  {answer}\ndone\n",
+                log = dir.join("requests").display(),
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
-        let mut resolver = Resolver::new(dir.path().to_owned(), Quality::High);
-        resolver.program = script;
+        let state = dir.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let session = Arc::new(Session::load(state.join("session.json")).unwrap());
+        Resolver::with_worker(
+            Worker::new(script, dir.join("cache")),
+            state,
+            session,
+            Quality::High,
+        )
+    }
+
+    fn requests(dir: &Path) -> Vec<Value> {
+        std::fs::read_to_string(dir.join("requests"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn failed_runs_are_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolver = fake_worker(
+            dir.path(),
+            r#"echo "{\"id\":$id,\"error\":\"ERROR: [youtube] x: Video unavailable\"}""#,
+        );
         let err = resolver.resolve("abc", Some("SID=1")).await.unwrap_err();
         assert_eq!(err, "yt-dlp: ERROR: [youtube] x: Video unavailable");
         resolver.resolve("abc", None).await.unwrap_err();
-        assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 2);
-        let leftovers = std::fs::read_dir(dir.path())
+        let requests = requests(dir.path());
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1]["cookies"], Value::Null);
+
+        // yt-dlp gets a 0600 copy in the state dir, gone with the resolver.
+        let cookies = PathBuf::from(requests[0]["cookies"].as_str().unwrap());
+        assert_eq!(cookies.parent(), Some(dir.path().join("state").as_path()));
+        let mode = std::fs::metadata(&cookies).unwrap().permissions();
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+            0o600
+        );
+        assert!(
+            std::fs::read_to_string(&cookies)
+                .unwrap()
+                .contains("\tSID\t1")
+        );
+        drop(resolver);
+        assert!(!cookies.exists());
+    }
+
+    /// Serves `bytes=` ranges of a 4 KiB file, refusing the end of `/gated`.
+    async fn googlevideo() -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 4096];
+                let n = socket.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..n]);
+                let status = if request.starts_with("GET /gated") {
+                    "403 Forbidden"
+                } else {
+                    "206 Partial Content"
+                };
+                let _ = socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn gated_urls_are_handed_out_then_replaced() {
+        let addr = googlevideo().await;
+        let dir = tempfile::tempdir().unwrap();
+        // The first run gets a gated URL, every later one a good URL.
+        let format = |path: &str| {
+            json!({ "id": "ID", "info": { "formats": [{
+                "format_id": "251", "ext": "webm", "acodec": "opus", "vcodec": "none",
+                "protocol": "https", "abr": 130.0, "filesize": 4096,
+                "url": format!("http://{addr}/{path}"),
+            }]}})
+            .to_string()
+            .replace('"', "\\\"")
+            .replace("\\\"ID\\\"", "$id")
+        };
+        let resolver = fake_worker(
+            dir.path(),
+            &format!(
+                "if [ \"$n\" = 1 ]; then echo \"{}\"; else echo \"{}\"; fi",
+                format("gated"),
+                format("good")
+            ),
+        );
+        let mut gated = resolver.gated();
+        let first = resolver.resolve("abc", None).await.unwrap();
+        assert!(first.url.ends_with("/gated"), "{}", first.url);
+        let video_id = tokio::time::timeout(Duration::from_secs(5), gated.recv())
+            .await
             .unwrap()
-            .filter(|e| {
-                e.as_ref()
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("cookies-")
-            })
-            .count();
-        assert_eq!(leftovers, 0);
+            .unwrap();
+        assert_eq!(video_id, "abc");
+        assert!(resolver.is_gated(&first));
+        let second = resolver.resolve("abc", None).await.unwrap();
+        assert!(second.url.ends_with("/good"), "{}", second.url);
+        assert!(!resolver.is_gated(&second));
+        assert_eq!(requests(dir.path()).len(), 2);
     }
 }
 
@@ -344,7 +574,8 @@ mod live {
         ids.truncate(50);
 
         let dir = tempfile::tempdir().unwrap();
-        let resolver = Arc::new(Resolver::new(dir.path().to_owned(), Quality::High));
+        let session = Arc::new(Session::load(dir.path().join("session.json")).unwrap());
+        let resolver = Arc::new(Resolver::new(dir.path().to_owned(), session, Quality::High));
         let player = Player::with_output(OutputKind::Null {
             sample_rate: 48_000,
             channels: 2,
