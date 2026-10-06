@@ -190,17 +190,17 @@ impl PlayerInterface for Mpris {
     }
 
     async fn pause(&self) -> fdo::Result<()> {
-        self.playback.pause();
+        self.playback.pause("mpris");
         Ok(())
     }
 
     async fn play_pause(&self) -> fdo::Result<()> {
-        self.playback.toggle();
+        self.playback.toggle("mpris");
         Ok(())
     }
 
     async fn stop(&self) -> fdo::Result<()> {
-        self.playback.pause();
+        self.playback.pause("mpris stop");
         Ok(())
     }
 

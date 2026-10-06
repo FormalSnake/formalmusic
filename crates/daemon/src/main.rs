@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
         _ = int.recv() => tracing::info!("SIGINT, shutting down"),
         _ = quit.notified() => {
             tracing::info!("quit from the tray, shutting down");
-            daemon.playback.pause();
+            daemon.playback.pause("tray quit");
         }
     }
     server.abort();

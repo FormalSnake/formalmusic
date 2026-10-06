@@ -245,11 +245,11 @@ impl Daemon {
             }
             Command::JumpTo { index } => playback.jump(index).map(|()| Reply::Ok),
             Command::Toggle => {
-                playback.toggle();
+                playback.toggle("client");
                 Ok(Reply::Ok)
             }
             Command::Pause => {
-                playback.pause();
+                playback.pause("client");
                 Ok(Reply::Ok)
             }
             Command::SetTray { shown } => {

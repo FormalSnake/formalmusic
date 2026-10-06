@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle;
 use tokio::sync::{Notify, broadcast};
 
@@ -40,6 +40,9 @@ const MAX_FAILURES_IN_A_ROW: usize = 3;
 const POSITION_EVERY: Duration = Duration::from_secs(1);
 /// Writes to `queue.json` wait this long for further changes.
 const PERSIST_DEBOUNCE: Duration = Duration::from_secs(2);
+/// A restart this soon after a shutdown that cut playback off plays on, so
+/// a deploy restarting the unit goes by as a short gap.
+const RESUME_WITHIN: Duration = Duration::from_secs(30);
 
 pub struct Playback {
     state: Mutex<State>,
@@ -131,6 +134,10 @@ struct Saved {
     position_ms: u64,
     volume: f32,
     muted: bool,
+    /// When a shutdown stopped playback, in Unix milliseconds. Unset when it
+    /// was paused or stopped already, and by every save while running.
+    #[serde(default)]
+    interrupted_at: Option<u64>,
 }
 
 impl Playback {
@@ -148,9 +155,11 @@ impl Playback {
             volume: 1.0,
             ..State::default()
         };
+        let mut resume = false;
         match std::fs::read(&queue_path) {
             Ok(bytes) => match serde_json::from_slice::<Saved>(&bytes) {
                 Ok(saved) => {
+                    resume = resumes(saved.interrupted_at, unix_ms(SystemTime::now()));
                     state.queue = saved.queue;
                     state.radio = saved.radio.then(Radio::default);
                     state.position_ms = saved.position_ms;
@@ -187,6 +196,13 @@ impl Playback {
         });
         this.rt.spawn(this.clone().player_events());
         this.rt.spawn(this.clone().persist_loop());
+        if resume {
+            tracing::info!(
+                position_ms = this.state.lock().position_ms,
+                "playing on after a restart"
+            );
+            this.resume();
+        }
         Ok(this)
     }
 
@@ -353,13 +369,21 @@ impl Playback {
         Ok(())
     }
 
-    pub fn toggle(self: &Arc<Self>) {
+    /// `from` names who asked, for the log.
+    pub fn toggle(self: &Arc<Self>, from: &str) {
         let playing = matches!(self.state.lock().status, Status::Playing | Status::Loading);
-        if playing { self.pause() } else { self.resume() }
+        if playing {
+            self.pause(from)
+        } else {
+            self.resume()
+        }
     }
 
-    pub fn pause(&self) {
+    /// `from` names who asked, for the log: a pause nobody remembers asking
+    /// for is otherwise impossible to trace.
+    pub fn pause(&self, from: &str) {
         let mut st = self.state.lock();
+        tracing::info!(from, position_ms = st.position_ms, "pause");
         st.want_play = false;
         if st.loaded.is_some() {
             self.player.pause();
@@ -478,9 +502,18 @@ impl Playback {
         }
     }
 
-    /// Writes the queue with the live position, for shutdown.
+    /// Writes the queue with the live position, for shutdown, noting whether
+    /// it cut playback off.
     pub fn save_now(&self) {
-        let saved = self.saved();
+        let saved = {
+            let st = self.state.lock();
+            let mut saved = saved(&st);
+            if st.want_play && matches!(st.status, Status::Playing | Status::Loading) {
+                saved.position_ms = live_position(&st);
+                saved.interrupted_at = Some(unix_ms(SystemTime::now()));
+            }
+            saved
+        };
         if let Err(e) = self.write(&saved) {
             tracing::warn!("saving the queue: {e}");
         }
@@ -606,6 +639,7 @@ impl Playback {
         });
         st.failures += 1;
         if st.failures >= MAX_FAILURES_IN_A_ROW {
+            tracing::warn!("stopping after {MAX_FAILURES_IN_A_ROW} tracks in a row failed");
             self.emit(Event::Notice {
                 message: format!(
                     "Stopped after {MAX_FAILURES_IN_A_ROW} tracks in a row failed to play"
@@ -1039,17 +1073,6 @@ impl Playback {
 
     // Persistence
 
-    fn saved(&self) -> Saved {
-        let st = self.state.lock();
-        Saved {
-            queue: st.queue.clone(),
-            radio: st.radio.is_some(),
-            position_ms: st.position_ms,
-            volume: st.volume,
-            muted: st.muted,
-        }
-    }
-
     fn write(&self, saved: &Saved) -> std::io::Result<()> {
         write_private(&self.queue_path, &serde_json::to_vec(saved)?, 0o600)
     }
@@ -1058,7 +1081,7 @@ impl Playback {
         loop {
             self.persist.notified().await;
             tokio::time::sleep(PERSIST_DEBOUNCE).await;
-            let saved = self.saved();
+            let saved = saved(&self.state.lock());
             let this = self.clone();
             let result = tokio::task::spawn_blocking(move || this.write(&saved)).await;
             if let Ok(Err(e)) = result {
@@ -1087,14 +1110,38 @@ impl Playback {
     /// The position now, run on from the engine's last report while playing,
     /// since clients only get an event a second.
     pub fn live_position(&self) -> u64 {
-        let st = self.state.lock();
-        let ran = match (st.status, st.position_at) {
-            (Status::Playing, Some(at)) => at.elapsed().as_millis() as u64,
-            _ => 0,
-        };
-        let position = st.position_ms + ran;
-        st.duration_ms.map_or(position, |d| position.min(d))
+        live_position(&self.state.lock())
     }
+}
+
+fn live_position(st: &State) -> u64 {
+    let ran = match (st.status, st.position_at) {
+        (Status::Playing, Some(at)) => at.elapsed().as_millis() as u64,
+        _ => 0,
+    };
+    let position = st.position_ms + ran;
+    st.duration_ms.map_or(position, |d| position.min(d))
+}
+
+fn saved(st: &State) -> Saved {
+    Saved {
+        queue: st.queue.clone(),
+        radio: st.radio.is_some(),
+        position_ms: st.position_ms,
+        volume: st.volume,
+        muted: st.muted,
+        interrupted_at: None,
+    }
+}
+
+fn unix_ms(at: SystemTime) -> u64 {
+    at.duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
+}
+
+/// Whether a start at `now_ms` plays on from a shutdown at `interrupted_at`.
+fn resumes(interrupted_at: Option<u64>, now_ms: u64) -> bool {
+    interrupted_at.is_some_and(|at| now_ms.saturating_sub(at) < RESUME_WITHIN.as_millis() as u64)
 }
 
 fn player_state(st: &State) -> PlayerState {
@@ -1122,4 +1169,28 @@ fn queue_state(st: &State) -> QueueState {
 
 fn out_of_range(index: usize) -> ApiError {
     ApiError::BadRequest(format!("no queue entry at {index}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_restart_soon_after_an_interrupted_shutdown_plays_on() {
+        let at = 1_000_000;
+        assert!(resumes(Some(at), at + 4_000));
+        assert!(!resumes(Some(at), at + 31_000));
+        assert!(!resumes(None, at));
+        // A clock stepped back between the two still counts as soon.
+        assert!(resumes(Some(at), at - 500));
+    }
+
+    #[test]
+    fn a_queue_saved_before_restarts_were_noted_restores_paused() {
+        let saved: Saved = serde_json::from_str(
+            r#"{"queue":{"entries":[],"current":null,"next_uid":0,"original":null,"repeat":"off"},"radio":false,"positionMs":5000,"volume":1.0,"muted":false}"#,
+        )
+        .unwrap();
+        assert_eq!(saved.interrupted_at, None);
+    }
 }

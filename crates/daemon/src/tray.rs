@@ -105,7 +105,7 @@ impl ksni::Tray for Tray {
         items.extend([
             MenuItem::Separator,
             action(if self.now.playing { "Pause" } else { "Play" }, |tray| {
-                tray.playback.toggle()
+                tray.playback.toggle("tray")
             }),
             action("Next", |tray| tray.playback.next()),
             action("Previous", |tray| tray.playback.previous()),
