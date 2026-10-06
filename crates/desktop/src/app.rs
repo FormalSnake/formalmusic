@@ -32,7 +32,14 @@ const TOAST_FOR: std::time::Duration = std::time::Duration::from_secs(5);
 
 actions!(
     app,
-    [GoBack, GoForward, FocusSearch, Dismiss, ToggleFrameOverlay]
+    [
+        GoBack,
+        GoForward,
+        FocusSearch,
+        Dismiss,
+        OpenSettings,
+        ToggleFrameOverlay
+    ]
 );
 
 /// Bindings with a modifier. The web app's single-key shortcuts are handled
@@ -47,6 +54,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-f", FocusSearch, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FocusSearch, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-,", OpenSettings, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-,", OpenSettings, Some(CONTEXT)),
         KeyBinding::new("alt-left", GoBack, Some(CONTEXT)),
         KeyBinding::new("alt-right", GoForward, Some(CONTEXT)),
         KeyBinding::new("escape", Dismiss, Some(CONTEXT)),
@@ -129,22 +140,9 @@ pub fn new_playlist(window: &mut Window, cx: &mut App) {
 }
 
 pub fn show_settings(window: &mut Window, cx: &mut App) {
-    let Some(root) = root(cx) else { return };
-    let weak = root.downgrade();
-    let store = root.read(cx).store.clone();
-    let close = move |window: &mut Window, cx: &mut App| {
-        let _ = weak.update(cx, |this, cx| {
-            this.settings = None;
-            this.root_focus.focus(window, cx);
-            cx.notify();
-        });
-    };
-    let dialog = cx.new(|cx| Settings::new(store, close, window, cx));
-    root.update(cx, |this, cx| {
-        this.menu = None;
-        this.settings = Some(dialog);
-        cx.notify();
-    });
+    if let Some(root) = root(cx) {
+        root.update(cx, |this, cx| this.open_settings(window, cx));
+    }
 }
 
 pub struct AppRoot {
@@ -418,6 +416,27 @@ impl AppRoot {
         cx.notify();
     }
 
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        if self.settings.is_none() {
+            let weak = cx.entity().downgrade();
+            let close = move |window: &mut Window, cx: &mut App| {
+                let _ = weak.update(cx, |this, cx| {
+                    this.settings = None;
+                    this.root_focus.focus(window, cx);
+                    cx.notify();
+                });
+            };
+            let store = self.store.clone();
+            self.settings = Some(cx.new(|cx| Settings::new(store, close, window, cx)));
+        }
+        cx.notify();
+    }
+
+    fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings(window, cx);
+    }
+
     fn close_sign_in(&mut self) {
         self.sign_in = None;
         self.sign_in_wanted = false;
@@ -670,6 +689,7 @@ impl Render for AppRoot {
             .text_color(palette.text)
             .font_family(crate::theme::font_sans())
             .on_action(cx.listener(Self::on_dismiss))
+            .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_focus_search))
             .on_action(cx.listener(Self::on_back))
             .on_action(cx.listener(Self::on_forward))
@@ -950,7 +970,7 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
             }
             "related" => this.set_expanded(Some(Tab::Related), cx),
             "signin" => {}
-            "settings" => window.defer(cx, show_settings),
+            "settings" => this.open_settings(window, cx),
             "collapsed" => this.sidebar.update(cx, |sidebar, cx| sidebar.toggle(cx)),
             "menu" => {
                 let track = catalog.albums[2].tracks[0].clone();
