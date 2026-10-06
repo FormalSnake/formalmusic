@@ -123,13 +123,13 @@ impl TopBar {
         }
         self.store.suggest("");
         window.blur(cx);
-        crate::app::navigate(
-            Route::Search(SearchKey {
-                query,
-                filter: None,
-            }),
-            cx,
-        );
+        let route = Route::Search(SearchKey {
+            query,
+            filter: None,
+        });
+        // Navigating updates this bar's back and forward buttons, so it
+        // waits until the bar is no longer being updated itself.
+        cx.defer(move |cx| crate::app::navigate(route, cx));
     }
 
     fn pick(&mut self, suggestion: &Suggestion, window: &mut Window, cx: &mut Context<Self>) {
@@ -146,7 +146,7 @@ impl TopBar {
                     Item::Track(_) => actions::play_item(item, &self.store),
                     other => {
                         if let Some(target) = actions::target_of(other) {
-                            actions::open(target, cx);
+                            cx.defer(move |cx| actions::open(target, cx));
                         }
                     }
                 }
@@ -488,5 +488,64 @@ impl Render for TopBar {
             .child(div().pl(spacing::X2).child(search))
             .child(div().flex_grow(1.))
             .child(account_button)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use formalmusic_core::{Route, SearchKey};
+    use gpui_kit::TestAppContext;
+
+    use crate::app::AppRoot;
+
+    /// The whole window on the demo store, the search field focused.
+    fn window(
+        cx: &mut TestAppContext,
+    ) -> (
+        gpui_kit::Entity<AppRoot>,
+        &mut gpui_kit::VisualTestContext,
+        tokio::runtime::Runtime,
+    ) {
+        // Safety: set before anything reads it, on the test's only thread.
+        unsafe { std::env::set_var("FORMALMUSIC_DEMO", "1") };
+        // Never driven: the store's requests stay queued, so nothing wakes
+        // the test scheduler from another thread.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::app::init(cx);
+            crate::theme::Theme::install(cx);
+            crate::bridge::Bridge::install(cx);
+        });
+        let (root, vcx) = cx.add_window_view(|window, cx| AppRoot::new(handle, None, window, cx));
+        vcx.run_until_parked();
+        (root, vcx, runtime)
+    }
+
+    fn route(
+        root: &gpui_kit::Entity<AppRoot>,
+        vcx: &mut gpui_kit::VisualTestContext,
+    ) -> Option<Route> {
+        vcx.update(|_, cx| root.read(cx).current_route().cloned())
+    }
+
+    #[gpui_kit::test]
+    fn enter_searches_for_what_was_typed(cx: &mut TestAppContext) {
+        let (root, vcx, _runtime) = window(cx);
+        vcx.simulate_keystrokes("/");
+        vcx.simulate_input("light");
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert_eq!(
+            route(&root, vcx),
+            Some(Route::Search(SearchKey {
+                query: "light".into(),
+                filter: None
+            }))
+        );
     }
 }

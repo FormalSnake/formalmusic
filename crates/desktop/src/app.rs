@@ -311,7 +311,7 @@ impl AppRoot {
         this
     }
 
-    fn current_route(&self) -> Option<&Route> {
+    pub(crate) fn current_route(&self) -> Option<&Route> {
         self.history.get(self.cursor)
     }
 
