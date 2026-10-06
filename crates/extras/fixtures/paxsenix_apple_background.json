@@ -1,0 +1,155 @@
+{
+  "type": "Syllable",
+  "content": [
+    {
+      "timestamp": 8835,
+      "endtime": 12339,
+      "duration": 3504,
+      "structure": "Chorus",
+      "text": [
+        {
+          "text": "Now",
+          "timestamp": 8835,
+          "endtime": 9155,
+          "duration": 320,
+          "part": false
+        },
+        {
+          "text": "he's",
+          "timestamp": 9155,
+          "endtime": 9587,
+          "duration": 432,
+          "part": false
+        },
+        {
+          "text": "thinkin'",
+          "timestamp": 10056,
+          "endtime": 10328,
+          "duration": 272,
+          "part": false
+        },
+        {
+          "text": "'bout",
+          "timestamp": 10328,
+          "endtime": 10608,
+          "duration": 280,
+          "part": false
+        },
+        {
+          "text": "me",
+          "timestamp": 10608,
+          "endtime": 11222,
+          "duration": 614,
+          "part": false
+        },
+        {
+          "text": "every",
+          "timestamp": 11222,
+          "endtime": 11475,
+          "duration": 253,
+          "part": false
+        },
+        {
+          "text": "night,",
+          "timestamp": 11475,
+          "endtime": 11758,
+          "duration": 283,
+          "part": false
+        },
+        {
+          "text": "oh",
+          "timestamp": 11758,
+          "endtime": 12339,
+          "duration": 581,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L1",
+      "sectionBegin": 8835,
+      "sectionEnd": 28440
+    },
+    {
+      "timestamp": 55644,
+      "endtime": 57993,
+      "duration": 2349,
+      "structure": "PreChorus",
+      "text": [
+        {
+          "text": "I",
+          "timestamp": 55911,
+          "endtime": 56161,
+          "duration": 250,
+          "part": false
+        },
+        {
+          "text": "know",
+          "timestamp": 56161,
+          "endtime": 56479,
+          "duration": 318,
+          "part": false
+        },
+        {
+          "text": "I",
+          "timestamp": 56479,
+          "endtime": 56612,
+          "duration": 133,
+          "part": false
+        },
+        {
+          "text": "Mountain",
+          "timestamp": 56612,
+          "endtime": 57177,
+          "duration": 565,
+          "part": false
+        },
+        {
+          "text": "Dew",
+          "timestamp": 57177,
+          "endtime": 57519,
+          "duration": 342,
+          "part": false
+        },
+        {
+          "text": "it",
+          "timestamp": 57519,
+          "endtime": 57619,
+          "duration": 100,
+          "part": false
+        },
+        {
+          "text": "for",
+          "timestamp": 57619,
+          "endtime": 57748,
+          "duration": 129,
+          "part": false
+        },
+        {
+          "text": "ya",
+          "timestamp": 57748,
+          "endtime": 57993,
+          "duration": 245,
+          "part": false
+        }
+      ],
+      "background": true,
+      "backgroundText": [
+        {
+          "text": "Yes",
+          "timestamp": 55644,
+          "endtime": 56286,
+          "duration": 642,
+          "part": false
+        }
+      ],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L19",
+      "sectionBegin": 46671,
+      "sectionEnd": 62711
+    }
+  ]
+}

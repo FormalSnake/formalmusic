@@ -107,6 +107,8 @@ pub enum Command {
     Search { query: String, filter: Option<SearchFilter> },
     Suggestions { query: String },
     Lyrics { video_id: String },
+    /// Apple Music's looping album video, downloaded by the daemon.
+    AnimatedCover { artist: String, album: String },
     /// The "Related" tab of the player page.
     Related { browse_id: String },
 
@@ -156,6 +158,8 @@ pub enum Reply {
     Search(SearchResults),
     Suggestions(Vec<Suggestion>),
     Lyrics(Option<Lyrics>),
+    /// Local path to the mp4; the daemon and client share a machine.
+    AnimatedCover(Option<String>),
     PlaylistCreated { playlist_id: String },
     Player(PlayerState),
     Queue(QueueState),
@@ -194,6 +198,27 @@ mod tests {
     fn unit_commands_need_no_args() {
         let req: Request = serde_json::from_str(r#"{"id":1,"cmd":"toggle"}"#).unwrap();
         assert!(matches!(req.command, Command::Toggle));
+    }
+
+    #[test]
+    fn items_and_suggestions_round_trip() {
+        let track = Track {
+            video_id: "abc".into(),
+            title: "t".into(),
+            artists: vec![],
+            album: None,
+            duration_ms: None,
+            thumbnails: vec![],
+            explicit: false,
+            kind: TrackKind::Video,
+            like: Rating::Like,
+            set_video_id: None,
+            plays: None,
+            feedback_token: None,
+        };
+        let suggestion = Suggestion::Item(Item::Track(track));
+        let json = serde_json::to_string(&suggestion).unwrap();
+        assert_eq!(serde_json::from_str::<Suggestion>(&json).unwrap(), suggestion);
     }
 
     #[test]

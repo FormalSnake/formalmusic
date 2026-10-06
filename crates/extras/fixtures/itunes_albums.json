@@ -1,0 +1,59 @@
+{
+  "resultCount": 6,
+  "results": [
+    {
+      "wrapperType": "artist",
+      "artistId": 159260351,
+      "artistName": "Taylor Swift",
+      "collectionId": null,
+      "collectionName": null,
+      "collectionType": null,
+      "releaseDate": null
+    },
+    {
+      "wrapperType": "collection",
+      "artistId": 159260351,
+      "artistName": "Taylor Swift",
+      "collectionId": 1650841512,
+      "collectionName": "Midnights (3am Edition)",
+      "collectionType": "Album",
+      "releaseDate": "2022-10-21T07:00:00Z"
+    },
+    {
+      "wrapperType": "collection",
+      "artistId": 159260351,
+      "artistName": "Taylor Swift",
+      "collectionId": 1838812720,
+      "collectionName": "The Life of a Showgirl + “A Look Behind the Curtain”",
+      "collectionType": "Album",
+      "releaseDate": "2025-10-03T07:00:00Z"
+    },
+    {
+      "wrapperType": "collection",
+      "artistId": 159260351,
+      "artistName": "Taylor Swift",
+      "collectionId": 1645937456,
+      "collectionName": "Midnights",
+      "collectionType": "Album",
+      "releaseDate": "2022-10-21T07:00:00Z"
+    },
+    {
+      "wrapperType": "collection",
+      "artistId": 159260351,
+      "artistName": "Taylor Swift",
+      "collectionId": 1838810949,
+      "collectionName": "The Life of a Showgirl",
+      "collectionType": "Album",
+      "releaseDate": "2025-10-03T07:00:00Z"
+    },
+    {
+      "wrapperType": "collection",
+      "artistId": 159260351,
+      "artistName": "Taylor Swift",
+      "collectionId": 6814997249,
+      "collectionName": "The Life of a Showgirl: The Encore",
+      "collectionType": "Album",
+      "releaseDate": "2026-09-24T07:00:00Z"
+    }
+  ]
+}

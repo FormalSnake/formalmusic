@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/api", "crates/innertube", "crates/player", "crates/daemon", "crates/core", "crates/desktop"]
+members = ["crates/api", "crates/innertube", "crates/player", "crates/daemon", "crates/core", "crates/desktop", "crates/extras"]
 
 [workspace.package]
 edition = "2024"
@@ -12,6 +12,7 @@ formalmusic-api = { path = "crates/api" }
 formalmusic-innertube = { path = "crates/innertube" }
 formalmusic-player = { path = "crates/player" }
 formalmusic-core = { path = "crates/core" }
+formalmusic-extras = { path = "crates/extras" }
 gpui-kit = "0.6.6"
 gpui-base = "0.6.6"
 anyhow = "1"

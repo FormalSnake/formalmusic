@@ -1,0 +1,43 @@
+{
+  "data": [
+    {
+      "id": "1838810949",
+      "type": "albums",
+      "href": "/v1/catalog/us/albums/1838810949",
+      "attributes": {
+        "name": null,
+        "artistName": null,
+        "editorialVideo": {
+          "motionDetailSquare": {
+            "previewFrame": {
+              "bgColor": "516034",
+              "hasP3": false,
+              "height": 3840,
+              "textColor1": "d5fbde",
+              "textColor2": "fdd292",
+              "textColor3": "bbdcbc",
+              "textColor4": "dabb7f",
+              "url": "https://is1-ssl.mzstatic.com/image/thumb/Video211/v4/97/14/ad/9714ad25-6f88-1fe3-0837-a92db8364162/Job147e3390-2209-4b70-a16e-6aeed67e16ca-204558096-PreviewImage_Preview_Image_Intermediate_nonvideo_sdr_399746487_2360051422-Time1759166095508.png/{w}x{h}bb.jpg",
+              "width": 3840
+            },
+            "video": "https://mvod.itunes.apple.com/itunes-assets/HLSVideo221/v4/dd/ab/ca/ddabca1c-1be1-0ead-ce75-7b905da49719/P1189220687_default.m3u8"
+          },
+          "motionSquareVideo1x1": {
+            "previewFrame": {
+              "bgColor": "516034",
+              "hasP3": false,
+              "height": 3840,
+              "textColor1": "d5fbde",
+              "textColor2": "fdd292",
+              "textColor3": "bbdcbc",
+              "textColor4": "dabb7f",
+              "url": "https://is1-ssl.mzstatic.com/image/thumb/Video211/v4/97/14/ad/9714ad25-6f88-1fe3-0837-a92db8364162/Job147e3390-2209-4b70-a16e-6aeed67e16ca-204558096-PreviewImage_Preview_Image_Intermediate_nonvideo_sdr_399746487_2360051422-Time1759166095508.png/{w}x{h}bb.jpg",
+              "width": 3840
+            },
+            "video": "https://mvod.itunes.apple.com/itunes-assets/HLSVideo221/v4/dd/ab/ca/ddabca1c-1be1-0ead-ce75-7b905da49719/P1189220687_default.m3u8"
+          }
+        }
+      }
+    }
+  ]
+}

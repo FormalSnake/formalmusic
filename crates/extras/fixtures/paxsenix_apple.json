@@ -1,0 +1,588 @@
+{
+  "type": "Syllable",
+  "lrc": "[by:Generated using Lyrically API]\n[00:05.347]I have this thing where I get older, but just never wiser\n[00:10.245]Midnights become my afternoons\n[00:15.209]When my depression works the graveyard shift\n[00:18.412]All of the people I've ghosted stand there in the room\n[00:24.515]I should not be left to my own devices\n[00:27.947]They come with prices and vices, I end up in crisis\n[00:32.282]Tale as old as time",
+  "content": [
+    {
+      "timestamp": 5347,
+      "endtime": 10235,
+      "duration": 4888,
+      "structure": "Verse",
+      "text": [
+        {
+          "text": "I",
+          "timestamp": 5347,
+          "endtime": 5711,
+          "duration": 364,
+          "part": false
+        },
+        {
+          "text": "have",
+          "timestamp": 5711,
+          "endtime": 5929,
+          "duration": 218,
+          "part": false
+        },
+        {
+          "text": "this",
+          "timestamp": 5929,
+          "endtime": 6143,
+          "duration": 214,
+          "part": false
+        },
+        {
+          "text": "thing",
+          "timestamp": 6143,
+          "endtime": 6701,
+          "duration": 558,
+          "part": false
+        },
+        {
+          "text": "where",
+          "timestamp": 6701,
+          "endtime": 6919,
+          "duration": 218,
+          "part": false
+        },
+        {
+          "text": "I",
+          "timestamp": 6919,
+          "endtime": 7151,
+          "duration": 232,
+          "part": false
+        },
+        {
+          "text": "get",
+          "timestamp": 7151,
+          "endtime": 7502,
+          "duration": 351,
+          "part": false
+        },
+        {
+          "text": "older,",
+          "timestamp": 7502,
+          "endtime": 8204,
+          "duration": 702,
+          "part": false
+        },
+        {
+          "text": "but",
+          "timestamp": 8204,
+          "endtime": 8390,
+          "duration": 186,
+          "part": false
+        },
+        {
+          "text": "just",
+          "timestamp": 8390,
+          "endtime": 8622,
+          "duration": 232,
+          "part": false
+        },
+        {
+          "text": "never",
+          "timestamp": 8622,
+          "endtime": 9406,
+          "duration": 784,
+          "part": false
+        },
+        {
+          "text": "wiser",
+          "timestamp": 9406,
+          "endtime": 10235,
+          "duration": 829,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L1",
+      "sectionBegin": 5347,
+      "sectionEnd": 22976
+    },
+    {
+      "timestamp": 10245,
+      "endtime": 13363,
+      "duration": 3118,
+      "structure": "Verse",
+      "text": [
+        {
+          "text": "Midnights",
+          "timestamp": 10245,
+          "endtime": 10991,
+          "duration": 746,
+          "part": false
+        },
+        {
+          "text": "become",
+          "timestamp": 10991,
+          "endtime": 11588,
+          "duration": 597,
+          "part": false
+        },
+        {
+          "text": "my",
+          "timestamp": 11588,
+          "endtime": 11938,
+          "duration": 350,
+          "part": false
+        },
+        {
+          "text": "after",
+          "timestamp": 11938,
+          "endtime": 12405,
+          "duration": 467,
+          "part": true
+        },
+        {
+          "text": "noons",
+          "timestamp": 12405,
+          "endtime": 13363,
+          "duration": 958,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L2",
+      "sectionBegin": 5347,
+      "sectionEnd": 22976
+    },
+    {
+      "timestamp": 15209,
+      "endtime": 18402,
+      "duration": 3193,
+      "structure": "Verse",
+      "text": [
+        {
+          "text": "When",
+          "timestamp": 15209,
+          "endtime": 15623,
+          "duration": 414,
+          "part": false
+        },
+        {
+          "text": "my",
+          "timestamp": 15623,
+          "endtime": 15925,
+          "duration": 302,
+          "part": false
+        },
+        {
+          "text": "depression",
+          "timestamp": 15925,
+          "endtime": 16808,
+          "duration": 883,
+          "part": false
+        },
+        {
+          "text": "works",
+          "timestamp": 16808,
+          "endtime": 17127,
+          "duration": 319,
+          "part": false
+        },
+        {
+          "text": "the",
+          "timestamp": 17127,
+          "endtime": 17376,
+          "duration": 249,
+          "part": false
+        },
+        {
+          "text": "graveyard",
+          "timestamp": 17376,
+          "endtime": 18059,
+          "duration": 683,
+          "part": false
+        },
+        {
+          "text": "shift",
+          "timestamp": 18059,
+          "endtime": 18402,
+          "duration": 343,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L3",
+      "sectionBegin": 5347,
+      "sectionEnd": 22976
+    },
+    {
+      "timestamp": 18412,
+      "endtime": 22976,
+      "duration": 4564,
+      "structure": "Verse",
+      "text": [
+        {
+          "text": "All",
+          "timestamp": 18412,
+          "endtime": 18594,
+          "duration": 182,
+          "part": false
+        },
+        {
+          "text": "of",
+          "timestamp": 18594,
+          "endtime": 18945,
+          "duration": 351,
+          "part": false
+        },
+        {
+          "text": "the",
+          "timestamp": 18945,
+          "endtime": 19128,
+          "duration": 183,
+          "part": false
+        },
+        {
+          "text": "people",
+          "timestamp": 19128,
+          "endtime": 20031,
+          "duration": 903,
+          "part": false
+        },
+        {
+          "text": "I've",
+          "timestamp": 20194,
+          "endtime": 20626,
+          "duration": 432,
+          "part": false
+        },
+        {
+          "text": "ghosted",
+          "timestamp": 20626,
+          "endtime": 21044,
+          "duration": 418,
+          "part": false
+        },
+        {
+          "text": "stand",
+          "timestamp": 21044,
+          "endtime": 21578,
+          "duration": 534,
+          "part": false
+        },
+        {
+          "text": "there",
+          "timestamp": 21578,
+          "endtime": 21920,
+          "duration": 342,
+          "part": false
+        },
+        {
+          "text": "in",
+          "timestamp": 21920,
+          "endtime": 22155,
+          "duration": 235,
+          "part": false
+        },
+        {
+          "text": "the",
+          "timestamp": 22155,
+          "endtime": 22338,
+          "duration": 183,
+          "part": false
+        },
+        {
+          "text": "room",
+          "timestamp": 22338,
+          "endtime": 22976,
+          "duration": 638,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L4",
+      "sectionBegin": 5347,
+      "sectionEnd": 22976
+    },
+    {
+      "timestamp": 24515,
+      "endtime": 27937,
+      "duration": 3422,
+      "structure": "Verse",
+      "text": [
+        {
+          "text": "I",
+          "timestamp": 24515,
+          "endtime": 24954,
+          "duration": 439,
+          "part": false
+        },
+        {
+          "text": "should",
+          "timestamp": 24954,
+          "endtime": 25172,
+          "duration": 218,
+          "part": false
+        },
+        {
+          "text": "not",
+          "timestamp": 25172,
+          "endtime": 25439,
+          "duration": 267,
+          "part": false
+        },
+        {
+          "text": "be",
+          "timestamp": 25439,
+          "endtime": 25741,
+          "duration": 302,
+          "part": false
+        },
+        {
+          "text": "left",
+          "timestamp": 25741,
+          "endtime": 26124,
+          "duration": 383,
+          "part": false
+        },
+        {
+          "text": "to",
+          "timestamp": 26124,
+          "endtime": 26391,
+          "duration": 267,
+          "part": false
+        },
+        {
+          "text": "my",
+          "timestamp": 26391,
+          "endtime": 26690,
+          "duration": 299,
+          "part": false
+        },
+        {
+          "text": "own",
+          "timestamp": 26690,
+          "endtime": 27023,
+          "duration": 333,
+          "part": false
+        },
+        {
+          "text": "devices",
+          "timestamp": 27023,
+          "endtime": 27937,
+          "duration": 914,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L5",
+      "sectionBegin": 24515,
+      "sectionEnd": 44354
+    },
+    {
+      "timestamp": 27947,
+      "endtime": 32272,
+      "duration": 4325,
+      "structure": "Verse",
+      "text": [
+        {
+          "text": "They",
+          "timestamp": 27947,
+          "endtime": 28342,
+          "duration": 395,
+          "part": false
+        },
+        {
+          "text": "come",
+          "timestamp": 28342,
+          "endtime": 28609,
+          "duration": 267,
+          "part": false
+        },
+        {
+          "text": "with",
+          "timestamp": 28609,
+          "endtime": 28908,
+          "duration": 299,
+          "part": false
+        },
+        {
+          "text": "prices",
+          "timestamp": 28908,
+          "endtime": 29643,
+          "duration": 735,
+          "part": false
+        },
+        {
+          "text": "and",
+          "timestamp": 29643,
+          "endtime": 29927,
+          "duration": 284,
+          "part": false
+        },
+        {
+          "text": "vices,",
+          "timestamp": 29927,
+          "endtime": 30544,
+          "duration": 617,
+          "part": false
+        },
+        {
+          "text": "I",
+          "timestamp": 30544,
+          "endtime": 30843,
+          "duration": 299,
+          "part": false
+        },
+        {
+          "text": "end",
+          "timestamp": 30843,
+          "endtime": 31113,
+          "duration": 270,
+          "part": false
+        },
+        {
+          "text": "up",
+          "timestamp": 31113,
+          "endtime": 31412,
+          "duration": 299,
+          "part": false
+        },
+        {
+          "text": "in",
+          "timestamp": 31412,
+          "endtime": 31696,
+          "duration": 284,
+          "part": false
+        },
+        {
+          "text": "crisis",
+          "timestamp": 31696,
+          "endtime": 32272,
+          "duration": 576,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L6",
+      "sectionBegin": 24515,
+      "sectionEnd": 44354
+    },
+    {
+      "timestamp": 32282,
+      "endtime": 34941,
+      "duration": 2659,
+      "structure": "Verse",
+      "text": [
+        {
+          "text": "Tale",
+          "timestamp": 32282,
+          "endtime": 32794,
+          "duration": 512,
+          "part": false
+        },
+        {
+          "text": "as",
+          "timestamp": 32794,
+          "endtime": 33061,
+          "duration": 267,
+          "part": false
+        },
+        {
+          "text": "old",
+          "timestamp": 33061,
+          "endtime": 33310,
+          "duration": 249,
+          "part": false
+        },
+        {
+          "text": "as",
+          "timestamp": 33310,
+          "endtime": 33609,
+          "duration": 299,
+          "part": false
+        },
+        {
+          "text": "time",
+          "timestamp": 33609,
+          "endtime": 34941,
+          "duration": 1332,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L7",
+      "sectionBegin": 24515,
+      "sectionEnd": 44354
+    },
+    {
+      "timestamp": 35028,
+      "endtime": 37518,
+      "duration": 2490,
+      "structure": "Verse",
+      "text": [
+        {
+          "text": "I",
+          "timestamp": 35028,
+          "endtime": 35432,
+          "duration": 404,
+          "part": false
+        },
+        {
+          "text": "wake",
+          "timestamp": 35432,
+          "endtime": 35682,
+          "duration": 250,
+          "part": false
+        },
+        {
+          "text": "up",
+          "timestamp": 35682,
+          "endtime": 35917,
+          "duration": 235,
+          "part": false
+        },
+        {
+          "text": "screaming",
+          "timestamp": 35917,
+          "endtime": 36518,
+          "duration": 601,
+          "part": false
+        },
+        {
+          "text": "from",
+          "timestamp": 36518,
+          "endtime": 36901,
+          "duration": 383,
+          "part": false
+        },
+        {
+          "text": "dreaming",
+          "timestamp": 36901,
+          "endtime": 37518,
+          "duration": 617,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L8",
+      "sectionBegin": 24515,
+      "sectionEnd": 44354
+    }
+  ]
+}

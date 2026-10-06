@@ -1,0 +1,112 @@
+{
+  "type": "Syllable",
+  "content": [
+    {
+      "timestamp": 3432,
+      "endtime": 6045,
+      "duration": 2613,
+      "structure": "Intro",
+      "text": [
+        {
+          "text": "Ooh,",
+          "timestamp": 3432,
+          "endtime": 4763,
+          "duration": 1331,
+          "part": false
+        },
+        {
+          "text": "ooh",
+          "timestamp": 4769,
+          "endtime": 6045,
+          "duration": 1276,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": true,
+      "agent": "v2",
+      "key": "L1",
+      "sectionBegin": 3432,
+      "sectionEnd": 6045
+    },
+    {
+      "timestamp": 85193,
+      "endtime": 92431,
+      "duration": 7238,
+      "structure": "Verse",
+      "text": [
+        {
+          "text": "Ooh,",
+          "timestamp": 85193,
+          "endtime": 86734,
+          "duration": 1541,
+          "part": false
+        },
+        {
+          "text": "lost,",
+          "timestamp": 86734,
+          "endtime": 88071,
+          "duration": 1337,
+          "part": false
+        },
+        {
+          "text": "lost",
+          "timestamp": 88826,
+          "endtime": 89293,
+          "duration": 467,
+          "part": false
+        },
+        {
+          "text": "in",
+          "timestamp": 89293,
+          "endtime": 89960,
+          "duration": 667,
+          "part": false
+        },
+        {
+          "text": "the",
+          "timestamp": 89960,
+          "endtime": 90128,
+          "duration": 168,
+          "part": false
+        },
+        {
+          "text": "words",
+          "timestamp": 90128,
+          "endtime": 90461,
+          "duration": 333,
+          "part": false
+        },
+        {
+          "text": "that",
+          "timestamp": 90461,
+          "endtime": 90861,
+          "duration": 400,
+          "part": false
+        },
+        {
+          "text": "we",
+          "timestamp": 90861,
+          "endtime": 91226,
+          "duration": 365,
+          "part": false
+        },
+        {
+          "text": "scream",
+          "timestamp": 91226,
+          "endtime": 92431,
+          "duration": 1205,
+          "part": false
+        }
+      ],
+      "background": false,
+      "backgroundText": [],
+      "oppositeTurn": false,
+      "agent": "v1",
+      "key": "L19",
+      "sectionBegin": 85193,
+      "sectionEnd": 106082
+    }
+  ]
+}

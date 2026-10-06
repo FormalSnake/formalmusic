@@ -90,6 +90,9 @@ pub struct Track {
     pub thumbnails: Thumbnails,
     pub explicit: bool,
     /// Music videos and user uploads to YouTube rather than album tracks.
+    /// Not `kind` on the wire: `Item` is tagged by `kind`, and a track inside
+    /// it would write the key twice.
+    #[serde(rename = "track_kind")]
     pub kind: TrackKind,
     pub like: Rating,
     /// Present in playlists you own; needed to remove or move the row.
@@ -267,8 +270,9 @@ pub struct SearchResults {
     pub continuation: Option<Continuation>,
 }
 
+/// Tagged by `type`, since the `Item` inside is tagged by `kind`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Suggestion {
     Query { text: String, from_history: bool },
     Item(Item),
@@ -280,13 +284,40 @@ pub struct Lyrics {
     pub lines: Vec<LyricLine>,
     /// False when only plain text was available; `start_ms` is then zero.
     pub synced: bool,
+    /// Some line carries per-word or per-syllable timing in
+    /// [`LyricLine::words`].
+    #[serde(default)]
+    pub word_synced: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct LyricLine {
     pub start_ms: u64,
     pub end_ms: Option<u64>,
     pub text: String,
+    /// Empty when the source only timed the line as a whole.
+    #[serde(default)]
+    pub words: Vec<LyricWord>,
+    /// Backing vocals, drawn smaller and lit alongside the main line.
+    #[serde(default)]
+    pub background: bool,
+    /// Who sings the line in a duet, as the provider names the voice ("v1").
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The line belongs on the other side of the lane from the first singer.
+    #[serde(default)]
+    pub opposite_turn: bool,
+}
+
+/// One timed chunk of a line. Providers that stamp syllables yield several
+/// chunks per word; `joins_next` says the next chunk follows with no space.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LyricWord {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+    #[serde(default)]
+    pub joins_next: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

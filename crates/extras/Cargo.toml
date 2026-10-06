@@ -1,0 +1,19 @@
+[package]
+name = "formalmusic-extras"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+formalmusic-api.workspace = true
+dirs.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio.workspace = true
