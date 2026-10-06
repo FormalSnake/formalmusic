@@ -21,7 +21,7 @@ mod tray;
 
 use anyhow::Context;
 use config::{Config, Paths};
-use formalmusic_player::Player;
+use formalmusic_player::{OutputKind, Player};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main]
@@ -55,7 +55,16 @@ async fn main() -> anyhow::Result<()> {
     }
     let listener = server::bind(&socket).await?;
 
-    let player = Player::new().context("starting the audio engine")?;
+    // `FORMALMUSIC_AUDIO=null` plays into a sink that keeps real time and
+    // discards the sound, for headless runs that measure the app.
+    let player = match std::env::var("FORMALMUSIC_AUDIO").as_deref() {
+        Ok("null") => Player::with_output(OutputKind::Null {
+            sample_rate: 48_000,
+            channels: 2,
+        }),
+        _ => Player::new(),
+    }
+    .context("starting the audio engine")?;
     let daemon = daemon::Daemon::new(&paths, config, player)?;
     tracing::info!(socket = %socket.display(), version = env!("CARGO_PKG_VERSION"), "formalmusicd listening");
 
