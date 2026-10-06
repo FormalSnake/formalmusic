@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/api", "crates/innertube", "crates/player", "crates/daemon", "crates/core", "crates/desktop"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+formalmusic-api = { path = "crates/api" }
+formalmusic-innertube = { path = "crates/innertube" }
+formalmusic-player = { path = "crates/player" }
+formalmusic-core = { path = "crates/core" }
+gpui-kit = "0.6.6"
+gpui-base = "0.6.6"
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "gzip", "cookies"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+parking_lot = "0.12"
+dirs = "7"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

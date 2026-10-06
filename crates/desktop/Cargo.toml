@@ -1,0 +1,8 @@
+[package]
+name = "formalmusic"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+formalmusic-api.workspace = true

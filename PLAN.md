@@ -1,7 +1,7 @@
-# YouTube Music: plan
+# FormalMusic: plan
 
-Working name "YouTube Music" (display name and desktop entry); the binary,
-repo and app id stay `youtubemusic`.
+FormalMusic is a YouTube Music client. Binary `formalmusic`, daemon
+`formalmusicd`, repo `FormalSnake/formalmusic`, app id `es.canarycoders.formalmusic`.
 
 A GPUI client at full parity with music.youtube.com, on top of our own daemon,
 themed by matugen the same way `../messages` is, packaged as a flake with a Home
@@ -11,11 +11,11 @@ Manager module, and kept working by a weekly Claude Code maintenance run.
 
 Two binaries, one socket between them.
 
-- **`ytmd`**, the daemon. It owns the YouTube session, an InnerTube client
+- **`formalmusicd`**, the daemon. It owns the YouTube session, an InnerTube client
   (WEB_REMIX) for every page and mutation, stream resolution through yt-dlp,
   the audio engine, the queue and MPRIS. It runs as a systemd user service, so
   music keeps playing when the window closes, and media keys work without it.
-- **`youtubemusic`**, the GPUI app. It's a pure frontend: a store, a bridge and
+- **`formalmusic`**, the GPUI app. It's a pure frontend: a store, a bridge and
   screens. Its only I/O is the socket and artwork fetches.
 
 Why our own daemon and not Kopuz: Kopuz's API is generic (catalog, search,
@@ -25,7 +25,7 @@ EUPL licensing. Writing the code costs nothing here; the ongoing cost is
 YouTube breaking stream extraction, and yt-dlp handles that faster than any
 single app's team.
 
-### ytmd internals
+### formalmusicd internals
 
 - **InnerTube client:** `browse`, `next`, `search`, `music/get_search_suggestions`,
   `like/*`, `playlist/*`, `browse/edit_playlist`, `account/accounts_list`.
@@ -34,7 +34,7 @@ single app's team.
   (shelves, chips, header variants), not a flattened track list.
 - **Auth:** a sign-in window (GPUI app opens a WebKitGTK login, or the user
   pastes a cookie header in a fallback), with cookies stored in
-  `$XDG_STATE_HOME/ytmd/session.json` (chmod 600). Brand accounts use the
+  `$XDG_STATE_HOME/formalmusicd/session.json` (chmod 600). Brand accounts use the
   `X-Goog-PageId` header. The same cookies go to yt-dlp via `--cookies`, so
   Premium bitrates work.
 - **Streams:** `yt-dlp -J` per track, opus first. Resolve the next two queue
@@ -45,9 +45,11 @@ single app's team.
   normalisation uses `loudnessDb` from the player response, which is what
   the web app does.
 - **MPRIS:** `mpris-server` crate, including `Rate` and the artwork URL.
-- **API:** tonic gRPC on `$XDG_RUNTIME_DIR/ytmd/ytmd.sock`. Unary calls for
-  pages and commands, one `Subscribe` stream for player, queue and library
-  events. We own the schema, so it changes with the app in one commit.
+- **API:** JSON lines on `$XDG_RUNTIME_DIR/formalmusic/formalmusicd.sock`
+  (`crates/api`). Requests carry an id, responses echo it, and `subscribe`
+  turns on player, queue and library events. Both ends are Rust and ship in
+  one package, so there is no codegen; a shell or bar widget can drive it
+  with `socat`.
 - **Scrobbling and history:** report playback to YouTube Music's
   `playbackTracking` URLs, so Home recommendations and History stay accurate.
   Without it the account goes stale.
@@ -56,12 +58,13 @@ single app's team.
 
 ```
 crates/innertube     InnerTube requests, renderer parsers, fixtures
-crates/ytmd          daemon: session, streams, audio, queue, MPRIS, gRPC server
-crates/proto         ytmd.proto and generated tonic types
+crates/formalmusicd          daemon: session, streams, audio, queue, MPRIS, gRPC server
+crates/api           wire types and JSON-lines framing shared by both ends
+crates/player        streaming decode and audio output
 crates/core          app store, StoreEvent, StateCache, socket client
-crates/desktop       binary `youtubemusic`, gpui-kit 0.6.6, one file per screen
+crates/desktop       binary `formalmusic`, gpui-kit 0.6.6, one file per screen
 nix/package.nix      both binaries
-nix/hm-module.nix    programs.youtubemusic
+nix/hm-module.nix    programs.formalmusic
 maintenance/         weekly run prompt and live checks
 docs/parity.md       checklist against music.youtube.com
 ```
@@ -69,15 +72,15 @@ docs/parity.md       checklist against music.youtube.com
 `core` follows messages' store contract: the UI calls store methods, reads
 state under a short `RwLock`, and narrow events (`Page(id)`, `Playlist(id)`,
 `Library(tab)`, `Like(video_id)`, `Player`, `Queue`) go through one
-`bridge.rs`. Pages paint from `$XDG_CACHE_HOME/youtubemusic/state.json` before
+`bridge.rs`. Pages paint from `$XDG_CACHE_HOME/formalmusic/state.json` before
 the daemon answers.
 
 ## Theming
 
 Copy `messages/crates/desktop/src/theme.rs` and keep the mechanism identical:
-a GPUI `Global` palette, `~/.config/youtubemusic/theme.json` polled every second
+a GPUI `Global` palette, `~/.config/formalmusic/theme.json` polled every second
 off the UI thread, and `refresh_windows()` on change. Add
-`~/.config/nix/users/kyandesutter/matugen-templates/youtubemusic.json.tmpl`
+`~/.config/nix/users/kyandesutter/matugen-templates/formalmusic.json.tmpl`
 with the same Material keys as `messages.json.tmpl`, plus player tokens
 (`progress`, `progressTrack`, `nowPlaying`, `scrim`).
 
@@ -93,17 +96,16 @@ it never replaces the tokens. Once two apps share it,
   overlay over nixpkgs' derivation. Nixpkgs lags releases by days, and the
   curl-cffi test breakage already worked around in
   `~/.config/nix/modules/shared/mixins/nix.nix` shows that tracking unstable
-  is fragile. `ytmd` gets the pinned yt-dlp baked into its wrapper `PATH`.
-- **`packages.youtubemusic`:** builds both binaries for x86_64 and aarch64
+  is fragile. `formalmusicd` gets the pinned yt-dlp baked into its wrapper `PATH`.
+- **`packages.formalmusic`:** builds both binaries for x86_64 and aarch64
   Linux. It copies messages' `package.nix`: the same `patchelf --add-rpath`
-  for wayland, vulkan, xkbcommon and X11, plus `alsa-lib` (cpal), `protobuf`
-  for tonic-build, and `wrapProgram` putting yt-dlp on `ytmd`'s `PATH`.
-- **`hm-module.nix`:** `programs.youtubemusic.enable` installs the package,
-  runs `ytmd` as a `systemd.user.services` unit with `Restart=on-failure`,
+  for wayland, vulkan, xkbcommon and X11, plus `alsa-lib` (cpal), and `wrapProgram` putting yt-dlp on `formalmusicd`'s `PATH`.
+- **`hm-module.nix`:** `programs.formalmusic.enable` installs the package,
+  runs `formalmusicd` as a `systemd.user.services` unit with `Restart=on-failure`,
   registers the matugen template, and never owns `config.json`.
-- **Dev shell:** messages' `linuxLibs` plus `protobuf`, `grpcurl` and the pinned
+- **Dev shell:** messages' `linuxLibs` plus `socat` and the pinned
   yt-dlp.
-- **App id:** `es.canarycoders.youtubemusic`, with the same single-instance
+- **App id:** `es.canarycoders.formalmusic`, with the same single-instance
   handover as messages.
 
 ## Weekly maintenance run
@@ -130,7 +132,7 @@ package from `claude-code-nix`, and starts headless Claude Code with
 5. **Ship through a PR:** commits on a `maintenance/<date>` branch, opens a PR
    with what changed and the check output, and merges it into main with
    `gh pr merge` once step 3 passes. A run that fails step 3 leaves its PR
-   open as a draft for you instead. Then `just ui youtubemusic` in
+   open as a draft for you instead. Then `just ui formalmusic` in
    `~/.config/nix`, a rebuild of g815, a push, and the e1504g one-shot rebuild
    from that repo's CLAUDE.md.
 6. **Wait for offline hosts:** if the e1504g is unreachable, it retries over
@@ -138,7 +140,7 @@ package from `claude-code-nix`, and starts headless Claude Code with
 7. **Report:** sends a desktop notification on g815 with one line per host
    (commit, rebuilt yes or no). The full log goes to the journal.
 
-The same prompt runs on demand (`systemctl --user start ytm-maintenance`) when
+The same prompt runs on demand (`systemctl --user start formalmusic-maintenance`) when
 playback breaks mid-week. The macbook stays out of the run, since the app
 targets Linux only.
 
@@ -146,7 +148,7 @@ targets Linux only.
 
 | # | Scope | Size |
 |---|---|---|
-| 1 | Workspace, flake with pinned yt-dlp, `ytmd` playing a video id end to end with MPRIS, `theme.rs` and matugen, a now-playing bar | 3 days |
+| 1 | Workspace, flake with pinned yt-dlp, `formalmusicd` playing a video id end to end with MPRIS, `theme.rs` and matugen, a now-playing bar | 3 days |
 | 2 | Sign-in, cookies shared with yt-dlp, Home (chips, shelves), Search with suggestions and filters | 1 week |
 | 3 | Album, artist and playlist pages, queue panel, up next, radio, related, lyrics, playback tracking | 1 week |
 | 4 | Library tabs, likes and dislikes, add to playlist, playlist create/edit/reorder, history | 1 week |
