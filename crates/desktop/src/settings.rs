@@ -1,12 +1,14 @@
-//! The Settings dialog. Its one section is Scrobbling: Last.fm and
-//! ListenBrainz, each with its account, a switch for scrobbling and one for
-//! now playing, and a line for plays still waiting to go out. Last.fm asks
-//! for the user's own API account first when the daemon has none.
+//! The Settings dialog. Playback holds the switches kept in `config.json`.
+//! Scrobbling has Last.fm and ListenBrainz, each with its account, a switch
+//! for scrobbling and one for now playing, and a line for plays still
+//! waiting to go out. Last.fm asks for the user's own API account first
+//! when the daemon has none.
 
 use formalmusic_api::{
     LastFmApp, ListenBrainzSource, ProfileBrowser, ScrobbleAccount, ScrobbleService,
 };
 use formalmusic_core::MusicStore;
+use formalmusic_core::settings::Settings as ClientSettings;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -32,6 +34,8 @@ pub struct Settings {
     connecting: Option<String>,
     lastfm_error: Option<SharedString>,
     listenbrainz_error: Option<SharedString>,
+    client: ClientSettings,
+    client_error: Option<SharedString>,
     on_close: OnClose,
     _subscription: Subscription,
 }
@@ -73,9 +77,60 @@ impl Settings {
             connecting: None,
             lastfm_error: None,
             listenbrainz_error: None,
+            client: ClientSettings::load(&formalmusic_core::paths::settings_file()),
+            client_error: None,
             on_close: std::rc::Rc::new(on_close),
             _subscription: subscription,
         }
+    }
+
+    fn set_keep_playing(&mut self, on: bool, cx: &mut Context<Self>) {
+        let path = formalmusic_core::paths::settings_file();
+        match ClientSettings::write(&path, "keepPlayingWhenClosed", on.into()) {
+            Ok(()) => {
+                self.client.keep_playing_when_closed = on;
+                self.client_error = None;
+            }
+            Err(error) => self.client_error = Some(format!("Unable to save: {error}").into()),
+        }
+        cx.notify();
+    }
+
+    fn playback(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let weak = cx.entity().downgrade();
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::X2)
+            .child(heading("Playback", palette))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(spacing::X3)
+                    .p(spacing::X4)
+                    .rounded(radius::CARD)
+                    .bg(palette.press_wash)
+                    .child(switch(
+                        "keep-playing-when-closed".into(),
+                        "Keep playing after closing the window",
+                        self.client.keep_playing_when_closed,
+                        palette,
+                        move |on, cx| {
+                            let _ = weak.update(cx, |this, cx| this.set_keep_playing(on, cx));
+                        },
+                    ))
+                    .when_some(self.client_error.clone(), |el, error| {
+                        el.child(
+                            div()
+                                .text_size(type_scale::CAPTION.font_size)
+                                .line_height(type_scale::CAPTION.line_height)
+                                .text_color(palette.danger)
+                                .child(error),
+                        )
+                    }),
+            )
+            .into_any_element()
     }
 
     fn connect_lastfm(&mut self, needs_app: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -283,14 +338,14 @@ impl Settings {
                     "Scrobble tracks you play",
                     scrobble,
                     palette,
-                    move |on| a.set_scrobbling(service, on, now_playing),
+                    move |on, _| a.set_scrobbling(service, on, now_playing),
                 ))
                 .child(switch(
                     SharedString::from(format!("{id}-now-playing")),
                     "Show what's playing now",
                     now_playing,
                     palette,
-                    move |on| b.set_scrobbling(service, scrobble, on),
+                    move |on, _| b.set_scrobbling(service, scrobble, on),
                 ))
             })
             .into_any_element()
@@ -480,19 +535,13 @@ impl Render for Settings {
                             .text_color(palette.text)
                             .child("Settings"),
                     )
+                    .child(self.playback(palette, cx))
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap(spacing::X2)
-                            .child(
-                                div()
-                                    .text_size(type_scale::TITLE.font_size)
-                                    .line_height(type_scale::TITLE.line_height)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(palette.text)
-                                    .child("Scrobbling"),
-                            )
+                            .child(heading("Scrobbling", palette))
                             .child(self.service_row(
                                 ScrobbleService::LastFm,
                                 &status.lastfm,
@@ -526,7 +575,7 @@ fn switch(
     label: &'static str,
     on: bool,
     palette: Palette,
-    toggle: impl Fn(bool) + 'static,
+    toggle: impl Fn(bool, &mut App) + 'static,
 ) -> AnyElement {
     let track = if on { palette.accent } else { palette.ghost };
     div()
@@ -536,7 +585,7 @@ fn switch(
         .items_center()
         .gap(spacing::X3)
         .cursor_pointer()
-        .on_click(move |_, _, _| toggle(!on))
+        .on_click(move |_, _, cx| toggle(!on, cx))
         .child(
             div()
                 .flex_grow(1.)
@@ -565,6 +614,15 @@ fn switch(
                 ),
         )
         .into_any_element()
+}
+
+fn heading(text: &'static str, palette: Palette) -> impl IntoElement {
+    div()
+        .text_size(type_scale::TITLE.font_size)
+        .line_height(type_scale::TITLE.line_height)
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(palette.text)
+        .child(text)
 }
 
 fn caption(text: impl Into<SharedString>, palette: Palette) -> impl IntoElement {

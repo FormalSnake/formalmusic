@@ -976,6 +976,20 @@ impl MusicStore {
         self.send(Command::Toggle);
     }
 
+    /// Pauses and waits up to `timeout` for the daemon to take it, for a
+    /// window that closes just before the process exits. Blocks, so it must
+    /// not run on the store's runtime.
+    pub fn pause_blocking(&self, timeout: Duration) {
+        let transport = self.inner.transport.clone();
+        let call =
+            async move { tokio::time::timeout(timeout, transport.call(Command::Pause)).await };
+        match self.runtime().block_on(call) {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => tracing::warn!("pause on close: {error}"),
+            Err(_) => tracing::warn!("pause on close: the daemon did not answer in time"),
+        }
+    }
+
     pub fn next(&self) {
         self.send(Command::Next);
     }

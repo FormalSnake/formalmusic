@@ -29,6 +29,7 @@ const CONTEXT: &str = "App";
 /// Pages kept alive for back and forward, with their scroll positions.
 const KEPT_PAGES: usize = 8;
 const TOAST_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+const PAUSE_ON_CLOSE: std::time::Duration = std::time::Duration::from_millis(500);
 
 actions!(
     app,
@@ -238,6 +239,19 @@ impl AppRoot {
             build_store(&runtime, preloaded)
         };
         Bridge::drain(cx, store.clone());
+        // Closing the last window pauses, unless the settings say to keep
+        // playing. It has to reach the daemon before the process exits, so it
+        // waits for the answer instead of going through the store's queue.
+        let closing = store.clone();
+        cx.on_window_closed(move |cx, _| {
+            if cx.windows().is_empty()
+                && !formalmusic_core::settings::Settings::load(&paths::settings_file())
+                    .keep_playing_when_closed
+            {
+                closing.pause_blocking(PAUSE_ON_CLOSE);
+            }
+        })
+        .detach();
         let starting = store.clone();
         store.spawn(async move { starting.start().await });
         for topic in [Topic::Session, Topic::Connection, Topic::Notice] {
