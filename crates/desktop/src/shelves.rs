@@ -205,11 +205,16 @@ fn page_by(handle: &ScrollHandle, direction: f32) {
 pub fn carousel(section: &Section, scroll: &ScrollHandle, env: &Env, id: usize) -> AnyElement {
     div()
         .id(("carousel", id))
+        // A flex parent and a non-shrinking row: as a block child the row is
+        // squeezed to the viewport, and the scroll area then has nothing to
+        // scroll. Same for the track grid and the chips.
+        .flex()
         .overflow_x_scroll()
         .track_scroll(scroll)
         .w_full()
         .child(
             div()
+                .flex_none()
                 .flex()
                 .flex_row()
                 .gap(CARD_GAP)
@@ -471,11 +476,13 @@ pub fn track_grid(section: &Section, scroll: &ScrollHandle, env: &Env, id: usize
     });
     div()
         .id(("track-grid", id))
+        .flex()
         .overflow_x_scroll()
         .track_scroll(scroll)
         .w_full()
         .child(
             div()
+                .flex_none()
                 .flex()
                 .flex_row()
                 .gap(CARD_GAP)
@@ -966,10 +973,12 @@ pub fn chips(
 ) -> AnyElement {
     div()
         .id("chips")
+        .flex()
         .overflow_x_scroll()
         .w_full()
         .child(
             div()
+                .flex_none()
                 .flex()
                 .flex_row()
                 .gap(spacing::X2)
