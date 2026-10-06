@@ -379,6 +379,10 @@ pub struct PlayerState {
     pub shuffle: bool,
     /// Codec and bitrate actually playing, such as "opus 160 kbps".
     pub stream: Option<String>,
+    /// The `browseId` of the current track's "Related" tab, for
+    /// [`crate::Command::Related`]. It comes with the `next` response.
+    #[serde(default)]
+    pub related_browse_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

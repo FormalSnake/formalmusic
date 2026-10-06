@@ -5,4 +5,17 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-formalmusic-api.workspace = true
+formalmusic-api = { workspace = true, features = ["io"] }
+tokio.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+dirs.workspace = true
+thiserror.workspace = true
+async-trait = "0.1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
