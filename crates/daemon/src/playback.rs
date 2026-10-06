@@ -7,7 +7,7 @@
 //! check [`State::generation`] when they finish, so a skip that happened in
 //! the meantime wins.
 
-use crate::config::{Config, Paths, write_private};
+use crate::config::{Config, Paths, Preferences, write_private};
 use crate::playlist::{self, Opened, Rest};
 use crate::queue::{Queue, RADIO_LOW_WATER, Removed};
 use crate::session::Session;
@@ -52,7 +52,7 @@ pub struct Playback {
     player: Player,
     resolver: Resolver,
     session: Arc<Session>,
-    config: Config,
+    prefs: Mutex<Preferences>,
     events: broadcast::Sender<Event>,
     /// Seek targets, for the MPRIS `Seeked` signal.
     seeked: broadcast::Sender<u64>,
@@ -165,6 +165,7 @@ impl Playback {
         player: Player,
         session: Arc<Session>,
         config: Config,
+        prefs: Preferences,
         paths: &Paths,
         events: broadcast::Sender<Event>,
     ) -> anyhow::Result<Arc<Self>> {
@@ -202,13 +203,9 @@ impl Playback {
         let this = Arc::new(Self {
             state: Mutex::new(state),
             player,
-            resolver: Resolver::new(
-                paths.state.clone(),
-                session.clone(),
-                config.preferred_quality,
-            ),
+            resolver: Resolver::new(paths.state.clone(), session.clone(), prefs.quality),
             session,
-            config,
+            prefs: Mutex::new(prefs),
             events,
             seeked,
             plays,
@@ -332,6 +329,18 @@ impl Playback {
                 (next.tracks, start, Some(radio), None)
             }
         };
+        let (tracks, start) = if self.prefs.lock().restrict_explicit {
+            let (tracks, start) = crate::queue::without_explicit(tracks, start);
+            if tracks.is_empty() {
+                return Err(ApiError::BadRequest(
+                    "Every track here is explicit. Turn off Skip explicit songs in Settings to play it."
+                        .into(),
+                ));
+            }
+            (tracks, start)
+        } else {
+            (tracks, start)
+        };
         if tracks.is_empty() {
             return Err(ApiError::NotFound("nothing playable in this source".into()));
         }
@@ -351,6 +360,7 @@ impl Playback {
     }
 
     pub fn enqueue(self: &Arc<Self>, tracks: Vec<Track>, position: EnqueuePosition) {
+        let tracks = self.allowed(tracks);
         let mut st = self.state.lock();
         if st.queue.enqueue(tracks, position) {
             self.start_current(&mut st, 0, true);
@@ -994,7 +1004,7 @@ impl Playback {
                 if tracks.is_empty() {
                     continue;
                 }
-                st.queue.extend(tracks, &mut this.rng.lock());
+                st.queue.extend(this.allowed(tracks), &mut this.rng.lock());
                 if fill.resume_when_extended
                     && let Some(index) = st.queue.next_index(false)
                 {
@@ -1007,13 +1017,42 @@ impl Playback {
         });
     }
 
+    /// Applies settings read again from the config files.
+    pub fn set_preferences(&self, prefs: Preferences) {
+        self.resolver.set_quality(prefs.quality);
+        *self.prefs.lock() = prefs;
+    }
+
+    /// `tracks` less the explicit ones while Settings restricts them.
+    fn allowed(&self, tracks: Vec<Track>) -> Vec<Track> {
+        if self.prefs.lock().restrict_explicit {
+            tracks.into_iter().filter(|t| !t.explicit).collect()
+        } else {
+            tracks
+        }
+    }
+
     // Radio
+
+    /// With autoplay on, a list that was not a radio turns into one, seeded
+    /// from its last track, so it plays on once it runs out. Repeat keeps
+    /// the list going by itself.
+    fn autoplay(&self, st: &mut State) {
+        if st.radio.is_none()
+            && st.queue.len() > 0
+            && st.queue.repeat == Repeat::Off
+            && self.prefs.lock().autoplay
+        {
+            st.radio = Some(Radio::default());
+        }
+    }
 
     fn extend_radio(self: &Arc<Self>, st: &mut State) {
         // Autoplay follows the list once all of it is queued.
         if st.fill.is_some() {
             return;
         }
+        self.autoplay(st);
         let Some(radio) = &mut st.radio else { return };
         if radio.fetching || st.queue.remaining() >= RADIO_LOW_WATER || st.queue.len() == 0 {
             return;
@@ -1056,7 +1095,7 @@ impl Playback {
             }
             radio.continuation = next.continuation;
             let resume = std::mem::take(&mut radio.resume_when_extended);
-            let added = st.queue.append_radio(next.tracks);
+            let added = st.queue.append_radio(this.allowed(next.tracks));
             tracing::debug!(added, "radio extended the queue");
             if added == 0 {
                 return;
@@ -1234,6 +1273,9 @@ impl Playback {
                         self.emit_queue(&st);
                     }
                     None => {
+                        if st.fill.is_none() {
+                            self.autoplay(&mut st);
+                        }
                         if let Some(radio) = &mut st.radio {
                             radio.resume_when_extended = true;
                         }
@@ -1309,7 +1351,7 @@ impl Playback {
             .unwrap_or_else(|| entry.track.video_id.clone());
         let lookup = entry.track.counterpart.is_none()
             && self.looked_up.lock().insert(entry.track.video_id.clone());
-        let report = self.config.report_history && self.session.info().signed_in;
+        let report = self.prefs.lock().report_history && self.session.info().signed_in;
         let this = self.clone();
         self.rt.spawn(async move {
             let client = this.session.client();

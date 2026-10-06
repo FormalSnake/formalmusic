@@ -1,6 +1,6 @@
 //! Shared daemon state and the request dispatch.
 
-use crate::config::{Config, Paths};
+use crate::config::{AppSettings, Config, Paths, Preferences};
 use crate::extras::Extras;
 use crate::playback::Playback;
 use crate::scrobble::Scrobbler;
@@ -25,6 +25,8 @@ pub struct Daemon {
     pub events: broadcast::Sender<Event>,
     /// Whether the tray icon should show while a track is loaded.
     pub tray: watch::Sender<bool>,
+    config: Config,
+    app_settings: std::path::PathBuf,
 }
 
 impl Daemon {
@@ -32,7 +34,16 @@ impl Daemon {
         crate::config::create_private_dir(&paths.state)?;
         let session = Arc::new(Session::load(paths.session())?);
         let (events, _) = broadcast::channel(256);
-        let playback = Playback::new(player, session.clone(), config, paths, events.clone())?;
+        let app = AppSettings::load(&paths.app_settings);
+        let prefs = Preferences::new(&config, &app);
+        let playback = Playback::new(
+            player,
+            session.clone(),
+            config.clone(),
+            prefs,
+            paths,
+            events.clone(),
+        )?;
         let extras = Arc::new(Extras::new()?);
         tokio::spawn(crate::extras::warm_on_track_change(
             extras.clone(),
@@ -41,8 +52,7 @@ impl Daemon {
             events.subscribe(),
         ));
         let scrobbler = Scrobbler::new(paths, session.clone(), events.clone())?;
-        let (tray, _) =
-            watch::channel(crate::config::AppSettings::load(&paths.app_settings).show_in_tray);
+        let (tray, _) = watch::channel(app.show_in_tray);
         tokio::spawn(scrobbler.clone().run(playback.clone()));
         Ok(Arc::new(Self {
             session,
@@ -52,6 +62,8 @@ impl Daemon {
             scrobbler,
             events,
             tray,
+            config,
+            app_settings: paths.app_settings.clone(),
         }))
     }
 
@@ -313,6 +325,12 @@ impl Daemon {
             }
             Command::Pause => {
                 playback.pause("client");
+                Ok(Reply::Ok)
+            }
+            Command::ReloadSettings => {
+                let app = AppSettings::load(&self.app_settings);
+                self.playback
+                    .set_preferences(Preferences::new(&self.config, &app));
                 Ok(Reply::Ok)
             }
             Command::SetTray { shown } => {

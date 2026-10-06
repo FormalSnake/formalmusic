@@ -274,6 +274,9 @@ pub enum Command {
     QueueState,
 
     // Desktop
+    /// Read the playback settings again from the app's `config.json`, which
+    /// the Settings dialog just wrote.
+    ReloadSettings,
     /// Show or hide the tray icon, which the daemon owns so it outlives the
     /// window. Linux only; elsewhere the daemon takes it and does nothing.
     SetTray {

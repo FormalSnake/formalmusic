@@ -1246,6 +1246,11 @@ impl MusicStore {
         self.send(Command::SetTray { shown });
     }
 
+    /// After Settings wrote a playback key the daemon reads.
+    pub fn reload_settings(&self) {
+        self.send(Command::ReloadSettings);
+    }
+
     pub fn previous(&self) {
         self.send(Command::Previous);
     }

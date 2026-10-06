@@ -1,6 +1,8 @@
 //! `daemon.json` and the directories the daemon keeps its files in. The
 //! daemon only reads the config; Home Manager or the user owns it. It also
-//! reads the one key of the app's `config.json` that it acts on.
+//! reads the keys of the app's `config.json` that it acts on: the tray, and
+//! the playback settings the Settings dialog writes, which win over
+//! `daemon.json`'s.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -13,6 +15,11 @@ pub struct Config {
     pub normalisation: bool,
     pub crossfade_ms: u32,
     pub preferred_quality: Quality,
+    /// Radio from the last track once a list runs out, as the web app's
+    /// autoplay does.
+    pub autoplay: bool,
+    /// Leave tracks YouTube marks explicit out of the queue.
+    pub restrict_explicit: bool,
 }
 
 impl Default for Config {
@@ -21,7 +28,9 @@ impl Default for Config {
             report_history: true,
             normalisation: true,
             crossfade_ms: 0,
-            preferred_quality: Quality::High,
+            preferred_quality: Quality::Auto,
+            autoplay: true,
+            restrict_explicit: false,
         }
     }
 }
@@ -30,12 +39,15 @@ impl Default for Config {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Quality {
+    /// The web app adapts to the connection as it plays; one format plays
+    /// a whole track here, so Auto takes the best one, as `High` does.
+    #[default]
+    Auto,
     /// About 50 kbps.
     Low,
     /// About 130 kbps, never the Premium formats.
     Normal,
     /// The best format offered, Premium included.
-    #[default]
     High,
 }
 
@@ -58,16 +70,50 @@ impl Config {
     }
 }
 
-/// The keys of the app's `config.json` the daemon acts on.
+/// The keys of the app's `config.json` the daemon acts on. A playback key
+/// left out keeps `daemon.json`'s value.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
     pub show_in_tray: bool,
+    pub audio_quality: Option<Quality>,
+    pub autoplay: Option<bool>,
+    pub restrict_explicit: Option<bool>,
+    pub pause_history: Option<bool>,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
-        Self { show_in_tray: true }
+        Self {
+            show_in_tray: true,
+            audio_quality: None,
+            autoplay: None,
+            restrict_explicit: None,
+            pause_history: None,
+        }
+    }
+}
+
+/// The playback settings in force: `daemon.json`, overridden by the app's
+/// `config.json`. Read again on [`formalmusic_api::Command::ReloadSettings`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Preferences {
+    pub quality: Quality,
+    pub autoplay: bool,
+    pub restrict_explicit: bool,
+    pub report_history: bool,
+}
+
+impl Preferences {
+    pub fn new(config: &Config, app: &AppSettings) -> Self {
+        Self {
+            quality: app.audio_quality.unwrap_or(config.preferred_quality),
+            autoplay: app.autoplay.unwrap_or(config.autoplay),
+            restrict_explicit: app.restrict_explicit.unwrap_or(config.restrict_explicit),
+            report_history: app
+                .pause_history
+                .map_or(config.report_history, |paused| !paused),
+        }
     }
 }
 
@@ -162,6 +208,31 @@ mod tests {
         assert_eq!(config.crossfade_ms, 3000);
         assert_eq!(config.preferred_quality, Quality::Low);
         assert!(config.report_history && config.normalisation);
+    }
+
+    #[test]
+    fn the_apps_settings_win_over_daemon_json() {
+        let config: Config = serde_json::from_str(
+            r#"{"preferredQuality": "low", "reportHistory": false, "autoplay": false}"#,
+        )
+        .unwrap();
+        let untouched = Preferences::new(&config, &AppSettings::default());
+        assert_eq!(
+            untouched,
+            Preferences {
+                quality: Quality::Low,
+                autoplay: false,
+                restrict_explicit: false,
+                report_history: false,
+            }
+        );
+        let app: AppSettings = serde_json::from_str(
+            r#"{"audioQuality": "high", "pauseHistory": false, "restrictExplicit": true}"#,
+        )
+        .unwrap();
+        let chosen = Preferences::new(&config, &app);
+        assert_eq!(chosen.quality, Quality::High);
+        assert!(chosen.report_history && chosen.restrict_explicit && !chosen.autoplay);
     }
 
     #[test]

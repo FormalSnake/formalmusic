@@ -1,4 +1,5 @@
-//! The Settings dialog. Playback holds the switches kept in `config.json`.
+//! The Settings dialog. Playback and Privacy hold the settings kept in
+//! `config.json`; the daemon reads the audio ones from there too.
 //! Scrobbling has Last.fm and ListenBrainz, each with its account, a switch
 //! for scrobbling and one for now playing, and a line for plays still
 //! waiting to go out. Last.fm asks for the user's own API account first
@@ -8,7 +9,7 @@ use formalmusic_api::{
     LastFmApp, ListenBrainzSource, ProfileBrowser, ScrobbleAccount, ScrobbleService,
 };
 use formalmusic_core::MusicStore;
-use formalmusic_core::settings::Settings as ClientSettings;
+use formalmusic_core::settings::{AudioQuality, Settings as ClientSettings};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -93,11 +94,46 @@ impl Settings {
         apply: fn(&mut ClientSettings, bool),
         cx: &mut Context<Self>,
     ) -> bool {
+        self.save(key, on.into(), |client| apply(client, on), cx)
+    }
+
+    /// A switch the daemon acts on: saved, then the daemon reads the file again.
+    fn set_daemon(
+        &mut self,
+        key: &str,
+        on: bool,
+        apply: fn(&mut ClientSettings, bool),
+        cx: &mut Context<Self>,
+    ) {
+        if self.set_client(key, on, apply, cx) {
+            self.store.reload_settings();
+        }
+    }
+
+    fn set_quality(&mut self, quality: AudioQuality, cx: &mut Context<Self>) {
+        let value = serde_json::to_value(quality).unwrap_or_default();
+        if self.save(
+            "audioQuality",
+            value,
+            |client| client.audio_quality = quality,
+            cx,
+        ) {
+            self.store.reload_settings();
+        }
+    }
+
+    fn save(
+        &mut self,
+        key: &str,
+        value: serde_json::Value,
+        apply: impl FnOnce(&mut ClientSettings),
+        cx: &mut Context<Self>,
+    ) -> bool {
         let path = formalmusic_core::paths::settings_file();
-        let saved = ClientSettings::write(&path, key, on.into());
+        let saved = ClientSettings::write(&path, key, value);
         match &saved {
             Ok(()) => {
-                apply(&mut self.client, on);
+                apply(&mut self.client);
                 self.client_error = None;
             }
             Err(error) => self.client_error = Some(format!("Unable to save: {error}").into()),
@@ -109,6 +145,7 @@ impl Settings {
     fn playback(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
         let keep = cx.entity().downgrade();
         let tray = keep.clone();
+        let (autoplay, explicit) = (keep.clone(), keep.clone());
         div()
             .flex()
             .flex_col()
@@ -122,6 +159,34 @@ impl Settings {
                     .p(spacing::X4)
                     .rounded(radius::CARD)
                     .bg(palette.press_wash)
+                    .child(self.quality_picker(palette, cx))
+                    .child(switch(
+                        "autoplay".into(),
+                        "Autoplay similar songs when the queue ends",
+                        self.client.autoplay,
+                        palette,
+                        move |on, cx| {
+                            let _ = autoplay.update(cx, |this, cx| {
+                                this.set_daemon("autoplay", on, |c, on| c.autoplay = on, cx)
+                            });
+                        },
+                    ))
+                    .child(switch(
+                        "restrict-explicit".into(),
+                        "Skip explicit songs",
+                        self.client.restrict_explicit,
+                        palette,
+                        move |on, cx| {
+                            let _ = explicit.update(cx, |this, cx| {
+                                this.set_daemon(
+                                    "restrictExplicit",
+                                    on,
+                                    |c, on| c.restrict_explicit = on,
+                                    cx,
+                                )
+                            });
+                        },
+                    ))
                     .child(switch(
                         "keep-playing-when-closed".into(),
                         "Keep playing after closing the window",
@@ -168,6 +233,106 @@ impl Settings {
                                 .child(error),
                         )
                     }),
+            )
+            .into_any_element()
+    }
+
+    /// Auto, Low, Normal and High, as the web app offers them.
+    fn quality_picker(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let options = [
+            (AudioQuality::Auto, "Auto"),
+            (AudioQuality::Low, "Low"),
+            (AudioQuality::Normal, "Normal"),
+            (AudioQuality::High, "High"),
+        ];
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(spacing::X3)
+            .child(
+                div()
+                    .flex_grow(1.)
+                    .min_w(px(0.))
+                    .text_size(type_scale::BODY.font_size)
+                    .line_height(px(20.))
+                    .text_color(palette.text)
+                    .child("Audio quality"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_shrink_0()
+                    .p(px(2.))
+                    .gap(px(2.))
+                    .rounded(radius::CONTROL)
+                    .bg(palette.canvas)
+                    .children(options.into_iter().map(|(quality, label)| {
+                        let selected = self.client.audio_quality == quality;
+                        div()
+                            .id(SharedString::from(format!("quality-{label}")))
+                            .h(px(24.))
+                            .px(spacing::X2)
+                            .flex()
+                            .items_center()
+                            .rounded(radius::CONTROL - px(2.))
+                            .text_size(type_scale::CAPTION.font_size)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(if selected {
+                                palette.text
+                            } else {
+                                palette.secondary
+                            })
+                            .when(selected, |el| el.bg(palette.raised_hover))
+                            .when(!selected, |el| {
+                                el.cursor_pointer()
+                                    .hover(move |style| style.text_color(palette.text))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.set_quality(quality, cx)
+                                    }))
+                            })
+                            .child(label)
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn privacy(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let weak = cx.entity().downgrade();
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::X2)
+            .child(heading("Privacy", palette))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(spacing::X3)
+                    .p(spacing::X4)
+                    .rounded(radius::CARD)
+                    .bg(palette.press_wash)
+                    .child(switch(
+                        "pause-history".into(),
+                        "Pause watch history",
+                        self.client.pause_history,
+                        palette,
+                        move |on, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.set_daemon(
+                                    "pauseHistory",
+                                    on,
+                                    |c, on| c.pause_history = on,
+                                    cx,
+                                )
+                            });
+                        },
+                    ))
+                    .child(caption(
+                        "Songs you play stay out of History and stop shaping your recommendations.",
+                        palette,
+                    )),
             )
             .into_any_element()
     }
@@ -575,6 +740,7 @@ impl Render for Settings {
                             .child("Settings"),
                     )
                     .child(self.playback(palette, cx))
+                    .child(self.privacy(palette, cx))
                     .child(
                         div()
                             .flex()

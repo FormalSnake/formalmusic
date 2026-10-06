@@ -139,12 +139,12 @@ are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
 
 | Feature | Web app | FormalMusic | Notes |
 |---|---|---|---|
-| Audio quality (Low, Normal, High, Always high) | playback settings | partial | `daemon/src/config.rs` (`preferred_quality`), `daemon/src/streams.rs`; `daemon.json` only, no UI |
+| Audio quality (Low, Normal, High, Always high) | playback settings | yes | Auto, Low, Normal, High in `desktop/src/settings.rs`, written to `config.json` and applied by `daemon/src/config.rs` (`Preferences`) through `Command::ReloadSettings` |
 | Premium bitrate | automatic with Premium | yes | `daemon/src/streams.rs` |
-| Autoplay | playback settings | partial | Always on, no switch |
+| Autoplay | playback settings | yes | `desktop/src/settings.rs`; `daemon/src/playback.rs` (`autoplay`) turns a list into radio from its last track |
 | Show or hide music videos (audio only) | playback settings | yes | Song/Video switch in `desktop/src/music_video.rs`; no persistent default |
-| Restrict explicit content | playback settings | no | |
-| Pause watch history | privacy | partial | `reportHistory` in `daemon/src/config.rs`, file only |
+| Restrict explicit content | playback settings | yes | "Skip explicit songs" in `desktop/src/settings.rs`; `daemon/src/playback.rs` keeps explicit tracks out of the queue |
+| Pause watch history | privacy | yes | `desktop/src/settings.rs`, `daemon/src/config.rs` (`pauseHistory` over `reportHistory`) |
 | Delete watch history | privacy | no | |
 | Notifications | account settings | no | No desktop notifications; in-app toasts only (`desktop/src/toast.rs`) |
 | Connected apps, scrobbling | account settings | yes | Last.fm and ListenBrainz, `desktop/src/settings.rs`, `daemon/src/scrobble/` |
@@ -155,7 +155,6 @@ are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
 Most used first.
 
 4. Playlist editing UI: rename, description, privacy, delete, reorder (all in `PlaylistEdit`). ~a day.
-6. Quality, autoplay, explicit filter and pause history in the Settings dialog, writing `daemon.json`. ~half a day.
 8. Search filters Episodes and Profiles, plus library search. ~2 hours.
 9. Clear queue and save queue as playlist. ~2 hours.
 10. Episodes for Later entry, podcast resume position, episode save. ~a day.

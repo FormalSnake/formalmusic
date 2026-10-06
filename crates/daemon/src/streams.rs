@@ -55,7 +55,7 @@ struct Inner {
     worker: Worker,
     state_dir: PathBuf,
     session: Arc<Session>,
-    quality: Quality,
+    quality: Mutex<Quality>,
     cache: Mutex<HashMap<String, Slot>>,
     /// The private copy of the session cookies yt-dlp reads, and the header
     /// it was written from.
@@ -105,7 +105,7 @@ impl Resolver {
                 worker,
                 state_dir,
                 session,
-                quality,
+                quality: Mutex::new(quality),
                 cache: Mutex::new(HashMap::new()),
                 cookie_file: Mutex::new(None),
                 gated: Mutex::new(HashSet::new()),
@@ -119,6 +119,16 @@ impl Resolver {
     /// Starts yt-dlp, so the first track does not wait for Python to load it.
     pub async fn warm(&self) {
         self.inner.worker.warm().await;
+    }
+
+    /// Takes effect from the next track resolved; the ones resolved ahead
+    /// at the old quality are dropped.
+    pub fn set_quality(&self, quality: Quality) {
+        let mut current = self.inner.quality.lock();
+        if *current != quality {
+            *current = quality;
+            self.inner.cache.lock().clear();
+        }
     }
 
     /// The stream for `video_id`. Concurrent calls for one id share a single
@@ -369,7 +379,7 @@ impl Inner {
         if !answer.cookies.is_empty() {
             self.session.merge_cookies(&answer.cookies);
         }
-        let source = pick_format(&answer.info, self.quality)
+        let source = pick_format(&answer.info, *self.quality.lock())
             .ok_or_else(|| "no playable audio format".to_owned())?;
         tracing::debug!(video_id, premium, format = %source.label(), elapsed_ms = started.elapsed().as_millis() as u64, "resolved");
         Ok(Resolved {
@@ -426,7 +436,7 @@ fn remove_cookie_files(dir: &Path) {
 /// the closest Opus (or AAC) bitrate below a cap instead.
 pub fn pick_format(info: &Value, quality: Quality) -> Option<StreamSource> {
     let cap = match quality {
-        Quality::High => return StreamSource::best_from_ytdlp(info),
+        Quality::Auto | Quality::High => return StreamSource::best_from_ytdlp(info),
         Quality::Normal => 160,
         Quality::Low => 64,
     };

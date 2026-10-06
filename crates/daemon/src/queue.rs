@@ -321,6 +321,19 @@ impl Queue {
     }
 }
 
+/// `tracks` without the explicit ones, for the restrict explicit setting,
+/// and where `start` lands among the rest: the same track, or the next one
+/// kept, or the last when none follows.
+pub fn without_explicit(tracks: Vec<Track>, start: usize) -> (Vec<Track>, usize) {
+    let before = tracks[..start.min(tracks.len())]
+        .iter()
+        .filter(|t| !t.explicit)
+        .count();
+    let kept: Vec<Track> = tracks.into_iter().filter(|t| !t.explicit).collect();
+    let start = before.min(kept.len().saturating_sub(1));
+    (kept, start)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +356,32 @@ mod tests {
             library: None,
             counterpart: None,
         }
+    }
+
+    #[test]
+    fn explicit_tracks_drop_out_and_the_start_follows() {
+        let tracks = |ids: &str| -> Vec<Track> {
+            ids.chars()
+                .map(|c| {
+                    let mut t = track(&c.to_ascii_lowercase().to_string());
+                    t.explicit = c.is_ascii_uppercase();
+                    t
+                })
+                .collect()
+        };
+        let ids = |tracks: &[Track]| {
+            tracks
+                .iter()
+                .map(|t| t.video_id.clone())
+                .collect::<String>()
+        };
+        let (kept, start) = without_explicit(tracks("aBcDe"), 2);
+        assert_eq!((ids(&kept).as_str(), start), ("ace", 1));
+        let (kept, start) = without_explicit(tracks("aBcDe"), 3);
+        assert_eq!((ids(&kept).as_str(), start), ("ace", 2));
+        let (kept, start) = without_explicit(tracks("abCD"), 3);
+        assert_eq!((ids(&kept).as_str(), start), ("ab", 1));
+        assert!(without_explicit(tracks("AB"), 0).0.is_empty());
     }
 
     fn queue(ids: &str, start: usize) -> Queue {

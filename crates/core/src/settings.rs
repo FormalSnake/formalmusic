@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -16,6 +16,25 @@ pub struct Settings {
     pub keep_playing_when_closed: bool,
     /// Show the daemon's tray icon while a track is loaded (Linux).
     pub show_in_tray: bool,
+    /// The keys below are the daemon's: it reads them on start and on
+    /// `ReloadSettings`, over its own `daemon.json`.
+    pub audio_quality: AudioQuality,
+    /// Radio from the last track once a list runs out.
+    pub autoplay: bool,
+    pub restrict_explicit: bool,
+    /// Stop reporting plays to YouTube's watch history.
+    pub pause_history: bool,
+}
+
+/// The web app's audio quality setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioQuality {
+    #[default]
+    Auto,
+    Low,
+    Normal,
+    High,
 }
 
 impl Default for Settings {
@@ -24,6 +43,10 @@ impl Default for Settings {
             animated_cover_in_bar: true,
             keep_playing_when_closed: false,
             show_in_tray: true,
+            audio_quality: AudioQuality::Auto,
+            autoplay: true,
+            restrict_explicit: false,
+            pause_history: false,
         }
     }
 }
@@ -83,7 +106,13 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"animatedCoverInBar":false}"#).unwrap();
         assert!(!settings.animated_cover_in_bar);
         assert!(!settings.keep_playing_when_closed);
-        assert!(settings.show_in_tray);
+        assert!(settings.show_in_tray && settings.autoplay);
+        let settings: Settings = serde_json::from_str(r#"{"audioQuality":"low"}"#).unwrap();
+        assert_eq!(settings.audio_quality, AudioQuality::Low);
+        assert_eq!(
+            serde_json::to_value(AudioQuality::Normal).unwrap(),
+            "normal"
+        );
     }
 
     #[test]
