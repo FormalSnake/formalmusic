@@ -4,15 +4,12 @@
 use super::Failure;
 use super::meta::Song;
 use super::queue::Pending;
+use formalmusic_api::LastFmApp;
 use md5::{Digest, Md5};
+use parking_lot::RwLock;
 use serde_json::Value;
 use std::collections::BTreeMap;
-
-/// FormalMusic's API account. Desktop scrobblers ship these in their source:
-/// the secret only signs requests, and every call that acts for a user also
-/// needs that user's session key.
-pub const API_KEY: &str = "";
-pub const SHARED_SECRET: &str = "";
+use std::sync::Arc;
 
 const ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 const AUTH_PAGE: &str = "https://www.last.fm/api/auth/";
@@ -31,13 +28,12 @@ pub fn sign(params: &BTreeMap<&str, String>, secret: &str) -> String {
     format!("{:x}", Md5::digest(text.as_bytes()))
 }
 
-pub fn auth_url(token: &str) -> String {
-    format!("{AUTH_PAGE}?api_key={API_KEY}&token={token}")
-}
-
+/// Shares the API account between clones, so one set in Settings reaches
+/// every task holding one.
 #[derive(Clone)]
 pub struct LastFm {
     http: reqwest::Client,
+    app: Arc<RwLock<Option<LastFmApp>>>,
 }
 
 pub struct Session {
@@ -46,16 +42,40 @@ pub struct Session {
 }
 
 impl LastFm {
-    pub fn new(http: reqwest::Client) -> Self {
-        Self { http }
+    pub fn new(http: reqwest::Client, app: Option<LastFmApp>) -> Self {
+        Self {
+            http,
+            app: Arc::new(RwLock::new(app)),
+        }
     }
 
-    pub fn configured() -> bool {
-        !API_KEY.is_empty() && !SHARED_SECRET.is_empty()
+    pub fn configured(&self) -> bool {
+        self.app.read().is_some()
     }
 
-    pub async fn token(&self) -> Result<String, Failure> {
-        let json = self.signed("auth.getToken", BTreeMap::new()).await?;
+    pub fn set_app(&self, app: LastFmApp) {
+        *self.app.write() = Some(app);
+    }
+
+    pub fn app(&self) -> Result<LastFmApp, Failure> {
+        self.app
+            .read()
+            .clone()
+            .ok_or_else(|| Failure::Permanent("no Last.fm API key".into()))
+    }
+
+    pub fn auth_url(&self, token: &str) -> Option<String> {
+        let app = self.app.read();
+        Some(format!(
+            "{AUTH_PAGE}?api_key={}&token={token}",
+            app.as_ref()?.api_key
+        ))
+    }
+
+    /// A token for the browser step, signed with `app`. Answers whether the
+    /// key and secret work before anything keeps them.
+    pub async fn token_with(&self, app: &LastFmApp) -> Result<String, Failure> {
+        let json = self.request(app, "auth.getToken", BTreeMap::new()).await?;
         json["token"]
             .as_str()
             .map(str::to_owned)
@@ -134,12 +154,13 @@ impl LastFm {
 
     /// The album Last.fm files a track under, with its artist.
     pub async fn album(&self, artist: &str, title: &str) -> Option<(String, Option<String>)> {
+        let app = self.app().ok()?;
         let response = self
             .http
             .get(ROOT)
             .query(&[
                 ("method", "track.getInfo"),
-                ("api_key", API_KEY),
+                ("api_key", app.api_key.as_str()),
                 ("artist", artist),
                 ("track", title),
                 ("autocorrect", "1"),
@@ -154,14 +175,20 @@ impl LastFm {
         Some((name.to_owned(), album["artist"].as_str().map(str::to_owned)))
     }
 
-    async fn signed(
+    async fn signed(&self, method: &str, params: BTreeMap<&str, String>) -> Result<Value, Failure> {
+        let app = self.app()?;
+        self.request(&app, method, params).await
+    }
+
+    async fn request(
         &self,
+        app: &LastFmApp,
         method: &str,
         mut params: BTreeMap<&str, String>,
     ) -> Result<Value, Failure> {
         params.insert("method", method.to_owned());
-        params.insert("api_key", API_KEY.to_owned());
-        let sig = sign(&params, SHARED_SECRET);
+        params.insert("api_key", app.api_key.clone());
+        let sig = sign(&params, &app.shared_secret);
         params.insert("api_sig", sig);
         params.insert("format", "json".to_owned());
         let response = self
@@ -178,6 +205,8 @@ impl LastFm {
             return Err(match code {
                 // Invalid or revoked session key.
                 9 => Failure::Auth(message),
+                // Invalid API key, or a signature the secret does not match.
+                10 | 13 | 26 => Failure::App(message),
                 // Service offline, temporarily unavailable, rate limited.
                 11 | 16 | 29 => Failure::Transient(message),
                 code => Failure::Api(code, message),

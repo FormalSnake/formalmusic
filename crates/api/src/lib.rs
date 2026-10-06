@@ -130,8 +130,11 @@ pub enum Command {
     Scrobbling,
     /// Open Last.fm's "allow access" page in the default browser and wait for
     /// the user there in the background; [`Event::Scrobbling`] reports the
-    /// outcome.
-    ConnectLastFm,
+    /// outcome. `app` sets the API account first, kept only if Last.fm
+    /// accepts it.
+    ConnectLastFm {
+        app: Option<LastFmApp>,
+    },
     ConnectListenBrainz {
         source: ListenBrainzSource,
     },

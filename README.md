@@ -103,6 +103,35 @@ everything that doesn't need an account works.
 
 `FORMALMUSIC_DEMO=1 formalmusic` runs on recorded responses with no daemon.
 
+## Scrobbling
+
+Settings (`Ctrl+,`, or the account menu) connects Last.fm and ListenBrainz.
+Each play goes out as now playing when it starts and again on resume, and
+counts once it has played for half its length or four minutes, whichever
+comes first (tracks of 30 seconds or less never count). Videos are reported
+with cleaned titles and the album of the matching album track. Plays wait in
+`$XDG_STATE_HOME/formalmusic/scrobble-queue.json` while offline and go out in
+batches later.
+
+Last.fm signs every call with an API account, so you need your own: create
+one at [last.fm/api/account/create](https://www.last.fm/api/account/create)
+(no callback URL), paste its API key and shared secret into Settings, then
+allow access in the browser. With Home Manager the pair can come from files
+instead, such as agenix secrets:
+
+```nix
+programs.formalmusic.lastfm = {
+  apiKeyFile = "/run/agenix/lastfm-api-key";
+  sharedSecretFile = "/run/agenix/lastfm-shared-secret";
+};
+```
+
+ListenBrainz connects from a browser profile signed in to listenbrainz.org,
+or from the user token on
+[listenbrainz.org/settings](https://listenbrainz.org/settings/). Session
+keys, tokens and a pasted API account stay in
+`$XDG_STATE_HOME/formalmusic/scrobble.json` (mode 0600).
+
 ## Configuration
 
 `~/.config/formalmusic/daemon.json` (the daemon never writes it):
@@ -143,6 +172,7 @@ echo '{"id":1,"cmd":"toggle"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/formalmus
 | `Q` | queue |
 | `F` | expanded player |
 | `Alt+←` / `Alt+→` | back / forward |
+| `Ctrl+,` | settings |
 
 `Cmd` on macOS.
 

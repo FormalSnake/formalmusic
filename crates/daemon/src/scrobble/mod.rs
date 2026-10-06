@@ -4,7 +4,10 @@
 //! [`queue::Queue`] so nothing is lost offline.
 //!
 //! `scrobble.json` (0600) holds the Last.fm session key, the ListenBrainz
-//! token and the per-service toggles.
+//! token, the per-service toggles and the Last.fm API account entered in
+//! Settings. An API account in `FORMALMUSIC_LASTFM_API_KEY_FILE` and
+//! `FORMALMUSIC_LASTFM_SECRET_FILE` (agenix paths, set by the Home Manager
+//! module) wins over that one.
 
 pub mod clean;
 mod connect;
@@ -19,7 +22,7 @@ use crate::playback::Playback;
 use crate::session::Session;
 use crate::signin::BrowserSignIn;
 use formalmusic_api::{
-    ApiError, BrowseTarget, Event, ListenBrainzSource, PlayerState, ScrobbleAccount,
+    ApiError, BrowseTarget, Event, LastFmApp, ListenBrainzSource, PlayerState, ScrobbleAccount,
     ScrobbleService, ScrobbleStatus, Status, Track, TrackKind,
 };
 use lastfm::LastFm;
@@ -58,6 +61,8 @@ pub enum Failure {
     Transient(String),
     /// The session key or token no longer works.
     Auth(String),
+    /// Last.fm refused the API key or shared secret.
+    App(String),
     /// A Last.fm error code not covered above.
     Api(u64, String),
     /// Refused for good.
@@ -67,7 +72,9 @@ pub enum Failure {
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Failure::Transient(m) | Failure::Auth(m) | Failure::Permanent(m) => f.write_str(m),
+            Failure::Transient(m) | Failure::Auth(m) | Failure::App(m) | Failure::Permanent(m) => {
+                f.write_str(m)
+            }
             Failure::Api(code, m) => write!(f, "{m} ({code})"),
         }
     }
@@ -118,6 +125,7 @@ struct Stored {
     lastfm: Account,
     listenbrainz: Account,
     last: Option<LastScrobble>,
+    lastfm_app: Option<LastFmApp>,
 }
 
 impl Stored {
@@ -153,6 +161,8 @@ struct Inner {
 
 pub struct Scrobbler {
     path: PathBuf,
+    /// The API account came from the environment; Settings cannot replace it.
+    app_from_env: bool,
     http: reqwest::Client,
     lastfm: LastFm,
     listenbrainz: ListenBrainz,
@@ -184,9 +194,12 @@ impl Scrobbler {
             ))
             .timeout(Duration::from_secs(20))
             .build()?;
+        let env_app = app_from_env();
+        let app = env_app.clone().or_else(|| stored.lastfm_app.clone());
         Ok(Arc::new(Self {
             path,
-            lastfm: LastFm::new(http.clone()),
+            app_from_env: env_app.is_some(),
+            lastfm: LastFm::new(http.clone(), app),
             listenbrainz: ListenBrainz::new(http.clone()),
             http,
             session,
@@ -212,6 +225,7 @@ impl Scrobbler {
             error: a.error.clone(),
         };
         ScrobbleStatus {
+            lastfm_app: self.lastfm.configured(),
             lastfm: account(&inner.stored.lastfm, inner.connecting.is_some()),
             listenbrainz: account(&inner.stored.listenbrainz, false),
             queued: inner.queue.len(),
@@ -244,18 +258,31 @@ impl Scrobbler {
 
     /// Asks Last.fm for a token, opens its "allow access" page in the default
     /// browser and waits there in the background.
-    pub async fn connect_lastfm(self: &Arc<Self>) -> Result<(), ApiError> {
-        if !LastFm::configured() {
-            return Err(ApiError::BadRequest(
-                "This build has no Last.fm API key, so it cannot connect to Last.fm.".into(),
-            ));
+    pub async fn connect_lastfm(self: &Arc<Self>, app: Option<LastFmApp>) -> Result<(), ApiError> {
+        let entered = app.filter(|_| !self.app_from_env).map(|a| LastFmApp {
+            api_key: a.api_key.trim().to_owned(),
+            shared_secret: a.shared_secret.trim().to_owned(),
+        });
+        let app = match &entered {
+            Some(app) => app.clone(),
+            None => self.lastfm.app().map_err(|_| {
+                ApiError::BadRequest("Enter your Last.fm API key and shared secret first.".into())
+            })?,
+        };
+        let token = self.lastfm.token_with(&app).await.map_err(|e| match e {
+            Failure::App(_) | Failure::Api(..) => ApiError::BadRequest(
+                "Last.fm did not accept that API key and shared secret. Check both and try again."
+                    .into(),
+            ),
+            e => ApiError::Network(format!("Last.fm: {e}")),
+        })?;
+        if let Some(app) = entered {
+            self.lastfm.set_app(app.clone());
+            self.update(|s| s.lastfm_app = Some(app));
         }
-        let token = self
-            .lastfm
-            .token()
-            .await
-            .map_err(|e| ApiError::Network(format!("Last.fm: {e}")))?;
-        open_in_browser(&lastfm::auth_url(&token));
+        if let Some(url) = self.lastfm.auth_url(&token) {
+            open_in_browser(&url);
+        }
         let attempt = {
             let mut inner = self.inner.lock();
             inner.generation += 1;
@@ -507,7 +534,7 @@ impl Scrobbler {
         }
 
         let had_album = song.album.is_some();
-        let lastfm = LastFm::configured().then_some(&self.lastfm);
+        let lastfm = self.lastfm.configured().then_some(&self.lastfm);
         let _ = tokio::time::timeout(
             ENRICH_TIMEOUT,
             meta::enrich(&mut song, lastfm, &self.listenbrainz, &self.http),
@@ -663,7 +690,7 @@ impl Scrobbler {
                     tracing::warn!(?service, "submission failed, retrying in {wait:?}: {e}");
                     return;
                 }
-                Err(Failure::Auth(e)) => {
+                Err(Failure::Auth(e) | Failure::App(e)) => {
                     tracing::warn!(?service, "credentials refused: {e}");
                     inner.stored.account(service).error =
                         Some("Access was revoked. Connect again.".into());
@@ -692,6 +719,35 @@ fn take_ready(current: &mut Current) -> Option<(Song, u64)> {
     Some((current.song.clone()?, current.listened_at))
 }
 
+/// The API account from the two files the environment names.
+fn app_from_env() -> Option<LastFmApp> {
+    app_from_files(
+        std::env::var_os("FORMALMUSIC_LASTFM_API_KEY_FILE"),
+        std::env::var_os("FORMALMUSIC_LASTFM_SECRET_FILE"),
+    )
+}
+
+/// Both files read and hold something, or there is no account.
+fn app_from_files(
+    key: Option<std::ffi::OsString>,
+    secret: Option<std::ffi::OsString>,
+) -> Option<LastFmApp> {
+    let read = |path: Option<std::ffi::OsString>| {
+        let path = path?;
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Some(text.trim().to_owned()).filter(|t| !t.is_empty()),
+            Err(e) => {
+                tracing::warn!(path = ?path, "cannot read the Last.fm API account file: {e}");
+                None
+            }
+        }
+    };
+    Some(LastFmApp {
+        api_key: read(key)?,
+        shared_secret: read(secret)?,
+    })
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -713,5 +769,44 @@ fn open_in_browser(url: &str) {
         .spawn()
     {
         tracing::warn!("could not open the browser: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_account_needs_both_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("key");
+        let secret = dir.path().join("secret");
+        std::fs::write(&key, "abc\n").unwrap();
+        assert_eq!(
+            app_from_files(Some(key.clone().into()), Some(secret.clone().into())),
+            None
+        );
+        std::fs::write(&secret, "  def ").unwrap();
+        let app = app_from_files(Some(key.into()), Some(secret.into())).unwrap();
+        assert_eq!(
+            (app.api_key.as_str(), app.shared_secret.as_str()),
+            ("abc", "def")
+        );
+        assert_eq!(app_from_files(None, None), None);
+    }
+
+    #[test]
+    fn settings_file_keeps_the_entered_account() {
+        let stored = Stored {
+            lastfm_app: Some(LastFmApp {
+                api_key: "k".into(),
+                shared_secret: "s".into(),
+            }),
+            ..Stored::default()
+        };
+        let json = serde_json::to_string(&stored).unwrap();
+        assert_eq!(serde_json::from_str::<Stored>(&json).unwrap(), stored);
+        let old: Stored = serde_json::from_str(r#"{"lastfm":{"username":"a"}}"#).unwrap();
+        assert!(old.lastfm_app.is_none() && old.lastfm.scrobble);
     }
 }

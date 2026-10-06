@@ -45,6 +45,28 @@ in
         empty to let another tool (matugen, for one) own the file.
       '';
     };
+
+    lastfm = {
+      apiKeyFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/agenix/lastfm-api-key";
+        description = ''
+          File holding the API key of your Last.fm API account
+          (last.fm/api/account/create), read by `formalmusicd` at start. A
+          path string rather than a Nix path, so the secret stays out of the
+          store. Set it with `sharedSecretFile`; without both, Settings asks
+          for the pair.
+        '';
+      };
+
+      sharedSecretFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/agenix/lastfm-shared-secret";
+        description = "File holding the shared secret of the same Last.fm API account.";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -62,6 +84,13 @@ in
       Service = {
         ExecStart = lib.getExe' cfg.package "formalmusicd";
         Restart = "on-failure";
+        Environment =
+          lib.optional (
+            cfg.lastfm.apiKeyFile != null
+          ) "FORMALMUSIC_LASTFM_API_KEY_FILE=${cfg.lastfm.apiKeyFile}"
+          ++ lib.optional (
+            cfg.lastfm.sharedSecretFile != null
+          ) "FORMALMUSIC_LASTFM_SECRET_FILE=${cfg.lastfm.sharedSecretFile}";
       };
       Install.WantedBy = [ "default.target" ];
     };

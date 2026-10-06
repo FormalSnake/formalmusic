@@ -101,7 +101,7 @@ fn timeout_for(command: &Command) -> Duration {
         | Command::Play { .. }
         | Command::SignIn { .. }
         | Command::ImportCookies { .. }
-        | Command::ConnectLastFm
+        | Command::ConnectLastFm { .. }
         | Command::ConnectListenBrainz { .. }
         | Command::Lyrics { .. } => SLOW_REQUEST_TIMEOUT,
         Command::BrowserSignIn { .. } => SIGN_IN_TIMEOUT,

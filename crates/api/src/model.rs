@@ -520,8 +520,25 @@ pub enum ListenBrainzSource {
     Token { token: String },
 }
 
+/// A Last.fm API account: Last.fm signs every call with both, and gives
+/// each user their own at last.fm/api/account/create.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastFmApp {
+    pub api_key: String,
+    pub shared_secret: String,
+}
+
+impl std::fmt::Debug for LastFmApp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LastFmApp").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ScrobbleStatus {
+    /// The daemon has a Last.fm API key and shared secret, from its
+    /// environment or from Settings.
+    pub lastfm_app: bool,
     pub lastfm: ScrobbleAccount,
     pub listenbrainz: ScrobbleAccount,
     /// Plays waiting for a service to take them, across both services.

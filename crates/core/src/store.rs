@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use formalmusic_api::{
     Account, BrowseTarget, Browsers, Command, Continuation, EnqueuePosition, Event, Item,
-    LibraryScope, LibraryTab, ListenBrainzSource, Lyrics, Page, PlaySource, PlayerState,
+    LastFmApp, LibraryScope, LibraryTab, ListenBrainzSource, Lyrics, Page, PlaySource, PlayerState,
     PlaylistEdit, Privacy, ProfileBrowser, QueueState, RateTarget, Rating, Repeat, Reply,
     ScrobbleService, ScrobbleStatus, SearchFilter, SearchResults, SessionInfo, Status, Suggestion,
     Track,
@@ -1404,8 +1404,10 @@ impl MusicStore {
 
     /// Opens Last.fm's "allow access" page; the daemon reports the outcome
     /// as a [`StoreEvent::Scrobbling`] once the user has answered there.
-    pub async fn connect_lastfm(&self) -> Result<(), String> {
-        self.scrobbling_call(Command::ConnectLastFm).await
+    /// `app` is the API key and shared secret typed into Settings, when the
+    /// daemon has none yet.
+    pub async fn connect_lastfm(&self, app: Option<LastFmApp>) -> Result<(), String> {
+        self.scrobbling_call(Command::ConnectLastFm { app }).await
     }
 
     pub async fn connect_listenbrainz(&self, source: ListenBrainzSource) -> Result<(), String> {

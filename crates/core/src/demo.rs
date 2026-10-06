@@ -1372,6 +1372,7 @@ impl DemoTransport {
             base_ms: 0,
             session: session(signed_in, None),
             scrobbling: ScrobbleStatus {
+                lastfm_app: true,
                 lastfm: ScrobbleAccount {
                     username: Some("demo".into()),
                     ..ScrobbleAccount::default()
@@ -1556,8 +1557,9 @@ impl Transport for DemoTransport {
                 Reply::Session(session)
             }
             Command::Scrobbling => Reply::Scrobbling(shared.state.lock().scrobbling.clone()),
-            Command::ConnectLastFm => {
+            Command::ConnectLastFm { .. } => {
                 let mut state = shared.state.lock();
+                state.scrobbling.lastfm_app = true;
                 state.scrobbling.lastfm.username = Some("demo".into());
                 Reply::Scrobbling(state.scrobbling.clone())
             }

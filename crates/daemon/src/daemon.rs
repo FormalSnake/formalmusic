@@ -124,8 +124,8 @@ impl Daemon {
             }
 
             Command::Scrobbling => Ok(Reply::Scrobbling(self.scrobbler.status())),
-            Command::ConnectLastFm => {
-                self.scrobbler.connect_lastfm().await?;
+            Command::ConnectLastFm { app } => {
+                self.scrobbler.connect_lastfm(app).await?;
                 Ok(Reply::Scrobbling(self.scrobbler.status()))
             }
             Command::ConnectListenBrainz { source } => Ok(Reply::Scrobbling(

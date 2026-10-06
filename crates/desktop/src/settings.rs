@@ -1,8 +1,11 @@
 //! The Settings dialog. Its one section is Scrobbling: Last.fm and
 //! ListenBrainz, each with its account, a switch for scrobbling and one for
-//! now playing, and a line for plays still waiting to go out.
+//! now playing, and a line for plays still waiting to go out. Last.fm asks
+//! for the user's own API account first when the daemon has none.
 
-use formalmusic_api::{ListenBrainzSource, ProfileBrowser, ScrobbleAccount, ScrobbleService};
+use formalmusic_api::{
+    LastFmApp, ListenBrainzSource, ProfileBrowser, ScrobbleAccount, ScrobbleService,
+};
 use formalmusic_core::MusicStore;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -13,11 +16,15 @@ use crate::icons::{Icon, IconName};
 use crate::primitives::{Button, ButtonKind, overlay_shadows};
 use crate::theme::{Palette, Theme, radius, spacing, type_scale};
 
+const LASTFM_CREATE: &str = "https://www.last.fm/api/account/create";
+
 type OnClose = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
 
 pub struct Settings {
     store: MusicStore,
     token: Entity<InputState>,
+    api_key: Entity<InputState>,
+    shared_secret: Entity<InputState>,
     /// The ListenBrainz connect panel is open.
     picking: bool,
     profiles: Vec<ProfileBrowser>,
@@ -39,6 +46,8 @@ impl Settings {
         let weak = cx.entity().downgrade();
         Bridge::watch(cx, Topic::Scrobbling, weak.into());
         store.load_scrobbling();
+        let api_key = cx.new(|cx| InputState::new(window, cx));
+        let shared_secret = cx.new(|cx| InputState::new(window, cx));
         let token = cx.new(|cx| {
             InputState::new(window, cx).placeholder("00000000-0000-0000-0000-000000000000")
         });
@@ -57,6 +66,8 @@ impl Settings {
         Self {
             store,
             token,
+            api_key,
+            shared_secret,
             picking: false,
             profiles: Vec::new(),
             connecting: None,
@@ -67,12 +78,24 @@ impl Settings {
         }
     }
 
-    fn connect_lastfm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn connect_lastfm(&mut self, needs_app: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let app = needs_app.then(|| LastFmApp {
+            api_key: self.api_key.read(cx).value().trim().to_owned(),
+            shared_secret: self.shared_secret.read(cx).value().trim().to_owned(),
+        });
+        if app
+            .as_ref()
+            .is_some_and(|a| a.api_key.is_empty() || a.shared_secret.is_empty())
+        {
+            self.lastfm_error = Some("Enter both the API key and the shared secret.".into());
+            cx.notify();
+            return;
+        }
         self.lastfm_error = None;
         cx.notify();
         let task = self.store.runtime().spawn({
             let store = self.store.clone();
-            async move { store.connect_lastfm().await }
+            async move { store.connect_lastfm(app).await }
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task
@@ -156,6 +179,7 @@ impl Settings {
         &self,
         service: ScrobbleService,
         account: &ScrobbleAccount,
+        needs_app: bool,
         palette: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -197,7 +221,7 @@ impl Settings {
                 .kind(ButtonKind::Primary)
                 .disabled(service == ScrobbleService::ListenBrainz && self.picking)
                 .on_click(cx.listener(move |this, _, window, cx| match service {
-                    ScrobbleService::LastFm => this.connect_lastfm(window, cx),
+                    ScrobbleService::LastFm => this.connect_lastfm(needs_app, window, cx),
                     ScrobbleService::ListenBrainz => this.open_picker(cx),
                 }))
                 .into_any_element()
@@ -240,6 +264,9 @@ impl Settings {
                     )
                     .child(action),
             )
+            .when(needs_app && !connected && !account.connecting, |el| {
+                el.child(self.app_fields(palette))
+            })
             .when_some(local_error, |el, error| {
                 el.child(
                     div()
@@ -266,6 +293,40 @@ impl Settings {
                     move |on| b.set_scrobbling(service, scrobble, on),
                 ))
             })
+            .into_any_element()
+    }
+
+    /// The user's own Last.fm API account, which Last.fm signs every call with.
+    fn app_fields(&self, palette: Palette) -> AnyElement {
+        let field = |label: &'static str, input: &Entity<InputState>| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(spacing::X1)
+                .child(caption(label, palette))
+                .child(Input::new(input).bordered(true))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::X3)
+            .child(
+                div()
+                    .text_size(type_scale::BODY.font_size)
+                    .line_height(px(20.))
+                    .text_color(palette.secondary)
+                    .child(
+                        "Last.fm needs an API account of your own. Create one, then paste its API key and shared secret here.",
+                    ),
+            )
+            .child(
+                div().flex().flex_row().child(
+                    Button::new("lastfm-create-app", "Create an API account")
+                        .on_click(|_, _, cx| cx.open_url(LASTFM_CREATE)),
+                ),
+            )
+            .child(field("API key", &self.api_key))
+            .child(field("Shared secret", &self.shared_secret))
             .into_any_element()
     }
 
@@ -435,12 +496,14 @@ impl Render for Settings {
                             .child(self.service_row(
                                 ScrobbleService::LastFm,
                                 &status.lastfm,
+                                !status.lastfm_app,
                                 palette,
                                 cx,
                             ))
                             .child(self.service_row(
                                 ScrobbleService::ListenBrainz,
                                 &status.listenbrainz,
+                                false,
                                 palette,
                                 cx,
                             ))
