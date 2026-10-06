@@ -773,8 +773,9 @@ impl Render for AppRoot {
 
 /// `FORMALMUSIC_TOUR=1` (with the demo): Home, an artist, the 1000 track
 /// playlist scrolled to its end, then the expanded player, a few seconds
-/// each, so the memory and CPU after a browse can be read from outside on a
-/// machine nobody is clicking on. Each step goes to the trace log.
+/// each, then Home paused for eight seconds and playing after that, so the
+/// memory and CPU after a browse can be read from outside on a machine
+/// nobody is clicking on. Each step goes to the trace log.
 fn tour(window: &mut Window, cx: &mut Context<AppRoot>) {
     cx.spawn_in(window, async move |this, cx| {
         let executor = cx.background_executor().clone();
@@ -818,7 +819,13 @@ fn tour(window: &mut Window, cx: &mut Context<AppRoot>) {
                 }
             }
         }
-        let _ = this.update(cx, |_, _| crate::trace::log("tour: done"));
+        // Eight paused seconds to read idle CPU from, then playback for the
+        // playing figure.
+        executor.timer(std::time::Duration::from_secs(8)).await;
+        let _ = this.update(cx, |this, _| {
+            crate::trace::log("tour: play");
+            this.store.toggle();
+        });
     })
     .detach();
 }
