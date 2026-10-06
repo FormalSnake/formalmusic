@@ -45,8 +45,19 @@ pub fn header(
             playlist_id,
             editable,
             saved,
+            privacy,
             ..
         } => {
+            let editing = editable
+                .then(|| {
+                    Some(crate::edit_playlist::Current {
+                        playlist_id: playlist_id.clone()?,
+                        title: title.clone(),
+                        description: description.clone().unwrap_or_default(),
+                        privacy: (*privacy)?,
+                    })
+                })
+                .flatten();
             let byline = links(subtitle, palette.secondary, palette.text);
             let actions = div()
                 .flex()
@@ -122,13 +133,15 @@ pub fn header(
                         )
                     },
                 )
-                .when(*editable, |el| {
-                    el.child(
-                        div()
-                            .text_size(type_scale::CAPTION.font_size)
-                            .text_color(palette.tertiary)
-                            .child("Your playlist"),
-                    )
+                .when_some(editing, |el, current| {
+                    el.child(pill_button(
+                        "header-edit",
+                        IconName::Edit,
+                        "Edit playlist",
+                        false,
+                        palette,
+                        move |_, window, cx| crate::app::edit_playlist(current.clone(), window, cx),
+                    ))
                 });
             div()
                 .flex()

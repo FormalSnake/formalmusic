@@ -13,6 +13,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::bridge::{Bridge, Topic};
+use crate::edit_playlist::EditPlaylist;
 use crate::menus::{ContextMenu, MenuRequest};
 use crate::motion::{self, DURATION_BASE, DURATION_FAST, DURATION_PANEL, Presence};
 use crate::new_playlist::NewPlaylist;
@@ -140,6 +141,25 @@ pub fn new_playlist(window: &mut Window, cx: &mut App) {
     });
 }
 
+pub fn edit_playlist(current: crate::edit_playlist::Current, window: &mut Window, cx: &mut App) {
+    let Some(root) = root(cx) else { return };
+    let weak = root.downgrade();
+    let store = root.read(cx).store.clone();
+    let close = move |window: &mut Window, cx: &mut App| {
+        let _ = weak.update(cx, |this, cx| {
+            this.edit_playlist = None;
+            this.root_focus.focus(window, cx);
+            cx.notify();
+        });
+    };
+    let dialog = cx.new(|cx| EditPlaylist::new(store, current, close, window, cx));
+    root.update(cx, |this, cx| {
+        this.menu = None;
+        this.edit_playlist = Some(dialog);
+        cx.notify();
+    });
+}
+
 pub fn show_settings(window: &mut Window, cx: &mut App) {
     if let Some(root) = root(cx) {
         root.update(cx, |this, cx| this.open_settings(window, cx));
@@ -167,6 +187,7 @@ pub struct AppRoot {
     /// "Browse without signing in" was chosen this session.
     sign_in_dismissed: bool,
     new_playlist: Option<Entity<NewPlaylist>>,
+    edit_playlist: Option<Entity<EditPlaylist>>,
     settings: Option<Entity<Settings>>,
     menu: Option<Entity<ContextMenu>>,
     /// The `?` overlay is open.
@@ -287,6 +308,7 @@ impl AppRoot {
             sign_in_wanted: false,
             sign_in_dismissed: false,
             new_playlist: None,
+            edit_playlist: None,
             settings: None,
             menu: None,
             shortcuts: false,
@@ -450,6 +472,7 @@ impl AppRoot {
         if self.menu.take().is_some()
             || std::mem::take(&mut self.shortcuts)
             || self.new_playlist.take().is_some()
+            || self.edit_playlist.take().is_some()
             || self.settings.take().is_some()
         {
         } else if self.sign_in.is_some() {
@@ -495,6 +518,7 @@ impl AppRoot {
         self.topbar.read(cx).typing(window, cx)
             || self.sign_in.is_some()
             || self.new_playlist.is_some()
+            || self.edit_playlist.is_some()
             || self.settings.is_some()
     }
 
@@ -846,6 +870,7 @@ impl Render for AppRoot {
             )
             .children(expanded)
             .when_some(self.new_playlist.clone(), |el, dialog| el.child(dialog))
+            .when_some(self.edit_playlist.clone(), |el, dialog| el.child(dialog))
             .when_some(self.settings.clone(), |el, dialog| el.child(dialog))
             .when_some(self.sign_in.clone(), |el, screen| {
                 el.child(div().absolute().inset_0().child(screen))
@@ -1041,6 +1066,30 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                 this.set_expanded(Some(Tab::Lyrics), cx)
             }
             "related" => this.set_expanded(Some(Tab::Related), cx),
+            "edit-playlist" => {
+                let playlist = &catalog.playlists[1];
+                this.navigate(
+                    Route::Browse(BrowseTarget::Playlist(playlist.playlist_id.clone())),
+                    false,
+                    cx,
+                );
+                let current = crate::edit_playlist::Current {
+                    playlist_id: playlist.playlist_id.clone(),
+                    title: playlist.title.into(),
+                    description: "Long drives after dark.".into(),
+                    privacy: formalmusic_api::Privacy::Private,
+                };
+                let weak = cx.entity().downgrade();
+                let close = move |_: &mut Window, cx: &mut App| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.edit_playlist = None;
+                        cx.notify();
+                    });
+                };
+                let store = this.store.clone();
+                this.edit_playlist =
+                    Some(cx.new(|cx| EditPlaylist::new(store, current, close, window, cx)));
+            }
             "signin" => {}
             "shortcuts" => this.shortcuts = true,
             "settings" => this.open_settings(window, cx),

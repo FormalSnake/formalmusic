@@ -5,6 +5,7 @@ mod bridge;
 mod chrome;
 mod clock;
 mod cover_video;
+mod edit_playlist;
 mod fonts;
 mod header;
 mod icons;

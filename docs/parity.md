@@ -99,9 +99,9 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Feature | Web app | FormalMusic | Notes |
 |---|---|---|---|
 | Create playlist | New playlist | partial | `desktop/src/new_playlist.rs` takes a title only; privacy and description exist in `Command::CreatePlaylist` |
-| Rename, describe, change privacy | edit playlist | partial | `PlaylistEdit::{Rename,Describe,SetPrivacy}` in `api/src/model.rs`, no UI |
-| Reorder tracks in a playlist | drag | partial | `PlaylistEdit::Move`, no UI |
-| Delete playlist | menu | partial | `Command::DeletePlaylist`, no UI |
+| Rename, describe, change privacy | edit playlist | yes | "Edit playlist" in `desktop/src/header.rs` opens `desktop/src/edit_playlist.rs` |
+| Reorder tracks in a playlist | drag | yes | `desktop/src/shelves.rs` (`RowDrag`), `core/src/store.rs` (`move_in_playlist`) |
+| Delete playlist | menu | yes | `desktop/src/edit_playlist.rs`, after a confirmation |
 | Add whole playlist into another | menu | partial | `PlaylistEdit::AddPlaylist`, no UI |
 | Collaborative playlists | `join_collaborative_playlist` | no | |
 | Upload songs | `upload_song` | no | |
@@ -154,8 +154,7 @@ are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
 
 Most used first.
 
-4. Playlist editing UI: rename, description, privacy, delete, reorder (all in `PlaylistEdit`). ~a day.
-9. Clear queue and save queue as playlist. ~2 hours.
-10. Episodes for Later entry, podcast resume position, episode save. ~a day.
-11. Share and copy link, desktop notifications on track change. ~half a day.
-12. Song credits, taste profile, uploads, collaborative playlists. Each ~a day or more; uploads need new protocol work.
+1. Clear queue and save queue as playlist. ~2 hours.
+2. Episodes for Later entry, podcast resume position, episode save. ~a day.
+3. Share and copy link, desktop notifications on track change. ~half a day.
+4. Song credits, taste profile, uploads, collaborative playlists. Each ~a day or more; uploads need new protocol work.

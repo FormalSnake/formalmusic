@@ -168,6 +168,8 @@ impl RenderOnce for IconButton {
 pub enum ButtonKind {
     Primary,
     Secondary,
+    /// Deletes something.
+    Danger,
 }
 
 #[derive(IntoElement)]
@@ -223,6 +225,7 @@ impl RenderOnce for Button {
         let (fill, fg) = match self.kind {
             ButtonKind::Primary => (palette.accent, palette.on_accent),
             ButtonKind::Secondary => (palette.press_wash, palette.text),
+            ButtonKind::Danger => (palette.danger_soft, palette.danger),
         };
         let disabled = self.disabled;
         let kind = self.kind;
@@ -253,10 +256,10 @@ impl RenderOnce for Button {
                             .border_2()
                             .border_color(palette.transparent)
                             .focus_visible(move |style| {
-                                style.border_color(if kind == ButtonKind::Secondary {
-                                    palette.focus_ring
-                                } else {
+                                style.border_color(if kind == ButtonKind::Primary {
                                     palette.text
+                                } else {
+                                    palette.focus_ring
                                 })
                             })
                             .on_click(move |event, window, cx| handler(event, window, cx))

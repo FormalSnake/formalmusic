@@ -643,19 +643,53 @@ fn row_art(
         .into_any_element()
 }
 
+/// The value a playlist row carries while it is dragged to a new place.
+#[derive(Clone)]
+struct RowDrag {
+    playlist_id: String,
+    from: usize,
+    title: SharedString,
+}
+
+/// What follows the pointer while a row is dragged: its title in a pill.
+struct RowGhost {
+    title: SharedString,
+}
+
+impl Render for RowGhost {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Theme::get(cx);
+        div()
+            .px(spacing::X3)
+            .py(spacing::X2)
+            .rounded(radius::ROW)
+            .bg(palette.overlay)
+            .border_1()
+            .border_color(palette.overlay_border)
+            .shadow(crate::primitives::overlay_shadows(&palette))
+            .text_size(type_scale::BODY.font_size)
+            .text_color(palette.text)
+            .child(self.title.clone())
+    }
+}
+
 /// One row of an album, playlist or song list. On an album page `number`
 /// replaces the cover with the track number, and the artists show only when
-/// they are not the album's own, as the web app does.
+/// they are not the album's own, as the web app does. `reorder` is the row's
+/// place in a playlist you own, which makes it draggable.
+#[allow(clippy::too_many_arguments)]
 pub fn track_row(
     track: &Track,
     id: ElementId,
     number: Option<usize>,
+    reorder: Option<usize>,
     album_artists: &[Link],
     env: &Env,
     on_play: Rc<dyn Fn(&mut App)>,
     layout: RowLayout,
 ) -> AnyElement {
     let palette = env.palette;
+    let drag = reorder.zip(env.menu.editable_playlist.clone());
     let current = env.is_current(&track.video_id);
     let rating = env.store.state().rating(track);
     let group: SharedString = format!("{id}").into();
@@ -770,6 +804,48 @@ pub fn track_row(
                 window,
                 cx,
             );
+        })
+        .when_some(drag, |el, (index, playlist_id)| {
+            let store = env.store.clone();
+            let here = playlist_id.clone();
+            el.on_drag(
+                RowDrag {
+                    playlist_id,
+                    from: index,
+                    title: track.title.clone().into(),
+                },
+                |drag, _, _, cx| {
+                    cx.new(|_| RowGhost {
+                        title: drag.title.clone(),
+                    })
+                },
+            )
+            .drag_over::<RowDrag>(move |style, _, _, _| {
+                style.border_t_2().border_color(palette.accent)
+            })
+            .on_drop(move |drag: &RowDrag, _, _| {
+                if drag.playlist_id == here {
+                    store.move_in_playlist(here.clone(), drag.from, index)
+                }
+            })
+            // In the page margin, so a row you can drag lines up with the rest.
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .left(px(-20.))
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .opacity(0.)
+                    .group_hover(group.clone(), |style| style.opacity(1.))
+                    .child(
+                        Icon::new(IconName::Grip)
+                            .size(px(14.))
+                            .color(palette.tertiary),
+                    ),
+            )
         })
         .child(lead)
         .child(

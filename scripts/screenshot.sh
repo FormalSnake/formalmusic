@@ -3,7 +3,7 @@
 #
 #   scripts/screenshot.sh [out.png] [scene]     default docs/images/formalmusic.png
 #
-# Scenes: home (default), album, artist, playlist, explore, history, library, search,
+# Scenes: home (default), album, artist, playlist, own-playlist, edit-playlist, explore, history, library, search,
 # suggest, queue, lyrics, lyrics-duet, related, signin, settings, shortcuts, menu, collapsed.
 #
 # macOS renders the frame offscreen with Metal (the `screenshot` feature);

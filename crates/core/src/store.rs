@@ -387,6 +387,23 @@ fn keep_rows(old: &Page, mut new: Page) -> Page {
     new
 }
 
+/// The edit that moves the row at `from` to `to`, given each row's
+/// `setVideoId`: YouTube places a row before another, or last.
+fn playlist_move(keys: &[&str], from: usize, to: usize) -> Option<PlaylistEdit> {
+    if from == to || from >= keys.len() || to >= keys.len() {
+        return None;
+    }
+    let before = if from < to {
+        keys.get(to + 1)
+    } else {
+        keys.get(to)
+    };
+    Some(PlaylistEdit::Move {
+        set_video_id: keys[from].to_owned(),
+        before_set_video_id: before.map(|key| (*key).to_owned()),
+    })
+}
+
 /// The library pages a `LibraryChanged` scope makes stale.
 fn scope_covers(scope: LibraryScope, target: &BrowseTarget) -> bool {
     match scope {
@@ -1657,6 +1674,73 @@ impl MusicStore {
         });
     }
 
+    /// Moves row `from` of the playlist's list to `to` at once, and tells
+    /// YouTube which row it now sits before.
+    pub fn move_in_playlist(&self, playlist_id: String, from: usize, to: usize) {
+        let target = BrowseTarget::Playlist(playlist_id.clone());
+        let edit = self.inner.update(|state, events| {
+            let page = state.pages.get_mut(&target)?.page.as_mut()?;
+            let mut next = (**page).clone();
+            let section = next.sections.first_mut()?;
+            let keys: Vec<&str> = section
+                .items
+                .iter()
+                .map(|item| match item {
+                    Item::Track(track) => track.set_video_id.as_deref(),
+                    _ => None,
+                })
+                .collect::<Option<_>>()?;
+            let edit = playlist_move(&keys, from, to)?;
+            let row = section.items.remove(from);
+            section.items.insert(to, row);
+            *page = Arc::new(next);
+            events.push(StoreEvent::Page(target.clone()));
+            Some(edit)
+        });
+        if let Some(edit) = edit {
+            self.send(Command::EditPlaylist {
+                playlist_id,
+                edits: vec![edit],
+            });
+        }
+    }
+
+    /// Renames, describes or changes the privacy of a playlist; the daemon's
+    /// `LibraryChanged` brings the page back with them.
+    pub async fn edit_playlist(
+        &self,
+        playlist_id: String,
+        edits: Vec<PlaylistEdit>,
+    ) -> Result<(), String> {
+        if edits.is_empty() {
+            return Ok(());
+        }
+        let command = Command::EditPlaylist { playlist_id, edits };
+        match self.inner.transport.call(command).await {
+            Ok(_) => Ok(()),
+            Err(error) => Err(message(&error)),
+        }
+    }
+
+    pub async fn delete_playlist(&self, playlist_id: String) -> Result<(), String> {
+        let target = BrowseTarget::Playlist(playlist_id.clone());
+        match self
+            .inner
+            .transport
+            .call(Command::DeletePlaylist { playlist_id })
+            .await
+        {
+            Ok(_) => {
+                self.inner.update(|state, _| {
+                    state.pages.remove(&target);
+                });
+                self.refresh(BrowseTarget::Library(LibraryTab::Playlists));
+                Ok(())
+            }
+            Err(error) => Err(message(&error)),
+        }
+    }
+
     /// Takes the row off the History page at once, as `remove_from_playlist` does.
     pub fn remove_from_history(&self, track: &Track) {
         let Some(feedback_token) = track.feedback_token.clone() else {
@@ -2506,6 +2590,45 @@ mod tests {
         assert_eq!(
             section_tracks(&after.sections).count(),
             section_tracks(&page.sections).count() - yesterday.items.len()
+        );
+    }
+
+    #[test]
+    fn a_playlist_move_names_the_row_it_lands_before() {
+        let keys = ["a", "b", "c", "d"];
+        let moved = |from, to| match playlist_move(&keys, from, to) {
+            Some(PlaylistEdit::Move {
+                set_video_id,
+                before_set_video_id,
+            }) => Some((set_video_id, before_set_video_id)),
+            _ => None,
+        };
+        assert_eq!(moved(0, 2), Some(("a".into(), Some("d".into()))));
+        assert_eq!(moved(0, 3), Some(("a".into(), None)));
+        assert_eq!(moved(3, 1), Some(("d".into(), Some("b".into()))));
+        assert_eq!(moved(2, 2), None);
+        assert_eq!(moved(1, 4), None);
+    }
+
+    #[tokio::test]
+    async fn a_dragged_playlist_row_moves_at_once() {
+        let store = store();
+        store.start().await;
+        let playlist_id = crate::demo::catalog().playlists[2].playlist_id.clone();
+        let target = BrowseTarget::Playlist(playlist_id.clone());
+        store.open(target.clone());
+        settle(&store, |state| state.page(&target).is_some()).await;
+        let ids = |store: &MusicStore| -> Vec<String> {
+            section_tracks(&store.state().page(&target).unwrap().sections)
+                .map(|track| track.set_video_id.clone().unwrap())
+                .collect()
+        };
+        let before = ids(&store);
+        store.move_in_playlist(playlist_id, 0, 2);
+        let after = ids(&store);
+        assert_eq!(
+            after[..3],
+            [before[1].clone(), before[2].clone(), before[0].clone()]
         );
     }
 

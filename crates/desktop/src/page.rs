@@ -490,10 +490,15 @@ impl PageView {
                             _ => Vec::new(),
                         };
                         let on_play = play_from(&content, route, section, item, &env.store);
+                        let reorder = (section == 0
+                            && env.menu.editable_playlist.is_some()
+                            && track.set_video_id.is_some())
+                        .then_some(item);
                         shelves::track_row(
                             track,
                             id,
                             album.then_some(item),
+                            reorder,
                             &album_artists,
                             &env,
                             on_play,

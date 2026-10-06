@@ -64,6 +64,7 @@ pub enum IconName {
     Charts,
     Moods,
     Unsave,
+    Edit,
 }
 
 /// Resolves to the bundled Lucide glyph.
@@ -119,6 +120,7 @@ pub fn glyph(name: IconName) -> Glyph {
         Charts => Glyph::TrendingUp,
         Moods => Glyph::FaceSlightlySmiling,
         Unsave => Glyph::BookmarkMinus,
+        Edit => Glyph::Pencil,
     }
 }
 
