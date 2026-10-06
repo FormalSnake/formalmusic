@@ -82,7 +82,7 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Add to queue | track menu | yes | `desktop/src/actions.rs` |
 | Add to playlist | track menu | yes | `desktop/src/actions.rs` (`playlist_picker`) |
 | Remove from playlist | playlist track menu | yes | `desktop/src/actions.rs` |
-| Save song to library | track menu | no | ytmusicapi `edit_song_library_status`; only albums and playlists save |
+| Save song to library | track menu | yes | `desktop/src/actions.rs` (`track_menu`), `innertube/src/parse/items/mod.rs` (`library_toggle`), `Command::SetSongInLibrary`; rows from the `next` queue carry no toggle |
 | Save album or playlist to library | menu and header | yes | `desktop/src/actions.rs`, `desktop/src/header.rs` |
 | Like, dislike from menu | track menu | yes | `desktop/src/actions.rs` |
 | Go to album, go to artist | track menu | yes | `desktop/src/actions.rs` |
@@ -155,7 +155,6 @@ are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
 Most used first.
 
 4. Playlist editing UI: rename, description, privacy, delete, reorder (all in `PlaylistEdit`). ~a day.
-5. Save a single song to the library (`edit_song_library_status`): new command, parser state, menu row. ~half a day.
 6. Quality, autoplay, explicit filter and pause history in the Settings dialog, writing `daemon.json`. ~half a day.
 8. Search filters Episodes and Profiles, plus library search. ~2 hours.
 9. Clear queue and save queue as playlist. ~2 hours.

@@ -846,6 +846,15 @@ fn library_podcasts() {
 }
 
 #[test]
+#[ignore = "needs fixtures/private/library_songs.json (FEmusic_liked_videos, signed in)"]
+fn library_songs_carry_their_library_toggle() {
+    let Some(p) = library("library_songs", LibraryTab::Songs) else {
+        return;
+    };
+    assert!(all_tracks(&p).iter().all(|t| t.library.is_some()));
+}
+
+#[test]
 #[ignore = "needs fixtures/private/library_uploads.json (FEmusic_library_privately_owned_tracks, signed in)"]
 fn library_uploads() {
     // An account without uploads gets only a message, so no sections at all.

@@ -56,6 +56,8 @@ pub enum LibraryTab {
 #[serde(rename_all = "snake_case")]
 pub enum LibraryScope {
     Likes,
+    /// Songs saved to or removed from the library.
+    Songs,
     Playlists,
     Albums,
     Subscriptions,
@@ -114,11 +116,23 @@ pub struct Track {
     pub plays: Option<String>,
     /// From the History page, needed for [`crate::Command::RemoveFromHistory`].
     pub feedback_token: Option<String>,
+    /// The row menu's "Save to library", for a signed-in session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library: Option<LibraryToggle>,
     /// The music video of an album track, or the album track of a music
     /// video. Only queue rows from `next` carry it, and only for a signed-in
     /// session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub counterpart: Option<Box<Counterpart>>,
+}
+
+/// Whether a song is saved to the library, and the tokens that change it
+/// through [`crate::Command::SetSongInLibrary`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryToggle {
+    pub saved: bool,
+    pub add_token: String,
+    pub remove_token: String,
 }
 
 /// The other version of a [`Track`], as the web app's Song and Video switch

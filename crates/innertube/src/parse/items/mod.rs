@@ -6,7 +6,7 @@ mod responsive;
 mod two_row;
 
 use super::{browse_target, group_text, link, parse_clock, renderer, run_groups};
-use formalmusic_api::{BrowseTarget, Item, Link, Rating, Track, TrackKind};
+use formalmusic_api::{BrowseTarget, Item, LibraryToggle, Link, Rating, Track, TrackKind};
 use serde_json::Value;
 
 pub use multi_row::multi_row_item;
@@ -234,6 +234,37 @@ pub(crate) fn feedback_token(menu: &Value) -> Option<String> {
         })
 }
 
+/// The "Save to library" toggle in a song's menu. Signed out, the save half
+/// opens a sign-in prompt instead of carrying a token, and there is none.
+pub(crate) fn library_toggle(menu: &Value) -> Option<LibraryToggle> {
+    menu["menuRenderer"]["items"]
+        .as_array()?
+        .iter()
+        .map(|item| &item["toggleMenuServiceItemRenderer"])
+        .find_map(|toggle| {
+            let saved = match toggle["defaultIcon"]["iconType"].as_str()? {
+                "BOOKMARK_BORDER" | "LIBRARY_ADD" => false,
+                "BOOKMARK" | "LIBRARY_SAVED" | "LIBRARY_REMOVE" => true,
+                _ => return None,
+            };
+            let token = |endpoint: &str| {
+                toggle[endpoint]["feedbackEndpoint"]["feedbackToken"]
+                    .as_str()
+                    .map(str::to_owned)
+            };
+            let (now, other) = (
+                token("defaultServiceEndpoint")?,
+                token("toggledServiceEndpoint")?,
+            );
+            let (add_token, remove_token) = if saved { (other, now) } else { (now, other) };
+            Some(LibraryToggle {
+                saved,
+                add_token,
+                remove_token,
+            })
+        })
+}
+
 /// The playlist a card's play button starts.
 pub(crate) fn overlay_playlist_id(overlay: &Value) -> Option<String> {
     let endpoint = &overlay["musicItemThumbnailOverlayRenderer"]["content"]["musicPlayButtonRenderer"]
@@ -263,6 +294,7 @@ pub(crate) fn blank_track(video_id: String, title: String) -> Track {
         set_video_id: None,
         plays: None,
         feedback_token: None,
+        library: None,
         counterpart: None,
     }
 }
@@ -288,6 +320,42 @@ mod tests {
         assert_eq!(b.artists.len(), 2);
         assert_eq!(b.album.unwrap().text, "Random Access Memories");
         assert_eq!(b.duration_ms, Some(338_000));
+    }
+
+    #[test]
+    fn library_toggle_tokens_follow_the_saved_state() {
+        let menu = |icon: &str| {
+            json!({"menuRenderer": {"items": [
+                {"toggleMenuServiceItemRenderer": {
+                    "defaultIcon": {"iconType": "KEEP"},
+                    "defaultServiceEndpoint": {"feedbackEndpoint": {"feedbackToken": "pin"}},
+                    "toggledServiceEndpoint": {"feedbackEndpoint": {"feedbackToken": "unpin"}}
+                }},
+                {"toggleMenuServiceItemRenderer": {
+                    "defaultIcon": {"iconType": icon},
+                    "defaultServiceEndpoint": {"feedbackEndpoint": {"feedbackToken": "now"}},
+                    "toggledServiceEndpoint": {"feedbackEndpoint": {"feedbackToken": "undo"}}
+                }}
+            ]}})
+        };
+        let unsaved = library_toggle(&menu("BOOKMARK_BORDER")).unwrap();
+        assert!(!unsaved.saved);
+        assert_eq!(
+            (unsaved.add_token.as_str(), unsaved.remove_token.as_str()),
+            ("now", "undo")
+        );
+        let saved = library_toggle(&menu("LIBRARY_SAVED")).unwrap();
+        assert!(saved.saved);
+        assert_eq!(
+            (saved.add_token.as_str(), saved.remove_token.as_str()),
+            ("undo", "now")
+        );
+        let signed_out = json!({"menuRenderer": {"items": [{"toggleMenuServiceItemRenderer": {
+            "defaultIcon": {"iconType": "BOOKMARK_BORDER"},
+            "defaultServiceEndpoint": {"modalEndpoint": {}},
+            "toggledServiceEndpoint": {"feedbackEndpoint": {"feedbackToken": "t"}}
+        }}]}});
+        assert_eq!(library_toggle(&signed_out), None);
     }
 
     #[test]

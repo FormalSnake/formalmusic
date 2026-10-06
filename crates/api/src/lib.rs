@@ -215,6 +215,11 @@ pub enum Command {
     RemoveFromHistory {
         feedback_token: String,
     },
+    /// Save a song to the library or remove it, with the
+    /// [`LibraryToggle`] token for that direction.
+    SetSongInLibrary {
+        feedback_token: String,
+    },
 
     // Playback
     /// Replace the queue and start playing `start_index`. With `radio` the
@@ -376,6 +381,7 @@ mod tests {
             set_video_id: None,
             plays: None,
             feedback_token: None,
+            library: None,
             counterpart: None,
         };
         let suggestion = Suggestion::Item(Item::Track(track));
@@ -400,6 +406,7 @@ mod tests {
             set_video_id: None,
             plays: None,
             feedback_token: None,
+            library: None,
             counterpart: Some(Box::new(Counterpart {
                 video_id: "video".into(),
                 kind: TrackKind::Video,

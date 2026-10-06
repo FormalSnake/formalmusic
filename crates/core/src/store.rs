@@ -139,6 +139,9 @@ pub struct AppState {
     /// Likes sent and not answered yet: the sequence of the latest and the
     /// rating to go back to if it fails. Responses that cross one keep out.
     rating_sent: HashMap<String, (u64, Option<Rating>)>,
+    /// Songs saved to or removed from the library here, by video id, over
+    /// what their pages said.
+    pub saved_songs: HashMap<String, bool>,
     /// A failure worth a toast, with a counter so the same text twice is two toasts.
     pub notice: Option<(u64, String)>,
     /// `None` until the daemon has said.
@@ -166,6 +169,14 @@ impl AppState {
             .copied()
             .or(track.like)
             .unwrap_or_default()
+    }
+
+    /// Whether the song is in the library, if its page said.
+    pub fn in_library(&self, track: &Track) -> Option<bool> {
+        self.saved_songs
+            .get(&track.video_id)
+            .copied()
+            .or(track.library.as_ref().map(|library| library.saved))
     }
 
     /// Records the ratings `tracks` carry, except for likes still in flight.
@@ -400,6 +411,7 @@ fn scope_covers(scope: LibraryScope, target: &BrowseTarget) -> bool {
                     | BrowseTarget::Artist(_)
             )
         }
+        LibraryScope::Songs => matches!(target, BrowseTarget::Library(LibraryTab::Songs)),
         LibraryScope::History => matches!(target, BrowseTarget::History),
     }
 }
@@ -1579,6 +1591,36 @@ impl MusicStore {
         });
     }
 
+    /// Shows the change at once and puts it back if YouTube refuses it.
+    pub fn set_song_in_library(&self, track: &Track, saved: bool) {
+        let Some(library) = &track.library else {
+            return;
+        };
+        let feedback_token = if saved {
+            library.add_token.clone()
+        } else {
+            library.remove_token.clone()
+        };
+        let video_id = track.video_id.clone();
+        self.inner.update(|state, _| {
+            state.saved_songs.insert(video_id.clone(), saved);
+        });
+        let store = self.clone();
+        self.spawn(async move {
+            let result = store
+                .inner
+                .transport
+                .call(Command::SetSongInLibrary { feedback_token })
+                .await;
+            if let Err(error) = result {
+                store.inner.update(|state, _| {
+                    state.saved_songs.remove(&video_id);
+                });
+                store.notice(message(&error));
+            }
+        });
+    }
+
     pub fn set_in_library(&self, playlist_id: String, saved: bool) {
         self.send(Command::SetInLibrary { playlist_id, saved });
     }
@@ -2460,6 +2502,21 @@ mod tests {
             section_tracks(&after.sections).count(),
             section_tracks(&page.sections).count() - yesterday.items.len()
         );
+    }
+
+    #[tokio::test]
+    async fn a_saved_song_shows_saved_at_once() {
+        let store = store();
+        store.start().await;
+        let track = crate::demo::catalog().albums[0].tracks[1].clone();
+        assert_eq!(store.state().in_library(&track), Some(false));
+        store.set_song_in_library(&track, true);
+        assert_eq!(store.state().in_library(&track), Some(true));
+        let mut unknown = track.clone();
+        unknown.library = None;
+        unknown.video_id = "elsewhere".into();
+        store.set_song_in_library(&unknown, true);
+        assert_eq!(store.state().in_library(&unknown), None);
     }
 
     #[tokio::test]

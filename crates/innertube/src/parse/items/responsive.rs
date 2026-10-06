@@ -2,7 +2,7 @@
 //! results and album tracks to library artists.
 
 use super::{
-    Byline, blank_track, explicit, feedback_token, kind_from_label, like_status,
+    Byline, blank_track, explicit, feedback_token, kind_from_label, library_toggle, like_status,
     overlay_playlist_id, overlay_watch_endpoint, video_kind,
 };
 use crate::parse::{browse_target, runs, text, thumbnails};
@@ -99,6 +99,7 @@ pub fn responsive_list_item(r: &Value) -> Option<Item> {
                 .as_str()
                 .map(str::to_owned);
             track.feedback_token = feedback_token(&r["menu"]);
+            track.library = library_toggle(&r["menu"]);
             Some(Item::Track(track))
         }
         (other, None) => {

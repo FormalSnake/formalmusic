@@ -348,6 +348,16 @@ impl Client {
 
     /// Removes one History row, by the token from [`formalmusic_api::Track::feedback_token`].
     pub async fn remove_from_history(&self, feedback_token: &str) -> Result<()> {
+        self.feedback(feedback_token, "history removal").await
+    }
+
+    /// Saves a song to the library or removes it, by a token from
+    /// [`formalmusic_api::LibraryToggle`].
+    pub async fn set_song_in_library(&self, feedback_token: &str) -> Result<()> {
+        self.feedback(feedback_token, "library change").await
+    }
+
+    async fn feedback(&self, feedback_token: &str, what: &str) -> Result<()> {
         self.require_session()?;
         let json = self
             .post("feedback", json!({ "feedbackTokens": [feedback_token] }))
@@ -358,9 +368,9 @@ impl Client {
         if processed {
             Ok(())
         } else {
-            Err(ApiError::BadRequest(
-                "YouTube did not accept the history removal".into(),
-            ))
+            Err(ApiError::BadRequest(format!(
+                "YouTube did not accept the {what}"
+            )))
         }
     }
 

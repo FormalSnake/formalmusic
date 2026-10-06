@@ -255,6 +255,11 @@ fn build_catalog() -> Catalog {
                     set_video_id: None,
                     plays: Some(format!("{}M plays", 1 + rng.below(90))),
                     feedback_token: None,
+                    library: Some(LibraryToggle {
+                        saved: index % 3 == 0,
+                        add_token: format!("demo-save-{n}-{index}"),
+                        remove_token: format!("demo-unsave-{n}-{index}"),
+                    }),
                     counterpart: None,
                 }
             })
@@ -1771,6 +1776,12 @@ impl Transport for DemoTransport {
                 Reply::Ok
             }
             Command::SetSubscribed { .. } => Reply::Ok,
+            Command::SetSongInLibrary { .. } => {
+                shared.emit(Event::LibraryChanged {
+                    scope: LibraryScope::Songs,
+                });
+                Reply::Ok
+            }
             Command::CreatePlaylist { .. } => Reply::PlaylistCreated {
                 playlist_id: "PLdemo-new".into(),
             },

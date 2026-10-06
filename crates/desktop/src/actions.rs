@@ -252,6 +252,17 @@ pub fn track_menu(track: &Track, context: &MenuContext, store: &MusicStore) -> V
             .icon(IconName::AddToPlaylist),
         );
     }
+    if let Some(saved) = store.state().in_library(track) {
+        let (store, track) = (store.clone(), track.clone());
+        let (label, icon) = if saved {
+            ("Remove from library", IconName::Unsave)
+        } else {
+            ("Save to library", IconName::Saved)
+        };
+        items.push(
+            MenuItem::item(label, move |_, _| store.set_song_in_library(&track, !saved)).icon(icon),
+        );
+    }
     if let Some(playlist_id) = context
         .editable_playlist
         .clone()

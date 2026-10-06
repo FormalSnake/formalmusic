@@ -282,6 +282,10 @@ impl Daemon {
                 client.remove_from_history(&feedback_token).await?;
                 self.library_changed(LibraryScope::History)
             }
+            Command::SetSongInLibrary { feedback_token } => {
+                client.set_song_in_library(&feedback_token).await?;
+                self.library_changed(LibraryScope::Songs)
+            }
 
             Command::Play {
                 source,
