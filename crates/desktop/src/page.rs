@@ -164,6 +164,10 @@ impl PageView {
         self.list.scroll_to(ListOffset::default());
     }
 
+    pub fn scroll_to_end(&self) {
+        self.list.scroll_to_end();
+    }
+
     fn columns_for(width: Pixels, tile: Pixels) -> usize {
         let available = width - PAGE_INSET * 2. + CARD_GAP;
         ((available / (tile + CARD_GAP)).floor() as usize).max(1)

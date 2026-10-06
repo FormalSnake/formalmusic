@@ -257,6 +257,9 @@ impl AppRoot {
             root_focus,
         };
         this.navigate(Route::Browse(BrowseTarget::Home), false, cx);
+        if std::env::var("FORMALMUSIC_TOUR").as_deref() == Ok("1") {
+            tour(window, cx);
+        }
         #[cfg(feature = "screenshot")]
         if let Ok(out) = std::env::var("FORMALMUSIC_SCREENSHOT") {
             screenshot(out.into(), window, cx);
@@ -766,6 +769,58 @@ impl Render for AppRoot {
             .children(notice)
             .children(crate::trace::probe())
     }
+}
+
+/// `FORMALMUSIC_TOUR=1` (with the demo): Home, an artist, the 1000 track
+/// playlist scrolled to its end, then the expanded player, a few seconds
+/// each, so the memory and CPU after a browse can be read from outside on a
+/// machine nobody is clicking on. Each step goes to the trace log.
+fn tour(window: &mut Window, cx: &mut Context<AppRoot>) {
+    cx.spawn_in(window, async move |this, cx| {
+        let executor = cx.background_executor().clone();
+        let catalog = formalmusic_core::demo::catalog();
+        let steps: [(&str, Option<Route>); 4] = [
+            (
+                "artist",
+                Some(Route::Browse(BrowseTarget::Artist(
+                    catalog.artists[2].browse_id.clone(),
+                ))),
+            ),
+            (
+                "playlist",
+                Some(Route::Browse(BrowseTarget::Playlist(
+                    catalog.playlists[1].playlist_id.clone(),
+                ))),
+            ),
+            ("expanded", None),
+            ("home", Some(Route::Browse(BrowseTarget::Home))),
+        ];
+        for (name, route) in steps {
+            executor.timer(std::time::Duration::from_secs(3)).await;
+            let _ = this.update(cx, |this, cx| {
+                crate::trace::log(&format!("tour: {name}"));
+                match route {
+                    Some(route) => this.navigate(route, false, cx),
+                    None => this.set_expanded(Some(Tab::UpNext), cx),
+                }
+            });
+            if name == "playlist" {
+                // Down to the end and back, a page at a time, so every
+                // continuation loads and every row is laid out once.
+                for _ in 0..12 {
+                    executor.timer(std::time::Duration::from_millis(400)).await;
+                    let _ = this.update(cx, |this, cx| {
+                        if let Some(page) = this.pages.last() {
+                            page.read(cx).scroll_to_end();
+                            page.update(cx, |_, cx| cx.notify());
+                        }
+                    });
+                }
+            }
+        }
+        let _ = this.update(cx, |_, _| crate::trace::log("tour: done"));
+    })
+    .detach();
 }
 
 /// `scripts/screenshot.sh`: opens the scene `FORMALMUSIC_SCREENSHOT_SCENE`

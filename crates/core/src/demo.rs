@@ -2,7 +2,7 @@
 //! screenshots, tests and working on the UI with no YouTube account.
 //!
 //! The pages are hand built in YouTube Music's shapes (Home with chips and
-//! shelves, album, artist, a 400 track playlist). Once `formalmusic-innertube`
+//! shelves, album, artist, a 1000 track playlist). Once `formalmusic-innertube`
 //! lands with its recorded fixtures, `pages()` is the seam to swap: parse
 //! those instead and keep the player simulation below as it is.
 
@@ -300,7 +300,7 @@ fn build_catalog() -> Catalog {
             playlist_id: LONG_PLAYLIST.into(),
             title: "Late night drive",
             owned: true,
-            tracks: pick(400, true, &mut rng),
+            tracks: pick(1000, true, &mut rng),
         },
         Playlist {
             playlist_id: "PLdemo-run".into(),
@@ -1756,7 +1756,7 @@ mod tests {
             count += more.items.len();
             token = more.continuation;
         }
-        assert_eq!(count, 400);
+        assert_eq!(count, 1000);
     }
 }
 
