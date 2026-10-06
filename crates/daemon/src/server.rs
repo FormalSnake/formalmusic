@@ -173,7 +173,7 @@ async fn respond(outbox: &mpsc::Sender<ServerMessage>, id: u64, result: Result<R
 mod tests {
     use super::*;
     use crate::config::{Config, Paths};
-    use formalmusic_api::{Repeat, Status};
+    use formalmusic_api::{PlaySource, Repeat, Status};
     use formalmusic_player::{OutputKind, Player};
     use tokio::io::BufReader;
     use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -207,10 +207,14 @@ mod tests {
         }
 
         async fn recv(&mut self) -> ServerMessage {
+            self.recv_within(Duration::from_secs(5)).await
+        }
+
+        async fn recv_within(&mut self, wait: Duration) -> ServerMessage {
             let read = wire::read(&mut self.read, &mut self.buf);
-            tokio::time::timeout(Duration::from_secs(5), read)
+            tokio::time::timeout(wait, read)
                 .await
-                .expect("no message within 5 s")
+                .unwrap_or_else(|_| panic!("no message within {wait:?}"))
                 .unwrap()
                 .expect("daemon hung up")
         }
@@ -229,7 +233,10 @@ mod tests {
     }
 
     async fn start() -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
+        serve_in(tempfile::tempdir().unwrap()).await
+    }
+
+    async fn serve_in(dir: tempfile::TempDir) -> (tempfile::TempDir, std::path::PathBuf) {
         let paths = Paths {
             state: dir.path().join("state"),
             config: dir.path().join("daemon.json"),
@@ -314,6 +321,68 @@ mod tests {
         let state = conn.call(Command::PlayerState).await;
         assert!(
             matches!(state, ResponseResult::Ok(Reply::Player(p)) if p.repeat == Repeat::All && p.volume == 1.0)
+        );
+    }
+
+    /// Against the real YouTube, signed in from the Netscape cookie file at
+    /// `FORMALMUSIC_COOKIES`, with yt-dlp on `PATH`: an endless mix answers
+    /// Play with its first track loading as quickly as a single track does.
+    /// Audible playback follows once yt-dlp has the stream, as for any track.
+    /// `cargo test -p formalmusicd -- --ignored --nocapture live_`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "signs in to music.youtube.com and streams from googlevideo"]
+    async fn live_supermix_starts_loading_within_three_seconds() {
+        let Ok(path) = std::env::var("FORMALMUSIC_COOKIES") else {
+            eprintln!("skipping: FORMALMUSIC_COOKIES is not set");
+            return;
+        };
+        let stored = crate::session::Stored {
+            cookies: crate::session::cookie_header(&std::fs::read_to_string(path).unwrap()),
+            page_id: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            state.join("session.json"),
+            serde_json::to_vec(&stored).unwrap(),
+        )
+        .unwrap();
+        let (_dir, socket) = serve_in(dir).await;
+        let hello = || Command::Hello {
+            protocol: PROTOCOL_VERSION,
+        };
+        let mut conn = Conn::open(&socket).await;
+        conn.call(hello()).await;
+        let mut events = Conn::open(&socket).await;
+        events.call(hello()).await;
+        events.call(Command::Subscribe).await;
+
+        let asked = std::time::Instant::now();
+        let play = conn
+            .call(Command::Play {
+                source: PlaySource::Playlist {
+                    playlist_id: "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY".into(),
+                    tracks: Vec::new(),
+                },
+                start_index: 0,
+                shuffle: false,
+                radio: false,
+            })
+            .await;
+        assert!(matches!(play, ResponseResult::Ok(_)), "{play:?}");
+        let started = asked.elapsed();
+        assert!(started < Duration::from_secs(3), "Play took {started:?}");
+        loop {
+            match events.recv_within(Duration::from_secs(30)).await {
+                ServerMessage::Event(Event::Player(p)) if p.status == Status::Playing => break,
+                ServerMessage::Event(Event::Notice { message }) => panic!("{message}"),
+                _ => {}
+            }
+        }
+        eprintln!(
+            "Play answered after {started:?}, audible after {:?}",
+            asked.elapsed()
         );
     }
 

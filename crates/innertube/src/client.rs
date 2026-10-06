@@ -89,8 +89,12 @@ impl Client {
     }
 
     fn build(session: Option<Session>) -> Result<Self> {
+        // Over HTTP/2, h2's small DATA frame budget runs out after a few dozen
+        // music.youtube.com responses on one connection, and the GOAWAY it sends
+        // (too_many_data_frames) fails the response in flight.
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            .http1_only()
             .build()
             .map_err(network)?;
         Ok(Self {

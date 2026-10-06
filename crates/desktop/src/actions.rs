@@ -47,6 +47,7 @@ pub fn play_item(item: &Item, store: &MusicStore) {
         | Item::Playlist { playlist_id, .. } => store.play(
             PlaySource::Playlist {
                 playlist_id: playlist_id.clone(),
+                tracks: Vec::new(),
             },
             0,
             false,
@@ -112,6 +113,7 @@ pub fn item_menu(item: &Item, context: &MenuContext, store: &MusicStore) -> Vec<
                         play.play(
                             PlaySource::Playlist {
                                 playlist_id: playlist_id.clone(),
+                                tracks: Vec::new(),
                             },
                             0,
                             false,
@@ -147,6 +149,7 @@ pub fn item_menu(item: &Item, context: &MenuContext, store: &MusicStore) -> Vec<
                     play.play(
                         PlaySource::Playlist {
                             playlist_id: a.clone(),
+                            tracks: Vec::new(),
                         },
                         0,
                         false,
@@ -158,6 +161,7 @@ pub fn item_menu(item: &Item, context: &MenuContext, store: &MusicStore) -> Vec<
                     shuffle.play(
                         PlaySource::Playlist {
                             playlist_id: b.clone(),
+                            tracks: Vec::new(),
                         },
                         0,
                         true,

@@ -8,15 +8,16 @@
 //! the meantime wins.
 
 use crate::config::{Config, Paths, write_private};
+use crate::playlist::{self, Opened, Rest};
 use crate::queue::{Queue, RADIO_LOW_WATER, Removed};
 use crate::session::Session;
 use crate::streams::Resolver;
 use crate::tracking::Watch;
 use formalmusic_api::{
-    ApiError, Continuation, EnqueuePosition, Event, Item, PlaySource, PlayerState, QueueState,
-    Repeat, Status, Track,
+    ApiError, Continuation, EnqueuePosition, Event, PlaySource, PlayerState, QueueState, Repeat,
+    Status, Track,
 };
-use formalmusic_innertube::{Client, PlaybackTracking};
+use formalmusic_innertube::PlaybackTracking;
 use formalmusic_player::{Player, PlayerError, PlayerEvent, StreamSource, TrackId};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -82,6 +83,10 @@ struct State {
     /// Consecutive entries that failed to resolve, so a queue of dead tracks
     /// stops instead of spinning.
     failures: usize,
+    /// The rest of the playing list is still loading.
+    fill: Option<Fill>,
+    /// Bumped by every Play, so a fill for an older list drops its pages.
+    opened: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -100,6 +105,12 @@ struct Preload {
     /// `None` while the stream is resolving.
     id: Option<TrackId>,
     label: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Fill {
+    /// The queue ran out before the next page landed; play on when it does.
+    resume_when_extended: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -240,11 +251,26 @@ impl Playback {
         radio: bool,
     ) -> Result<(), ApiError> {
         let client = self.session.client();
-        let (tracks, radio_state) = match source {
-            PlaySource::Tracks { tracks } => (tracks, None),
-            PlaySource::Playlist { playlist_id } => {
-                (fetch_playlist(&client, &playlist_id).await?, None)
-            }
+        let (tracks, start, radio_state, rest) = match source {
+            PlaySource::Tracks { tracks } => (tracks, start, None, None),
+            PlaySource::Playlist {
+                playlist_id,
+                tracks,
+            } => match playlist::open(&client, &playlist_id, tracks, start).await? {
+                Opened::List {
+                    tracks,
+                    start,
+                    rest,
+                } => (tracks, start, None, rest),
+                Opened::Mix { next, start } => {
+                    let radio = Radio {
+                        playlist_id: next.playlist_id,
+                        continuation: next.continuation,
+                        ..Radio::default()
+                    };
+                    (next.tracks, start, Some(radio), None)
+                }
+            },
             PlaySource::Radio { video_id } => {
                 let next = client.radio(&video_id).await?;
                 let radio = Radio {
@@ -252,7 +278,7 @@ impl Playback {
                     continuation: next.continuation,
                     ..Radio::default()
                 };
-                (next.tracks, Some(radio))
+                (next.tracks, start, Some(radio), None)
             }
         };
         if tracks.is_empty() {
@@ -263,8 +289,13 @@ impl Playback {
             .replace(tracks, start, shuffle, &mut self.rng.lock());
         st.radio = radio_state.or_else(|| radio.then(Radio::default));
         st.failures = 0;
+        st.opened += 1;
+        st.fill = None;
         self.start_current(&mut st, 0, true);
         self.emit_queue(&st);
+        if let Some(rest) = rest {
+            self.fill(&mut st, rest);
+        }
         Ok(())
     }
 
@@ -302,6 +333,7 @@ impl Playback {
     pub fn clear(self: &Arc<Self>) {
         let mut st = self.state.lock();
         st.queue.clear();
+        st.fill = None;
         self.queue_changed(&mut st);
     }
 
@@ -646,9 +678,61 @@ impl Playback {
         self.extend_radio(st);
     }
 
+    // Filling
+
+    /// Appends the rest of the playing list page by page. A failure costs
+    /// only the tracks not loaded yet, never the one playing.
+    fn fill(self: &Arc<Self>, st: &mut State, mut rest: Rest) {
+        st.fill = Some(Fill::default());
+        let opened = st.opened;
+        let this = self.clone();
+        self.rt.spawn(async move {
+            let client = this.session.client();
+            loop {
+                let page = rest.page(&client).await;
+                let mut st = this.state.lock();
+                let Some(fill) = st.fill.filter(|_| st.opened == opened) else {
+                    return;
+                };
+                let tracks = match page {
+                    Ok(Some(chunk)) => chunk.tracks,
+                    Ok(None) => {
+                        st.fill = None;
+                        this.extend_radio(&mut st);
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!("loading the rest of the playlist: {e}");
+                        st.fill = None;
+                        this.emit(Event::Notice {
+                            message: format!("Could not load the rest of the playlist: {e}"),
+                        });
+                        return;
+                    }
+                };
+                if tracks.is_empty() {
+                    continue;
+                }
+                st.queue.extend(tracks, &mut this.rng.lock());
+                if fill.resume_when_extended
+                    && let Some(index) = st.queue.next_index(false)
+                {
+                    st.fill = Some(Fill::default());
+                    st.queue.jump(index);
+                    this.start_current(&mut st, 0, true);
+                }
+                this.queue_changed(&mut st);
+            }
+        });
+    }
+
     // Radio
 
     fn extend_radio(self: &Arc<Self>, st: &mut State) {
+        // Autoplay follows the list once all of it is queued.
+        if st.fill.is_some() {
+            return;
+        }
         let Some(radio) = &mut st.radio else { return };
         if radio.fetching || st.queue.remaining() >= RADIO_LOW_WATER || st.queue.len() == 0 {
             return;
@@ -813,6 +897,9 @@ impl Playback {
                         if let Some(radio) = &mut st.radio {
                             radio.resume_when_extended = true;
                         }
+                        if let Some(fill) = &mut st.fill {
+                            fill.resume_when_extended = true;
+                        }
                         self.stop(&mut st);
                         self.extend_radio(&mut st);
                     }
@@ -971,7 +1058,7 @@ impl Playback {
 
     pub fn can_go_next(&self) -> bool {
         let st = self.state.lock();
-        st.queue.next_index(false).is_some() || st.radio.is_some()
+        st.queue.next_index(false).is_some() || st.radio.is_some() || st.fill.is_some()
     }
 
     pub fn subscribe_seeks(&self) -> broadcast::Receiver<u64> {
@@ -1016,73 +1103,4 @@ fn queue_state(st: &State) -> QueueState {
 
 fn out_of_range(index: usize) -> ApiError {
     ApiError::BadRequest(format!("no queue entry at {index}"))
-}
-
-/// A playlist or album in full. Album playlists (`OLAK5uy_...`) have no
-/// browse page of their own, so those come from the player's queue panel.
-async fn fetch_playlist(client: &Client, playlist_id: &str) -> Result<Vec<Track>, ApiError> {
-    match browse_playlist(client, playlist_id).await {
-        Ok(found) if !found.is_empty() => Ok(found),
-        Ok(_) | Err(ApiError::Parse(_) | ApiError::NotFound(_)) => {
-            queue_playlist(client, playlist_id).await
-        }
-        Err(e) => Err(e),
-    }
-}
-
-/// The playlist page's track list, following its continuations.
-async fn browse_playlist(client: &Client, playlist_id: &str) -> Result<Vec<Track>, ApiError> {
-    let page = client
-        .browse(formalmusic_api::BrowseTarget::Playlist(
-            playlist_id.to_owned(),
-        ))
-        .await?;
-    let Some(list) = page.sections.into_iter().next() else {
-        return Ok(Vec::new());
-    };
-    let mut tracks: Vec<Track> = tracks_of(list.items);
-    let mut token = list.continuation;
-    while let Some(next) = token {
-        let more = client.continuation(&next).await?;
-        let before = tracks.len();
-        tracks.extend(tracks_of(more.items));
-        if tracks.len() == before {
-            break;
-        }
-        token = more.continuation;
-    }
-    Ok(tracks)
-}
-
-/// The up-next panel the web app shows for a playlist, which also covers
-/// albums.
-async fn queue_playlist(client: &Client, playlist_id: &str) -> Result<Vec<Track>, ApiError> {
-    let first = client.next(None, Some(playlist_id)).await?;
-    let panel_id = first.playlist_id.unwrap_or_else(|| playlist_id.to_owned());
-    let mut tracks = first.tracks;
-    let mut token = first.continuation;
-    while let Some(next) = token {
-        let more = client.next_continuation(&panel_id, &next).await?;
-        let fresh: Vec<Track> = more
-            .tracks
-            .into_iter()
-            .filter(|t| !tracks.iter().any(|known| known.video_id == t.video_id))
-            .collect();
-        if fresh.is_empty() {
-            break;
-        }
-        tracks.extend(fresh);
-        token = more.continuation;
-    }
-    Ok(tracks)
-}
-
-fn tracks_of(items: Vec<Item>) -> Vec<Track> {
-    items
-        .into_iter()
-        .filter_map(|item| match item {
-            Item::Track(track) => Some(track),
-            _ => None,
-        })
-        .collect()
 }

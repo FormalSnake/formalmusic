@@ -181,6 +181,23 @@ impl Queue {
         added
     }
 
+    /// Appends the next page of the list that is playing. While shuffled,
+    /// the new tracks land at random among the ones still to come, as if the
+    /// whole list had been shuffled at the start.
+    pub fn extend(&mut self, tracks: Vec<Track>, rng: &mut fastrand::Rng) {
+        let new = self.wrap(tracks);
+        let Some(original) = &mut self.original else {
+            self.entries.extend(new);
+            return;
+        };
+        original.extend(new.iter().map(|e| e.uid));
+        let first = self.current.map_or(0, |c| c + 1);
+        for entry in new {
+            let at = rng.usize(first..=self.entries.len());
+            self.entries.insert(at, entry);
+        }
+    }
+
     pub fn remove(&mut self, index: usize) -> Option<Removed> {
         if index >= self.entries.len() {
             return None;
@@ -435,6 +452,33 @@ mod tests {
         let mut unique = uids.clone();
         unique.dedup();
         assert_eq!(uids, unique);
+    }
+
+    #[test]
+    fn later_pages_shuffle_in_after_the_current_track() {
+        let mut q = queue("a b c", 1);
+        let mut rng = fastrand::Rng::with_seed(5);
+        q.extend(vec![track("d"), track("e")], &mut rng);
+        assert_eq!(ids(&q), "a b c d e");
+
+        let mut q = queue("a b c d", 0);
+        q.set_shuffle(true, &mut rng);
+        q.jump(1);
+        let played: Vec<String> = q.entries()[..=1]
+            .iter()
+            .map(|e| e.track.video_id.clone())
+            .collect();
+        q.extend("e f g h i j".split(' ').map(track).collect(), &mut rng);
+        assert_eq!(q.len(), 10);
+        assert_eq!(q.current_index(), Some(1));
+        let start: Vec<&str> = q.entries()[..=1]
+            .iter()
+            .map(|e| e.track.video_id.as_str())
+            .collect();
+        assert_eq!(start, played, "nothing lands before the current track");
+        assert!(!ids(&q).ends_with("e f g h i j"), "{}", ids(&q));
+        q.set_shuffle(false, &mut rng);
+        assert_eq!(ids(&q), "a b c d e f g h i j");
     }
 
     #[test]

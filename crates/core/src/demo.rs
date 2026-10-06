@@ -1192,7 +1192,7 @@ fn tracks_for(source: &PlaySource) -> Vec<Track> {
     let catalog = catalog();
     match source {
         PlaySource::Tracks { tracks } => tracks.clone(),
-        PlaySource::Playlist { playlist_id } if !playlist_id.contains("demo") => {
+        PlaySource::Playlist { playlist_id, .. } if !playlist_id.contains("demo") => {
             let target = if playlist_id.starts_with("OLAK") {
                 BrowseTarget::Album("recorded".into())
             } else {
@@ -1205,7 +1205,7 @@ fn tracks_for(source: &PlaySource) -> Vec<Track> {
         {
             fixtures::radio().unwrap_or_default()
         }
-        PlaySource::Playlist { playlist_id } => {
+        PlaySource::Playlist { playlist_id, .. } => {
             if let Some(album) = catalog
                 .albums
                 .iter()

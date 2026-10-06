@@ -8,6 +8,7 @@ mod extras;
 #[cfg(target_os = "linux")]
 mod mpris;
 mod playback;
+mod playlist;
 mod queue;
 mod scrobble;
 mod server;

@@ -600,7 +600,8 @@ fn chip_target(current: &BrowseTarget, chip: &Chip) -> BrowseTarget {
 }
 
 /// A click on a list row: an album or playlist plays whole from that row, a
-/// list anywhere else plays its own tracks from it.
+/// list anywhere else plays its own tracks from it. The rows already loaded
+/// go along, so the daemon starts at once and fetches only the rest.
 fn play_from(
     content: &Content,
     route: &Route,
@@ -609,6 +610,7 @@ fn play_from(
     store: &MusicStore,
 ) -> Rc<dyn Fn(&mut App)> {
     let store = store.clone();
+    // The daemon reads the first list as the album or playlist itself.
     let playlist = match (route, content.header()) {
         (
             Route::Browse(BrowseTarget::Album(_) | BrowseTarget::Playlist(_)),
@@ -616,38 +618,35 @@ fn play_from(
                 playlist_id: Some(id),
                 ..
             }),
-        ) => Some(id.clone()),
+        ) if section == 0 => Some(id.clone()),
         _ => None,
     };
     let content = content.clone();
-    Rc::new(move |_| match &playlist {
-        Some(playlist_id) => store.play(
-            PlaySource::Playlist {
+    Rc::new(move |_| {
+        let shelf = &content.sections()[section];
+        let tracks: Vec<_> = shelf
+            .items
+            .iter()
+            .filter_map(|item| {
+                if let Item::Track(track) = item {
+                    Some(track.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let start = shelf.items[..item]
+            .iter()
+            .filter(|item| matches!(item, Item::Track(_)))
+            .count();
+        let source = match &playlist {
+            Some(playlist_id) => PlaySource::Playlist {
                 playlist_id: playlist_id.clone(),
+                tracks,
             },
-            item,
-            false,
-            false,
-        ),
-        None => {
-            let shelf = &content.sections()[section];
-            let tracks: Vec<_> = shelf
-                .items
-                .iter()
-                .filter_map(|item| {
-                    if let Item::Track(track) = item {
-                        Some(track.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let start = shelf.items[..item]
-                .iter()
-                .filter(|item| matches!(item, Item::Track(_)))
-                .count();
-            store.play(PlaySource::Tracks { tracks }, start, false, false);
-        }
+            None => PlaySource::Tracks { tracks },
+        };
+        store.play(source, start, false, false);
     })
 }
 

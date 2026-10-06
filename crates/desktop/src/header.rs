@@ -67,6 +67,7 @@ pub fn header(
                             play.play(
                                 PlaySource::Playlist {
                                     playlist_id: playlist_id.clone(),
+                                    tracks: Vec::new(),
                                 },
                                 0,
                                 false,
@@ -84,6 +85,7 @@ pub fn header(
                             shuffle.play(
                                 PlaySource::Playlist {
                                     playlist_id: shuffle_id.clone(),
+                                    tracks: Vec::new(),
                                 },
                                 0,
                                 true,
@@ -205,6 +207,7 @@ pub fn header(
                             store.play(
                                 PlaySource::Playlist {
                                     playlist_id: playlist_id.clone(),
+                                    tracks: Vec::new(),
                                 },
                                 0,
                                 true,
@@ -225,6 +228,7 @@ pub fn header(
                             store.play(
                                 PlaySource::Playlist {
                                     playlist_id: playlist_id.clone(),
+                                    tracks: Vec::new(),
                                 },
                                 0,
                                 false,

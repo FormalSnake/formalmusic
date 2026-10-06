@@ -389,8 +389,14 @@ pub enum PlaylistEdit {
 pub enum PlaySource {
     /// Exactly these tracks, as on a page the client already has.
     Tracks { tracks: Vec<Track> },
-    /// A playlist or album fetched in full by the daemon.
-    Playlist { playlist_id: String },
+    /// A playlist or album. Playback starts on the first page, or at once
+    /// on `tracks`, the top of the list as the client's page shows it, and
+    /// the daemon fetches the rest while it plays.
+    Playlist {
+        playlist_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tracks: Vec<Track>,
+    },
     /// Start radio from one track (the web app's "Start radio").
     Radio { video_id: String },
 }
