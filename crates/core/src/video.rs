@@ -103,14 +103,16 @@ pub struct Loop {
 impl Loop {
     /// Decodes `path` from `start` seconds into `side` px squares, at the
     /// file's own rate or `max_fps`, whichever is lower, and sends each frame
-    /// on `frames` as its time comes. The channel closes if ffmpeg fails.
+    /// on `frames` as its time comes. With `hardware`, ffmpeg decodes and
+    /// scales through VA-API and falls back to software if that fails. The
+    /// channel closes if ffmpeg fails.
     pub fn start(
         runtime: &tokio::runtime::Handle,
         path: &Path,
         info: &VideoInfo,
         side: u32,
-        max_fps: f64,
-        start: f64,
+        (max_fps, start): (f64, f64),
+        hardware: bool,
         frames: mpsc::Sender<VideoFrame>,
     ) -> Loop {
         let start = if info.duration > 0. {
@@ -122,9 +124,9 @@ impl Loop {
         let rate = info.fps.min(max_fps);
         let task = runtime.spawn(run(
             path.to_path_buf(),
-            start,
-            rate,
+            (start, rate),
             side.max(2),
+            hardware,
             frames,
             position.clone(),
         ));
@@ -154,30 +156,58 @@ impl Drop for Loop {
 
 async fn run(
     path: PathBuf,
-    start: f64,
-    rate: f64,
+    (start, rate): (f64, f64),
     side: u32,
+    hardware: bool,
     frames: mpsc::Sender<VideoFrame>,
     position: Arc<AtomicU64>,
 ) {
+    let looped = |hardware| loop_from(&path, (start, rate), side, hardware, &frames, &position);
+    if hardware && looped(true).await {
+        return;
+    }
+    if hardware {
+        tracing::info!("animated cover: VA-API decode failed, decoding in software");
+    }
+    looped(false).await;
+}
+
+/// One ffmpeg run, looping until dropped. False when it gave no frame.
+async fn loop_from(
+    path: &Path,
+    (start, rate): (f64, f64),
+    side: u32,
+    hardware: bool,
+    frames: &mpsc::Sender<VideoFrame>,
+    position: &AtomicU64,
+) -> bool {
     // One decoder thread and one filter thread: a 768 px H.264 stream needs
     // a fraction of one core, and ffmpeg would otherwise start a thread per
     // core for it.
-    let filter = format!(
-        "fps={rate:.4},scale={side}:{side}:force_original_aspect_ratio=increase:flags=bilinear,crop={side}:{side}"
-    );
     let mut command = tokio::process::Command::new("ffmpeg");
     command.args(["-v", "error", "-nostdin", "-threads", "1"]);
-    // Apple's covers are at most 768 px. At half that or less the scaler
-    // averages deblocking artifacts away, so the decoder skips that pass,
-    // about a sixth of its time.
-    if side <= 384 {
-        command.args(["-skip_loop_filter", "all"]);
-    }
+    // As for music videos, the picture comes down from VA-API as NV12 at the
+    // drawn size: a third of the CPU of decoding a 768 px cover in software.
+    let filter = if hardware {
+        command.args(["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]);
+        format!(
+            "fps={rate:.4},scale_vaapi=w={side}:h={side}:force_original_aspect_ratio=increase:format=nv12,hwdownload,format=nv12,format=bgra,crop={side}:{side}"
+        )
+    } else {
+        // Apple's covers are at most 768 px. At half that or less the scaler
+        // averages deblocking artifacts away, so the decoder skips that
+        // pass, about a sixth of its time.
+        if side <= 384 {
+            command.args(["-skip_loop_filter", "all"]);
+        }
+        format!(
+            "fps={rate:.4},scale={side}:{side}:force_original_aspect_ratio=increase:flags=bilinear,crop={side}:{side}"
+        )
+    };
     let spawned = command
         .args(["-stream_loop", "-1"])
         .args(["-ss", &format!("{start:.3}"), "-i"])
-        .arg(&path)
+        .arg(path)
         .args([
             "-map",
             "0:v:0",
@@ -197,11 +227,11 @@ async fn run(
         Ok(child) => child,
         Err(error) => {
             tracing::warn!("animated cover: ffmpeg: {error}");
-            return;
+            return true;
         }
     };
     let Some(mut stdout) = child.stdout.take() else {
-        return;
+        return false;
     };
     let frame_len = side as usize * side as usize * 4;
     let frame_time = Duration::from_secs_f64(1. / rate);
@@ -209,7 +239,7 @@ async fn run(
     let mut index: u32 = 0;
     loop {
         let Some(bgra) = read_frame(&mut stdout, frame_len).await else {
-            return;
+            return index > 0;
         };
         let due = began + frame_time * index;
         index += 1;
@@ -229,7 +259,7 @@ async fn run(
         };
         match frames.try_send(frame) {
             Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
-            Err(mpsc::error::TrySendError::Closed(_)) => return,
+            Err(mpsc::error::TrySendError::Closed(_)) => return true,
         }
     }
 }
@@ -619,8 +649,8 @@ mod tests {
             &path,
             &info,
             48,
-            12.,
-            1.5,
+            (12., 1.5),
+            false,
             tx,
         );
         let mut count = 0;

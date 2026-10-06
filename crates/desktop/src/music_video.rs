@@ -344,9 +344,10 @@ impl MusicVideo {
     }
 }
 
-/// VA-API through ffmpeg where there is a render node, unless
-/// `FORMALMUSIC_VAAPI=0`. ffmpeg falls back to software when it fails.
-fn hardware_decode() -> bool {
+/// VA-API through ffmpeg for videos and animated covers where there is a
+/// render node, unless `FORMALMUSIC_VAAPI=0`. ffmpeg falls back to software
+/// when it fails.
+pub(crate) fn hardware_decode() -> bool {
     cfg!(target_os = "linux")
         && std::env::var("FORMALMUSIC_VAAPI").as_deref() != Ok("0")
         && std::path::Path::new("/dev/dri/renderD128").exists()

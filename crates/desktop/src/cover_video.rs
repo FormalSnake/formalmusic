@@ -238,8 +238,8 @@ impl CoverVideo {
             path,
             info,
             side,
-            self.max_fps,
-            self.position,
+            (self.max_fps, self.position),
+            crate::music_video::hardware_decode(),
             tx,
         ));
         self.receiver = Some(cx.spawn(async move |this, cx| {
