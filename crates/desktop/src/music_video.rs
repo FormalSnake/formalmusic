@@ -333,7 +333,12 @@ impl MusicVideo {
         if let Some(previous) = self.frame.replace(image) {
             cx.drop_image(previous, None);
         }
-        self.waiting = None;
+        if let Some(since) = self.waiting.take() {
+            crate::trace::log_if_enabled(&format!(
+                "video frame {:.0}ms after starting or resuming",
+                since.elapsed().as_secs_f64() * 1000.
+            ));
+        }
         cx.notify();
         clock::Clock::frame(cx);
     }
