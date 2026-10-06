@@ -7,6 +7,7 @@ use std::rc::Rc;
 use formalmusic_api::{Item, PlaybackMode, Status, Track, TrackKind};
 use formalmusic_core::MusicStore;
 use formalmusic_core::format::{duration, names};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -16,7 +17,7 @@ use crate::bridge::{Bridge, Topic};
 use crate::cover_video::CoverVideo;
 use crate::icons::{Icon, IconName};
 use crate::lyrics::LyricsView;
-use crate::motion::{self, DURATION_BASE};
+use crate::motion::{self, DURATION_BASE, Presence};
 use crate::music_video::MusicVideo;
 use crate::primitives::IconButton;
 use crate::shelves::{self, Env};
@@ -46,6 +47,8 @@ pub struct NowPlaying {
     video_showing: bool,
     /// Bumped when `video_showing` flips, so the crossfade replays.
     video_flips: u64,
+    /// A spinner over the art while the video has no frame to show yet.
+    video_loading: Presence<()>,
     tab: Tab,
     queue: Entity<QueueView>,
     lyrics: Entity<LyricsView>,
@@ -63,9 +66,12 @@ impl NowPlaying {
         Bridge::watch(cx, Topic::Player, weak.into());
         let video = cx.new(|cx| MusicVideo::new(store.clone(), cx));
         // The video repaints itself every frame; this view only cares when
-        // a picture appears or goes.
+        // a picture appears or goes, or starts or stops loading.
         cx.observe(&video, |this: &mut Self, video, cx| {
-            if video.read(cx).showing() != this.video_showing {
+            let video = video.read(cx);
+            if video.showing() != this.video_showing
+                || video.loading() != this.video_loading.is_open()
+            {
                 cx.notify();
             }
         })
@@ -78,6 +84,7 @@ impl NowPlaying {
             video,
             video_showing: false,
             video_flips: 0,
+            video_loading: Presence::new(DURATION_BASE),
             tab,
             queue,
             lyrics,
@@ -244,6 +251,31 @@ impl Versions {
 impl NowPlaying {
     /// The cover, or the music video in its place, crossfading between them.
     fn stage(&self, width: Pixels, art_size: Pixels, palette: Palette) -> AnyElement {
+        let spinner = self.video_loading.current().map(|_| {
+            motion::toward(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .size(px(40.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(radius::PILL)
+                            .bg(palette.overlay)
+                            .child(Spinner::new().color(palette.text)),
+                    ),
+                self.video_loading.id("video-loading"),
+                self.video_loading.is_open(),
+                DURATION_BASE,
+                DURATION_BASE,
+                |el, t| el.opacity(t),
+            )
+        });
         let showing = self.video_showing;
         let flips = self.video_flips;
         let cover = div()
@@ -283,6 +315,7 @@ impl NowPlaying {
             .justify_center()
             .child(cover)
             .child(video)
+            .children(spinner)
             .into_any_element()
     }
 
@@ -387,6 +420,12 @@ impl Render for NowPlaying {
         }
         self.cover
             .update(cx, |cover, cx| cover.set_paused(showing, cx));
+        let loading = self.video.read(cx).loading();
+        self.video_loading.set(
+            loading.then_some(()),
+            |this: &mut Self| &mut this.video_loading,
+            cx,
+        );
         let tabs = [
             (Tab::UpNext, "Up next"),
             (Tab::Lyrics, "Lyrics"),
