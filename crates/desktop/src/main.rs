@@ -53,7 +53,27 @@ fn window_options(cx: &App) -> WindowOptions {
     options
 }
 
+/// glibc gives each thread that allocates under contention an arena of its
+/// own and rarely hands freed memory in them back. Animated cover frames are
+/// allocated on whichever runtime thread decoded them and freed on the main
+/// thread, so with the default cap (eight per core) each of those arenas keeps
+/// its own few frames and RSS creeps up for as long as a cover plays. Two
+/// arenas hold it flat.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn cap_malloc_arenas() {
+    const M_ARENA_MAX: std::ffi::c_int = -8;
+    unsafe extern "C" {
+        fn mallopt(param: std::ffi::c_int, value: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    // Safety: called first thing in `main`, before any other thread exists.
+    unsafe {
+        mallopt(M_ARENA_MAX, 2);
+    }
+}
+
 fn main() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    cap_malloc_arenas();
     trace::init();
     let single_instance::Launch::First(activations) = single_instance::claim() else {
         return;
