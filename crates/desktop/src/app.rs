@@ -287,7 +287,10 @@ impl AppRoot {
         this.navigate(Route::Browse(BrowseTarget::Home), false, cx);
         match std::env::var("FORMALMUSIC_TOUR").as_deref() {
             Ok("1") => tour(window, cx),
-            Ok("lyrics") => lyrics_tour(window, cx),
+            Ok("lyrics") => player_tour(Some(Tab::Lyrics), true, window, cx),
+            Ok("cover") => player_tour(Some(Tab::UpNext), true, window, cx),
+            Ok("bar") => player_tour(None, true, window, cx),
+            Ok("expanded") => player_tour(Some(Tab::UpNext), false, window, cx),
             _ => {}
         }
         #[cfg(feature = "screenshot")]
@@ -893,17 +896,22 @@ fn tour(window: &mut Window, cx: &mut Context<AppRoot>) {
     .detach();
 }
 
-/// `FORMALMUSIC_TOUR=lyrics` (with the demo): the expanded player on its
-/// Lyrics tab, eight seconds paused, then playing, so the frame cost and CPU
-/// of the lyrics pane can be read the same way as the main tour's.
-fn lyrics_tour(window: &mut Window, cx: &mut Context<AppRoot>) {
+/// `FORMALMUSIC_TOUR=lyrics`, `cover` or `bar` (with the demo): the expanded
+/// player on its Lyrics or Up next tab, or the bar alone, eight seconds
+/// paused, then playing, so the frame cost and CPU of each can be read the
+/// same way as the main tour's. `expanded` opens Up next and leaves playback
+/// alone, for a daemon that already plays a music video.
+fn player_tour(tab: Option<Tab>, play: bool, window: &mut Window, cx: &mut Context<AppRoot>) {
     cx.spawn_in(window, async move |this, cx| {
         let executor = cx.background_executor().clone();
         executor.timer(std::time::Duration::from_secs(2)).await;
         let _ = this.update(cx, |this, cx| {
-            crate::trace::log("tour: lyrics");
-            this.set_expanded(Some(Tab::Lyrics), cx);
+            crate::trace::log("tour: player");
+            this.set_expanded(tab, cx);
         });
+        if !play {
+            return;
+        }
         executor.timer(std::time::Duration::from_secs(8)).await;
         let _ = this.update(cx, |this, _| {
             crate::trace::log("tour: play");
