@@ -1056,32 +1056,104 @@ fn suggestions(query: &str) -> Vec<Suggestion> {
     out
 }
 
+/// Backing vocals, one after every fourth line.
+const ECHOES: [&str; 4] = [
+    "(light it up)",
+    "(oh, oh)",
+    "(keep moving now)",
+    "(we were younger)",
+];
+
+/// Whether the demo sings `video_id` as a duet, every other couplet from the
+/// second voice on the other side of the lane.
+pub fn duet(video_id: &str) -> bool {
+    video_id.bytes().last().is_some_and(|byte| byte % 2 == 0)
+}
+
+/// Word synced the way Apple Music's are: syllable chunks on the longer
+/// words, a backing vocal after every fourth line and an instrumental break
+/// in place of every ninth.
 fn lyrics(video_id: &str, duration_ms: u64) -> Lyrics {
     let offset = video_id.len() % LYRICS.len();
+    let duet = duet(video_id);
     let mut lines = Vec::new();
     let mut at = 8_000;
     let mut n = 0;
-    while at + 4_000 < duration_ms {
-        let text = if n % 9 == 8 {
-            String::new()
-        } else {
-            LYRICS[(offset + n) % LYRICS.len()].to_owned()
-        };
+    while at + 6_000 < duration_ms {
+        if n % 9 == 8 {
+            at += 7_000;
+            n += 1;
+            continue;
+        }
+        let text = LYRICS[(offset + n) % LYRICS.len()];
+        let length = 3_600 + (n as u64 % 3) * 600;
+        let opposite = duet && (n / 2) % 2 == 1;
+        let agent = duet.then(|| if opposite { "v2" } else { "v1" }.to_owned());
         lines.push(LyricLine {
             start_ms: at,
-            end_ms: Some(at + 4_200),
-            text,
-            ..LyricLine::default()
+            end_ms: Some(at + length),
+            text: text.to_owned(),
+            words: timed_words(text, at, length - 400),
+            background: false,
+            agent: agent.clone(),
+            opposite_turn: opposite,
         });
-        at += 4_200 + (n as u64 % 3) * 600;
+        if n % 4 == 3 {
+            let echo = ECHOES[(n / 4) % ECHOES.len()];
+            let start = at + length / 2;
+            let span = length / 2 + 900;
+            lines.push(LyricLine {
+                start_ms: start,
+                end_ms: Some(start + span),
+                text: echo.to_owned(),
+                words: timed_words(echo, start, span - 200),
+                background: true,
+                agent,
+                opposite_turn: opposite,
+            });
+        }
+        at += length + 400;
         n += 1;
     }
     Lyrics {
-        source: Some("Source: LyricFind".into()),
+        source: Some("Apple Music".into()),
         lines,
         synced: true,
-        word_synced: false,
+        word_synced: true,
     }
+}
+
+/// `text` spread over `span_ms` by character count, words over six
+/// characters split in two syllables.
+fn timed_words(text: &str, start_ms: u64, span_ms: u64) -> Vec<LyricWord> {
+    let chunks: Vec<(&str, bool)> = text
+        .split_whitespace()
+        .flat_map(|word| {
+            let chars = word.chars().count();
+            if chars > 6 {
+                let (split, _) = word.char_indices().nth(chars / 2).unwrap_or((0, ' '));
+                vec![(&word[..split], true), (&word[split..], false)]
+            } else {
+                vec![(word, false)]
+            }
+        })
+        .collect();
+    let total: usize = chunks.iter().map(|(chunk, _)| chunk.chars().count()).sum();
+    let mut before = 0;
+    chunks
+        .into_iter()
+        .map(|(chunk, joins_next)| {
+            let chars = chunk.chars().count();
+            let at = start_ms + span_ms * before as u64 / total.max(1) as u64;
+            before += chars;
+            LyricWord {
+                start_ms: at,
+                end_ms: start_ms + span_ms * before as u64 / total.max(1) as u64,
+                text: chunk.to_owned(),
+                joins_next,
+            }
+        })
+        .collect()
 }
 
 fn related() -> Page {

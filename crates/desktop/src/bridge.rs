@@ -103,12 +103,8 @@ impl Bridge {
                 match event {
                     Ok(event) => cx.update(|cx| {
                         Bridge::dispatch(cx, &event);
-                        match event {
-                            StoreEvent::NowPlaying => crate::clock::Clock::sync(cx),
-                            StoreEvent::Position | StoreEvent::Lyrics(_) => {
-                                crate::clock::Clock::update_line(cx)
-                            }
-                            _ => {}
+                        if event == StoreEvent::NowPlaying {
+                            crate::clock::Clock::sync(cx);
                         }
                     }),
                     // A lagged receiver missed events; the safe answer is

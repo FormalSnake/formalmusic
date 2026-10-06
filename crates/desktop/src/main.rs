@@ -9,6 +9,7 @@ mod fonts;
 mod header;
 mod icons;
 mod live_theme;
+mod lyrics;
 mod menus;
 mod motion;
 mod new_playlist;

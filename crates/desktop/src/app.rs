@@ -251,8 +251,10 @@ impl AppRoot {
             root_focus,
         };
         this.navigate(Route::Browse(BrowseTarget::Home), false, cx);
-        if std::env::var("FORMALMUSIC_TOUR").as_deref() == Ok("1") {
-            tour(window, cx);
+        match std::env::var("FORMALMUSIC_TOUR").as_deref() {
+            Ok("1") => tour(window, cx),
+            Ok("lyrics") => lyrics_tour(window, cx),
+            _ => {}
         }
         #[cfg(feature = "screenshot")]
         if let Ok(out) = std::env::var("FORMALMUSIC_SCREENSHOT") {
@@ -827,6 +829,26 @@ fn tour(window: &mut Window, cx: &mut Context<AppRoot>) {
     .detach();
 }
 
+/// `FORMALMUSIC_TOUR=lyrics` (with the demo): the expanded player on its
+/// Lyrics tab, eight seconds paused, then playing, so the frame cost and CPU
+/// of the lyrics pane can be read the same way as the main tour's.
+fn lyrics_tour(window: &mut Window, cx: &mut Context<AppRoot>) {
+    cx.spawn_in(window, async move |this, cx| {
+        let executor = cx.background_executor().clone();
+        executor.timer(std::time::Duration::from_secs(2)).await;
+        let _ = this.update(cx, |this, cx| {
+            crate::trace::log("tour: lyrics");
+            this.set_expanded(Some(Tab::Lyrics), cx);
+        });
+        executor.timer(std::time::Duration::from_secs(8)).await;
+        let _ = this.update(cx, |this, _| {
+            crate::trace::log("tour: play");
+            this.store.toggle();
+        });
+    })
+    .detach();
+}
+
 /// `scripts/screenshot.sh`: opens the scene `FORMALMUSIC_SCREENSHOT_SCENE`
 /// names, gives the artwork a moment to decode, renders the frame offscreen
 /// (animations jumped to their end), writes a PNG and quits.
@@ -881,8 +903,22 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                 cx,
             ),
             "queue" => this.set_expanded(Some(Tab::UpNext), cx),
-            "lyrics" => {
-                this.store.seek(41_000);
+            // Paused mid-word with a backing vocal lit, the wipe and the
+            // depth ramp drawn as they play rather than jumped to an end.
+            "lyrics" | "lyrics-duet" => {
+                cx.set_reduce_motion(false);
+                let duet = scene == "lyrics-duet";
+                let queue = this.store.state().queue.clone();
+                if let Some(index) = queue
+                    .tracks
+                    .iter()
+                    .position(|track| formalmusic_core::demo::duet(&track.video_id) == duet)
+                    && queue.current != Some(index)
+                {
+                    this.store.jump_to(index);
+                    this.store.toggle();
+                }
+                this.store.seek(24_100);
                 this.set_expanded(Some(Tab::Lyrics), cx)
             }
             "related" => this.set_expanded(Some(Tab::Related), cx),

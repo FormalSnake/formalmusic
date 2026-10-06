@@ -1,6 +1,6 @@
 //! The expanded player: the cover large on the left over a wash of its own
 //! colours, and Up next, Lyrics and Related on the right. The queue reorders
-//! by dragging; lyrics follow the song and seek on click.
+//! by dragging; the lyrics pane lives in `lyrics.rs`.
 
 use std::rc::Rc;
 
@@ -15,6 +15,7 @@ use crate::art;
 use crate::bridge::{Bridge, Topic};
 use crate::cover_video::CoverVideo;
 use crate::icons::{Icon, IconName};
+use crate::lyrics::LyricsView;
 use crate::primitives::IconButton;
 use crate::shelves::{self, Env};
 use crate::theme::{Palette, Theme, radius, spacing, tabular, type_scale, with_alpha};
@@ -34,8 +35,8 @@ const COVER_FPS: f64 = 24.;
 
 pub struct NowPlaying {
     store: MusicStore,
-    tab: Tab,
     cover: Entity<CoverVideo>,
+    tab: Tab,
     queue: Entity<QueueView>,
     lyrics: Entity<LyricsView>,
     related_scroll: ScrollHandle,
@@ -71,6 +72,9 @@ impl NowPlaying {
     }
 
     pub fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        if tab == Tab::Lyrics && self.tab != Tab::Lyrics {
+            self.lyrics.update(cx, |lyrics, cx| lyrics.resume(cx));
+        }
         self.tab = tab;
         self.load_tab(cx);
         cx.notify();
@@ -193,7 +197,7 @@ impl NowPlaying {
     }
 }
 
-fn placeholder(text: &'static str, palette: Palette) -> AnyElement {
+pub(crate) fn placeholder(text: &'static str, palette: Palette) -> AnyElement {
     div()
         .size_full()
         .flex()
@@ -625,124 +629,5 @@ impl Render for QueueView {
             .children(caption)
             .child(list)
             .into_any_element()
-    }
-}
-
-pub struct LyricsView {
-    store: MusicStore,
-    list: ListState,
-    video_id: Option<String>,
-    shown_line: Option<usize>,
-    lines: usize,
-}
-
-impl LyricsView {
-    fn new(store: MusicStore, cx: &mut Context<Self>) -> Self {
-        let weak = cx.entity().downgrade();
-        Bridge::watch(cx, Topic::LyricLine, weak.clone().into());
-        Bridge::watch(cx, Topic::NowPlaying, weak.into());
-        Self {
-            store,
-            list: ListState::new(0, ListAlignment::Top, px(400.)),
-            video_id: None,
-            shown_line: None,
-            lines: 0,
-        }
-    }
-}
-
-impl Render for LyricsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::trace::render("LyricsView");
-        let palette = Theme::get(cx);
-        let (video_id, entry, line) = {
-            let state = self.store.state();
-            let video_id = state.current_video().map(str::to_owned);
-            let entry = video_id
-                .as_ref()
-                .and_then(|id| state.lyrics.get(id).cloned());
-            (video_id, entry, crate::clock::Clock::line(cx))
-        };
-        if video_id != self.video_id {
-            let weak = cx.entity().downgrade();
-            if let Some(old) = self.video_id.take() {
-                Bridge::unwatch(cx, &Topic::Lyrics(old), &weak.clone().into());
-            }
-            if let Some(id) = &video_id {
-                Bridge::watch(cx, Topic::Lyrics(id.clone()), weak.into());
-                self.store.load_lyrics(id.clone());
-            }
-            self.video_id = video_id;
-            self.shown_line = None;
-            self.lines = 0;
-        }
-        let Some(lyrics) = entry.as_ref().and_then(|entry| entry.lyrics.clone()) else {
-            let missing = entry.as_ref().is_some_and(|entry| entry.missing);
-            return placeholder(
-                if missing {
-                    "No lyrics for this song."
-                } else {
-                    "Loading lyrics\u{2026}"
-                },
-                palette,
-            );
-        };
-        if self.lines != lyrics.lines.len() {
-            self.lines = lyrics.lines.len();
-            self.list.reset(self.lines + 1);
-        }
-        if line != self.shown_line {
-            self.shown_line = line;
-            // The current line sits a couple of lines down, so what was just
-            // sung stays readable above it.
-            if let Some(line) = line {
-                self.list.scroll_to(ListOffset {
-                    item_ix: line.saturating_sub(2),
-                    offset_in_item: px(0.),
-                });
-            }
-        }
-        let store = self.store.clone();
-        let synced = lyrics.synced;
-        let source = lyrics.source.clone();
-        list(self.list.clone(), move |index, _window, _cx| {
-            let Some(row) = lyrics.lines.get(index) else {
-                return div()
-                    .px(spacing::X3)
-                    .py(spacing::X6)
-                    .text_size(type_scale::CAPTION.font_size)
-                    .text_color(palette.tertiary)
-                    .child(source.clone().unwrap_or_default())
-                    .into_any_element();
-            };
-            let state = match line {
-                Some(current) if current == index => palette.text,
-                Some(current) if index < current => with_alpha(palette.text, 0x80),
-                _ => palette.secondary,
-            };
-            let (store, start) = (store.clone(), row.start_ms);
-            div()
-                .id(("lyric", index))
-                .px(spacing::X3)
-                .py(spacing::X2)
-                .rounded(radius::ROW)
-                .when(synced, |el| {
-                    el.cursor_pointer()
-                        .hover(move |style| style.bg(palette.hover_wash))
-                        .on_click(move |_, _, _| store.seek(start))
-                })
-                .text_size(type_scale::LYRIC.font_size)
-                .line_height(type_scale::LYRIC.line_height)
-                .font_weight(FontWeight::BOLD)
-                .text_color(if synced { state } else { palette.text })
-                .child(if row.text.is_empty() {
-                    "\u{266a}".to_owned()
-                } else {
-                    row.text.clone()
-                })
-                .into_any_element()
-        })
-        .size_full()
-        .into_any_element()
     }
 }
