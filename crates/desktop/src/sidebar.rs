@@ -10,7 +10,8 @@ use crate::bridge::{Bridge, Topic};
 use crate::icons::{Icon, IconName};
 use crate::primitives::IconButton;
 use crate::theme::{
-    Palette, TITLEBAR_HEIGHT, Theme, radius, spacing, traffic_light_clearance, type_scale,
+    Palette, SIDEBAR_COLLAPSED, TITLEBAR_HEIGHT, Theme, radius, spacing, traffic_light_clearance,
+    type_scale,
 };
 
 const NAV: [(&str, IconName, BrowseTarget); 3] = [
@@ -197,6 +198,10 @@ impl Render for Sidebar {
             },
         )
         .on_click(cx.listener(|this, _, _, cx| this.toggle(cx)));
+        // Collapsed narrower than the traffic lights, the toggle would sit
+        // under them, so it leads the nav column instead.
+        let toggle_in_nav = collapsed && traffic_light_clearance() > SIDEBAR_COLLAPSED;
+        let mut toggle = Some(toggle);
 
         let mut column = div()
             .id("sidebar")
@@ -221,7 +226,9 @@ impl Render for Sidebar {
                             .child(brand(palette))
                     })
                     // Above the drag strip, so the button takes its own clicks.
-                    .child(div().occlude().child(toggle)),
+                    .when(!toggle_in_nav, |el| {
+                        el.child(div().occlude().children(toggle.take()))
+                    }),
             )
             .child(
                 div()
@@ -229,6 +236,9 @@ impl Render for Sidebar {
                     .flex_col()
                     .gap(spacing::X1)
                     .pt(spacing::X2)
+                    .when(toggle_in_nav, |el| {
+                        el.child(div().flex().justify_center().children(toggle.take()))
+                    })
                     .children(NAV.iter().enumerate().map(|(n, (label, icon, target))| {
                         nav_item(
                             ["nav-home", "nav-explore", "nav-library"][n],
