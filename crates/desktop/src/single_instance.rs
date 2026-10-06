@@ -27,9 +27,11 @@ pub fn claim() -> Launch {
         return Launch::First(None);
     }
 
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|value| !value.is_empty())
-        .map(|dir| PathBuf::from(dir).join("formalmusic"))
+    // Beside the daemon socket, so a window talking to another daemon
+    // (FORMALMUSIC_SOCKET, as test runs set it) never takes over this one.
+    let dir = formalmusic_api::socket_path()
+        .parent()
+        .map(PathBuf::from)
         .unwrap_or_else(formalmusic_core::paths::cache_dir);
     if std::fs::create_dir_all(&dir).is_err() {
         return Launch::First(None);
