@@ -341,9 +341,9 @@ async fn read_events(subscribed: Subscribed, events: mpsc::UnboundedSender<Trans
     }
 }
 
-/// Starts `formalmusicd` from beside this binary, else from `PATH`, in its
-/// own process group so it outlives the window and ignores the terminal's
-/// signals.
+/// Starts `formalmusicd`: through its systemd user unit when there is one,
+/// else from beside this binary or `PATH`, in its own process group so it
+/// outlives the window and ignores the terminal's signals.
 fn maybe_spawn(shared: &Shared) {
     {
         let mut last = shared.last_spawn.lock();
@@ -351,6 +351,9 @@ fn maybe_spawn(shared: &Shared) {
             return;
         }
         *last = Some(Instant::now());
+    }
+    if start_unit() {
+        return;
     }
     let beside = std::env::current_exe()
         .ok()
@@ -377,6 +380,38 @@ fn maybe_spawn(shared: &Shared) {
         }
         Err(error) => tracing::warn!("could not start {}: {error}", program.display()),
     }
+}
+
+/// A daemon started by the window lives in the window's scope and takes the
+/// lock, so the unit then fails to start (a home-manager switch restarting it
+/// while the window was open left it in `start-limit-hit`). Asking systemd
+/// first keeps the unit the owner; `reset-failed` clears an earlier failure.
+#[cfg(target_os = "linux")]
+fn start_unit() -> bool {
+    let systemctl = |args: &[&str]| {
+        std::process::Command::new("systemctl")
+            .arg("--user")
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    if !systemctl(&["cat", "formalmusicd.service"]) {
+        return false;
+    }
+    let _ = systemctl(&["reset-failed", "formalmusicd.service"]);
+    let started = systemctl(&["start", "formalmusicd.service"]);
+    if started {
+        tracing::info!("started formalmusicd.service");
+    }
+    started
+}
+
+#[cfg(not(target_os = "linux"))]
+fn start_unit() -> bool {
+    false
 }
 
 #[cfg(test)]
