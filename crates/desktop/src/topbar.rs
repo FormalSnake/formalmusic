@@ -369,7 +369,7 @@ impl TopBar {
                     div()
                         .id("suggestions")
                         .occlude()
-                        .mt(px(44.))
+                        .mt(spacing::X1)
                         .w(SEARCH_WIDTH)
                         .p(spacing::X1)
                         .flex()
