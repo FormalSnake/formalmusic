@@ -907,11 +907,16 @@ pub fn page(target: &BrowseTarget) -> Option<Page> {
                 title: "History".into(),
             }),
             chips: Vec::new(),
-            sections: vec![section(
-                "Today",
-                SectionLayout::List,
-                tracks_from(5, 20).into_iter().map(Item::Track).collect(),
-            )],
+            sections: [("Today", 5, 6), ("Yesterday", 9, 4), ("This week", 13, 10)]
+                .into_iter()
+                .map(|(day, seed, count)| {
+                    let rows = tracks_from(seed, count).into_iter().map(|mut track| {
+                        track.feedback_token = Some(format!("history-{day}-{}", track.video_id));
+                        Item::Track(track)
+                    });
+                    section(day, SectionLayout::List, rows.collect())
+                })
+                .collect(),
             continuation: None,
         }),
         BrowseTarget::Album(id) => album_page(id),

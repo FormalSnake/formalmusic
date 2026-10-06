@@ -1598,15 +1598,8 @@ impl MusicStore {
             return;
         };
         let video_id = track.video_id.clone();
-        let target = BrowseTarget::Playlist(playlist_id.clone());
-        self.inner.update(|state, events| {
-            let Some(page) = state.pages.get_mut(&target).and_then(|entry| entry.page.as_mut()) else { return };
-            let mut next = (**page).clone();
-            for section in &mut next.sections {
-                section.items.retain(|item| !matches!(item, Item::Track(row) if row.set_video_id.as_deref() == Some(set_video_id.as_str())));
-            }
-            *page = Arc::new(next);
-            events.push(StoreEvent::Page(target.clone()));
+        self.drop_rows(BrowseTarget::Playlist(playlist_id.clone()), |row| {
+            row.set_video_id.as_deref() == Some(set_video_id.as_str())
         });
         self.send(Command::EditPlaylist {
             playlist_id,
@@ -1614,6 +1607,41 @@ impl MusicStore {
                 video_id,
                 set_video_id,
             }],
+        });
+    }
+
+    /// Takes the row off the History page at once, as `remove_from_playlist` does.
+    pub fn remove_from_history(&self, track: &Track) {
+        let Some(feedback_token) = track.feedback_token.clone() else {
+            return;
+        };
+        self.drop_rows(BrowseTarget::History, |row| {
+            row.feedback_token.as_deref() == Some(feedback_token.as_str())
+        });
+        self.send(Command::RemoveFromHistory { feedback_token });
+    }
+
+    /// Removes the track rows `matches` picks from the cached page, and the
+    /// shelves that leaves empty.
+    fn drop_rows(&self, target: BrowseTarget, matches: impl Fn(&Track) -> bool) {
+        self.inner.update(|state, events| {
+            let Some(page) = state
+                .pages
+                .get_mut(&target)
+                .and_then(|entry| entry.page.as_mut())
+            else {
+                return;
+            };
+            let mut next = (**page).clone();
+            for section in &mut next.sections {
+                section
+                    .items
+                    .retain(|item| !matches!(item, Item::Track(row) if matches(row)));
+            }
+            next.sections
+                .retain(|section| !section.items.is_empty() || section.continuation.is_some());
+            *page = Arc::new(next);
+            events.push(StoreEvent::Page(target.clone()));
         });
     }
 
@@ -2411,6 +2439,27 @@ mod tests {
         assert!(store.state().page(&mix).is_none());
         store.open(mix.clone());
         assert!(loading(&store));
+    }
+
+    #[tokio::test]
+    async fn a_history_row_goes_at_once_and_an_emptied_day_with_it() {
+        let store = store();
+        store.start().await;
+        store.open(BrowseTarget::History);
+        settle(&store, |state| state.page(&BrowseTarget::History).is_some()).await;
+        let page = store.state().page(&BrowseTarget::History).cloned().unwrap();
+        let yesterday = &page.sections[1];
+        for item in &yesterday.items {
+            let Item::Track(track) = item else { panic!() };
+            store.remove_from_history(track);
+        }
+        let after = store.state().page(&BrowseTarget::History).cloned().unwrap();
+        let titles: Vec<_> = after.sections.iter().map(|s| s.title.clone()).collect();
+        assert_eq!(titles, [Some("Today".into()), Some("This week".into())]);
+        assert_eq!(
+            section_tracks(&after.sections).count(),
+            section_tracks(&page.sections).count() - yesterday.items.len()
+        );
     }
 
     #[tokio::test]

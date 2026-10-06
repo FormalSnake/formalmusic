@@ -266,6 +266,16 @@ pub fn track_menu(track: &Track, context: &MenuContext, store: &MusicStore) -> V
             .danger(),
         );
     }
+    if track.feedback_token.is_some() {
+        let (store, track) = (store.clone(), track.clone());
+        items.push(
+            MenuItem::item("Remove from history", move |_, _| {
+                store.remove_from_history(&track)
+            })
+            .icon(IconName::Remove)
+            .danger(),
+        );
+    }
     items.push(MenuItem::Separator);
     {
         let (store, track) = (store.clone(), track.clone());

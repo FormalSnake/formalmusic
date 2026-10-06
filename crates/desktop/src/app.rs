@@ -984,6 +984,7 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                 cx,
             ),
             "explore" => this.navigate(Route::Browse(BrowseTarget::Explore), false, cx),
+            "history" => this.navigate(Route::Browse(BrowseTarget::History), false, cx),
             "library" => this.navigate(
                 Route::Browse(BrowseTarget::Library(LibraryTab::Playlists)),
                 false,

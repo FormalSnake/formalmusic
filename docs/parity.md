@@ -31,7 +31,7 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Library, Songs, Albums, Artists, Subscriptions, Podcasts tabs | `/library/*` | yes | `desktop/src/page.rs` |
 | Library, Uploads tab | `/library/uploads` | partial | Lists uploads (`innertube/src/parse/mod.rs`); no upload or delete |
 | Liked music | `LM` playlist | yes | `desktop/src/sidebar.rs` playlist list, `desktop/src/page.rs` |
-| History | `/history` | partial | `BrowseTarget::History` parses, but no sidebar, menu or button opens it |
+| History | `/history` | yes | Sidebar entry in `desktop/src/sidebar.rs`; day shelves (Today, Yesterday, ...) come from the response, `innertube/src/parse/shelves.rs` |
 | Episodes for Later | `SE` playlist in sidebar | no | No entry; the playlist would browse generically |
 | Search results | `/search?q=` | yes | `desktop/src/topbar.rs`, `desktop/src/page.rs` |
 | Search suggestions and history | dropdown | yes | `desktop/src/topbar.rs` (`Suggestion::Query`, `from_history`) |
@@ -87,7 +87,7 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Like, dislike from menu | track menu | yes | `desktop/src/actions.rs` |
 | Go to album, go to artist | track menu | yes | `desktop/src/actions.rs` |
 | Remove from queue | queue menu | yes | `desktop/src/now_playing.rs` |
-| Remove from history | history menu | partial | `Command::RemoveFromHistory` works; History has no screen |
+| Remove from history | history menu | yes | `desktop/src/actions.rs` (`track_menu`), `core/src/store.rs` (`remove_from_history`) |
 | Share, copy link | menu | no | No clipboard or share code outside sign-in |
 | Report, not interested | menu | no | |
 | Shuffle play an album or playlist | menu | yes | `desktop/src/actions.rs` |
@@ -153,7 +153,6 @@ Read from the web app's `?` overlay. FormalMusic's single keys are in
 
 Most used first.
 
-2. History screen: a sidebar or Library entry for `BrowseTarget::History`, with remove from history on rows. ~3 hours.
 3. Match the web's playback keys: `j`/`k` as next/previous, `;` for play, `+`/`_` for like and dislike. Needs a decision on the current `j`/`k` seek habit. ~1 hour.
 4. Playlist editing UI: rename, description, privacy, delete, reorder (all in `PlaylistEdit`). ~a day.
 5. Save a single song to the library (`edit_song_library_status`): new command, parser state, menu row. ~half a day.

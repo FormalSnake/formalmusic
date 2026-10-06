@@ -1,4 +1,4 @@
-//! Home, Explore and Library, then "New playlist" and your playlists. It
+//! Home, Explore, Library and History, then "New playlist" and your playlists. It
 //! collapses to a column of icons, the way the web app's guide does.
 
 use formalmusic_api::{BrowseTarget, Item, LibraryTab};
@@ -14,7 +14,7 @@ use crate::theme::{
     type_scale,
 };
 
-const NAV: [(&str, IconName, BrowseTarget); 3] = [
+const NAV: [(&str, IconName, BrowseTarget); 4] = [
     ("Home", IconName::Home, BrowseTarget::Home),
     ("Explore", IconName::Explore, BrowseTarget::Explore),
     (
@@ -22,6 +22,7 @@ const NAV: [(&str, IconName, BrowseTarget); 3] = [
         IconName::Library,
         BrowseTarget::Library(LibraryTab::Playlists),
     ),
+    ("History", IconName::History, BrowseTarget::History),
 ];
 
 pub struct Sidebar {
@@ -241,7 +242,7 @@ impl Render for Sidebar {
                     })
                     .children(NAV.iter().enumerate().map(|(n, (label, icon, target))| {
                         nav_item(
-                            ["nav-home", "nav-explore", "nav-library"][n],
+                            ["nav-home", "nav-explore", "nav-library", "nav-history"][n],
                             label,
                             *icon,
                             self.is_current(target),
