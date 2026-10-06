@@ -34,6 +34,13 @@ const RETRY_BASE: Duration = Duration::from_millis(250);
 /// audio at any YouTube bitrate.
 const READY_BYTES: u64 = 64 * 1024;
 
+fn query_param<'a>(url: &'a str, key: &str) -> Option<&'a str> {
+    url.split_once('?')?
+        .1
+        .split('&')
+        .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
+}
+
 pub(crate) fn http_client() -> Result<Client, PlayerError> {
     Client::builder()
         // Audio is already compressed, and a gzip body breaks byte ranges.
@@ -297,7 +304,17 @@ impl Fetcher {
             StatusCode::OK => Err(FetchError::fatal(PlayerError::Unsupported(
                 "server ignored the range header".into(),
             ))),
-            StatusCode::FORBIDDEN | StatusCode::GONE => {
+            status @ (StatusCode::FORBIDDEN | StatusCode::GONE) => {
+                let peer = response.remote_addr();
+                tracing::warn!(
+                    %status,
+                    client = query_param(&self.url, "c").unwrap_or("?"),
+                    ip = query_param(&self.url, "ip").unwrap_or("?"),
+                    ?peer,
+                    range = format!("{start}-{}", end - 1),
+                    user_agent = ?self.headers.get(reqwest::header::USER_AGENT),
+                    "googlevideo refused the stream"
+                );
                 Err(FetchError::fatal(PlayerError::Expired))
             }
             status if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS => {
