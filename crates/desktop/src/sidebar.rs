@@ -277,54 +277,58 @@ impl Render for Sidebar {
                                 .collect::<Vec<_>>()
                                 .join(" \u{2022} ")
                         });
-                        div()
-                            .id(("playlist", index))
-                            .h(px(52.))
-                            .mx(spacing::X2)
-                            .px(spacing::X3)
-                            .flex()
-                            .flex_col()
-                            .justify_center()
-                            .rounded(radius::ROW)
-                            .cursor_pointer()
-                            .when(current, |el| el.bg(palette.press_wash))
-                            .when(!current, |el| {
-                                el.hover(move |style| style.bg(palette.hover_wash))
-                            })
-                            .on_hover({
-                                let target = BrowseTarget::Playlist(playlist_id.clone());
-                                move |hovered, _, cx| {
-                                    crate::actions::prefetch_on_hover(
-                                        Some(target.clone()),
-                                        *hovered,
+                        // uniform_list sizes items to their content, so the row
+                        // only spans the sidebar when it is told to.
+                        div().w_full().px(spacing::X2).child(
+                            div()
+                                .id(("playlist", index))
+                                .w_full()
+                                .h(px(52.))
+                                .px(spacing::X3)
+                                .flex()
+                                .flex_col()
+                                .justify_center()
+                                .rounded(radius::ROW)
+                                .cursor_pointer()
+                                .when(current, |el| el.bg(palette.press_wash))
+                                .when(!current, |el| {
+                                    el.hover(move |style| style.bg(palette.hover_wash))
+                                })
+                                .on_hover({
+                                    let target = BrowseTarget::Playlist(playlist_id.clone());
+                                    move |hovered, _, cx| {
+                                        crate::actions::prefetch_on_hover(
+                                            Some(target.clone()),
+                                            *hovered,
+                                            cx,
+                                        )
+                                    }
+                                })
+                                .on_click(move |_, _, cx| {
+                                    crate::app::navigate(
+                                        Route::Browse(BrowseTarget::Playlist(playlist_id.clone())),
                                         cx,
                                     )
-                                }
-                            })
-                            .on_click(move |_, _, cx| {
-                                crate::app::navigate(
-                                    Route::Browse(BrowseTarget::Playlist(playlist_id.clone())),
-                                    cx,
-                                )
-                            })
-                            .child(
-                                div()
-                                    .text_size(type_scale::BODY.font_size)
-                                    .line_height(type_scale::BODY.line_height)
-                                    .text_color(palette.text)
-                                    .truncate()
-                                    .child(title),
-                            )
-                            .when_some(subtitle.filter(|text| !text.is_empty()), |el, text| {
-                                el.child(
+                                })
+                                .child(
                                     div()
-                                        .text_size(type_scale::CAPTION.font_size)
-                                        .line_height(type_scale::CAPTION.line_height)
-                                        .text_color(palette.secondary)
+                                        .text_size(type_scale::BODY.font_size)
+                                        .line_height(type_scale::BODY.line_height)
+                                        .text_color(palette.text)
                                         .truncate()
-                                        .child(text),
+                                        .child(title),
                                 )
-                            })
+                                .when_some(subtitle.filter(|text| !text.is_empty()), |el, text| {
+                                    el.child(
+                                        div()
+                                            .text_size(type_scale::CAPTION.font_size)
+                                            .line_height(type_scale::CAPTION.line_height)
+                                            .text_color(palette.secondary)
+                                            .truncate()
+                                            .child(text),
+                                    )
+                                }),
+                        )
                     })
                     .collect::<Vec<_>>()
             })
