@@ -909,6 +909,13 @@ impl Playback {
                 if status == Status::Playing && !st.want_play {
                     return;
                 }
+                // The clock only runs while playing: fold what it ran into the
+                // position on the way out, and restart it on the way in, or
+                // MPRIS readers (which extrapolate) run ahead by the pause.
+                if st.status == Status::Playing {
+                    st.position_ms = live_position(&st);
+                }
+                st.position_at = Some(Instant::now());
                 st.status = status;
                 self.emit_player(&st);
                 self.emit_position(&mut st, 0);
@@ -946,6 +953,8 @@ impl Playback {
                 if st.want_play {
                     st.status = Status::Playing;
                 }
+                // Audio starts now, not when the load was asked for.
+                st.position_at = Some(Instant::now());
                 self.emit_player(&st);
                 self.emit_position(&mut st, 0);
                 self.track_started(&mut st);
