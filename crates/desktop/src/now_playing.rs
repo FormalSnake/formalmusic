@@ -425,12 +425,15 @@ impl Render for NowPlaying {
                     .child(label)
             }));
         let body = match self.tab {
-            // Cached: the animated cover repaints this view up to 24 times
-            // a second, and the queue has nothing new to draw for it.
+            // Cached: the animated cover or the video repaints this view up
+            // to 24 times a second, with nothing new for the queue or the
+            // lyrics to draw. The lyrics ask for their own frames.
             Tab::UpNext => AnyView::from(self.queue.clone())
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
-            Tab::Lyrics => self.lyrics.clone().into_any_element(),
+            Tab::Lyrics => AnyView::from(self.lyrics.clone())
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
             Tab::Related => self.related(palette, cx),
         };
         let backdrop = track
