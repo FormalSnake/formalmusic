@@ -274,14 +274,15 @@ impl PlayerBar {
         }
     }
 
-    pub fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+    /// `cover` is the expanded player's, when it is open: the bar shows
+    /// that one's frames instead of decoding its own.
+    pub fn set_expanded(&mut self, cover: Option<Entity<CoverVideo>>, cx: &mut Context<Self>) {
+        let expanded = cover.is_some();
+        if let Some(own) = &self.cover {
+            own.update(cx, |own, cx| own.set_source(cover, cx));
+        }
         if self.expanded != expanded {
             self.expanded = expanded;
-            // The expanded player plays the same cover large; the bar's
-            // copy holds still meanwhile.
-            if let Some(cover) = &self.cover {
-                cover.update(cx, |cover, cx| cover.set_paused(expanded, cx));
-            }
             cx.notify();
         }
     }

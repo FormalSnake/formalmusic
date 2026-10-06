@@ -89,6 +89,11 @@ impl NowPlaying {
         this
     }
 
+    /// The large cover, which the player bar mirrors while this is open.
+    pub fn cover(&self) -> &Entity<CoverVideo> {
+        &self.cover
+    }
+
     pub fn tab(&self) -> Tab {
         self.tab
     }

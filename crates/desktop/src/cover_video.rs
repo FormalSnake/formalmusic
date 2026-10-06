@@ -6,7 +6,9 @@
 //!
 //! Decoding runs only while it is seen: the track plays, the window is
 //! visible, and the owner has not paused it. Otherwise ffmpeg is stopped and
-//! the last frame stays on screen.
+//! the last frame stays on screen. A cover given a `source` (the player bar
+//! while the expanded player is open) paints that one's frames, scaled down
+//! on the GPU, and only decodes itself while the source does not.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -48,6 +50,8 @@ pub struct CoverVideo {
     /// Bumped when a cover's first frame lands, so its fade plays once.
     shown: u64,
     visibility: Option<Subscription>,
+    source: Option<WeakEntity<CoverVideo>>,
+    source_frames: Option<Subscription>,
 }
 
 impl CoverVideo {
@@ -84,7 +88,45 @@ impl CoverVideo {
             position: 0.,
             shown: 0,
             visibility: None,
+            source: None,
+            source_frames: None,
         }
+    }
+
+    /// Shows `source`'s frames while it decodes. Without one, this cover
+    /// picks up decoding where the source was.
+    pub fn set_source(&mut self, source: Option<Entity<CoverVideo>>, cx: &mut Context<Self>) {
+        if let Some(old) = self.source.take().and_then(|old| old.upgrade()) {
+            let old = old.read(cx);
+            if old.key == self.key {
+                self.position = old.position();
+            }
+        }
+        self.source_frames = source.as_ref().map(|source| {
+            cx.observe(source, |this: &mut Self, _, cx| {
+                this.sync(cx);
+                cx.notify();
+            })
+        });
+        self.source = source.map(|source| source.downgrade());
+        self.sync(cx);
+        cx.notify();
+    }
+
+    fn decoding(&self) -> bool {
+        self.run.is_some()
+    }
+
+    /// Seconds into the file where decoding is or would pick up.
+    fn position(&self) -> f64 {
+        self.run.as_ref().map_or(self.position, Loop::position)
+    }
+
+    /// The source's frame, while the source decodes this same cover.
+    fn mirrored(&self, cx: &App) -> Option<Option<Arc<RenderImage>>> {
+        let source = self.source.as_ref()?.upgrade()?;
+        let source = source.read(cx);
+        (source.decoding() && source.key == self.key).then(|| source.frame.clone())
     }
 
     /// The box changed (the expanded player follows the window size). A
@@ -147,11 +189,20 @@ impl CoverVideo {
                 self.probe(path, cx);
             }
         }
-        let wanted = self.visible && !self.paused && playing && self.info.is_some();
+        let mirrored = self.mirrored(cx).is_some();
+        if mirrored {
+            self.release(cx);
+        }
+        let wanted = self.visible && !self.paused && !mirrored && playing && self.info.is_some();
+        let was = self.run.is_some();
         if wanted && self.run.is_none() {
             self.start(cx);
         } else if !wanted && self.run.is_some() {
             self.stop();
+        }
+        // A cover mirroring this one takes over or hands back decoding.
+        if was != self.run.is_some() {
+            cx.notify();
         }
     }
 
@@ -256,7 +307,8 @@ impl Render for CoverVideo {
                 .unwrap_or_default()
         };
         let (size, radius) = (self.size, self.radius);
-        let picture = self.frame.clone().map(|frame| {
+        let frame = self.mirrored(cx).unwrap_or_else(|| self.frame.clone());
+        let picture = frame.map(|frame| {
             let corners = Corners::all(radius);
             motion::toward(
                 div().absolute().inset_0().child(

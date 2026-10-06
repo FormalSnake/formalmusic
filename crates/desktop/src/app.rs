@@ -389,9 +389,12 @@ impl AppRoot {
             }
             None => self.expanded = None,
         }
-        let open = self.expanded.is_some();
+        let cover = self
+            .expanded
+            .as_ref()
+            .map(|view| view.read(cx).cover().clone());
         self.player_bar
-            .update(cx, |bar, cx| bar.set_expanded(open, cx));
+            .update(cx, |bar, cx| bar.set_expanded(cover, cx));
         cx.notify();
     }
 
