@@ -175,6 +175,7 @@ pub struct Button {
     id: ElementId,
     label: SharedString,
     kind: ButtonKind,
+    pill: bool,
     disabled: bool,
     on_click: Option<std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 }
@@ -185,6 +186,7 @@ impl Button {
             id: id.into(),
             label: label.into(),
             kind: ButtonKind::Secondary,
+            pill: false,
             disabled: false,
             on_click: None,
         }
@@ -192,6 +194,12 @@ impl Button {
 
     pub fn kind(mut self, kind: ButtonKind) -> Self {
         self.kind = kind;
+        self
+    }
+
+    /// The height and shape of `header::pill_button`, for a row it shares with them.
+    pub fn pill(mut self) -> Self {
+        self.pill = true;
         self
     }
 
@@ -223,9 +231,13 @@ impl RenderOnce for Button {
         div()
             .id(self.id)
             .debug_selector(|| selector)
-            .h(px(30.))
-            .px(spacing::X3)
-            .rounded(radius::CONTROL)
+            .map(|el| {
+                if self.pill {
+                    el.h(px(36.)).px(spacing::X4).rounded(radius::PILL)
+                } else {
+                    el.h(px(30.)).px(spacing::X3).rounded(radius::CONTROL)
+                }
+            })
             .bg(fill)
             .flex()
             .items_center()

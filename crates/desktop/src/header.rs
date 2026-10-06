@@ -245,6 +245,7 @@ pub fn header(
                         };
                         el.child(
                             Button::new("artist-subscribe", label)
+                                .pill()
                                 .kind(if subscribed {
                                     ButtonKind::Secondary
                                 } else {
