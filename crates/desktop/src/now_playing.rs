@@ -28,10 +28,10 @@ pub enum Tab {
 }
 
 const PANEL_WIDTH: Pixels = px(440.);
-const QUEUE_ROW: Pixels = px(56.);
 /// The animated cover is drawn up to 640 px wide; past 24 fps the eye gains
 /// nothing and the CPU pays for every frame.
 const COVER_FPS: f64 = 24.;
+const QUEUE_ROW: Pixels = px(56.);
 
 pub struct NowPlaying {
     store: MusicStore,
@@ -48,15 +48,15 @@ impl NowPlaying {
     pub fn new(store: MusicStore, tab: Tab, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
         Bridge::watch(cx, Topic::NowPlaying, weak.clone().into());
-        Bridge::watch(cx, Topic::Player, weak.into());
         let cover =
             cx.new(|cx| CoverVideo::new(store.clone(), px(400.), radius::CARD, COVER_FPS, cx));
+        Bridge::watch(cx, Topic::Player, weak.into());
         let queue = cx.new(|cx| QueueView::new(store.clone(), cx));
         let lyrics = cx.new(|cx| LyricsView::new(store.clone(), cx));
         let mut this = Self {
             store,
-            tab,
             cover,
+            tab,
             queue,
             lyrics,
             related_scroll: ScrollHandle::new(),

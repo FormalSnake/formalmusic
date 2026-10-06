@@ -1321,6 +1321,7 @@ fn session(signed_in: bool, page_id: Option<String>) -> SessionInfo {
 }
 
 struct DemoShared {
+
     state: Mutex<DemoState>,
     events: Mutex<Option<mpsc::UnboundedSender<TransportEvent>>>,
     wake: Notify,
