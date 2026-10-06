@@ -255,8 +255,9 @@ const RESEEK_AFTER: f64 = 1.5;
 /// stream. Grows by however late the first frame was when it was not enough.
 const FIRST_LEAD: f64 = 1.0;
 const MAX_LEAD: f64 = 8.;
-/// Past this a player box shows nothing more, and decoding costs double.
-const MAX_SYNCED_FPS: f64 = 30.;
+/// Each frame costs a decode, a copy to the GPU and a redraw of the window;
+/// past film rate a player box gains little for that.
+const MAX_SYNCED_FPS: f64 = 24.;
 /// Starts in a row that produced no frame before giving up.
 const MAX_FAILED_STARTS: u32 = 3;
 
@@ -566,9 +567,9 @@ mod tests {
             count += 1;
         }
         let elapsed = began.elapsed().as_secs_f64();
-        // The first second goes to the start lead, then about 30 a second
-        // until the clock stops.
+        // The first second goes to the start lead, then frames come at the
+        // 24 fps cap until the clock stops.
         assert!((stop_at..stop_at + 0.5).contains(&elapsed), "{elapsed:.2}s");
-        assert!((40..=66).contains(&count), "{count} frames");
+        assert!((36..=54).contains(&count), "{count} frames");
     }
 }
