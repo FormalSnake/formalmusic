@@ -963,6 +963,7 @@ fn signed_in_home() {
     assert!(!home.chips.is_empty() && home.continuation.is_some());
     assert_sections(&home.sections);
     assert!(home.sections.iter().all(|s| s.title.is_some()));
+    assert!(all_tracks(&home).iter().all(|t| t.feedback_token.is_none()));
 }
 
 #[test]

@@ -219,13 +219,16 @@ pub(crate) fn rating(like_status: &str) -> Option<Rating> {
     }
 }
 
-/// The "Remove from history" token in a History row's menu.
+/// The "Remove from history" token in a History row's menu. Rows elsewhere
+/// carry feedback tokens too, for "Not interested" and the like.
 pub(crate) fn feedback_token(menu: &Value) -> Option<String> {
     menu["menuRenderer"]["items"]
         .as_array()?
         .iter()
+        .map(|item| &item["menuServiceItemRenderer"])
+        .filter(|item| item["icon"]["iconType"] == "REMOVE_FROM_HISTORY")
         .find_map(|item| {
-            item["menuServiceItemRenderer"]["serviceEndpoint"]["feedbackEndpoint"]["feedbackToken"]
+            item["serviceEndpoint"]["feedbackEndpoint"]["feedbackToken"]
                 .as_str()
                 .map(str::to_owned)
         })
