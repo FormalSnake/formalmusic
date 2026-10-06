@@ -7,6 +7,8 @@ version.workspace = true
 [features]
 frame-overlay = ["gpui-kit/profiler"]
 screenshot = ["gpui-kit/test-support"]
+# Demo pages from innertube's recorded responses; dev builds only.
+demo-fixtures = ["formalmusic-core/demo-fixtures"]
 
 [dependencies]
 formalmusic-api.workspace = true
