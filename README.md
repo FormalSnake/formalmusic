@@ -163,15 +163,19 @@ echo '{"id":1,"cmd":"toggle"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/formalmus
 
 | | |
 |---|---|
-| `Space` / `K` | play or pause |
-| `J` / `L`, `Shift+←` / `Shift+→` | seek back / forward |
-| `N` / `P` | next / previous |
-| `+` / `-` | volume |
+| `Space` / `;` | play or pause |
+| `J` / `K`, `Shift+N` / `Shift+P`, `N` / `P` | next / previous |
+| `H` / `L`, `Shift+←` / `Shift+→` | back / forward 10 seconds |
+| `Shift+H` / `Shift+L` | back / forward 1 second |
+| `=` / `-`, `Shift+↑` / `Shift+↓` | volume |
 | `M` | mute |
+| `+` / `_` | like / dislike |
 | `S` / `R` | shuffle / repeat |
+| `G H`, `G E`, `G L`, `G ,` | Home, Explore, Library, Settings |
 | `/`, `Ctrl+F` | search |
 | `Q` | queue |
 | `F` | expanded player |
+| `?` | all shortcuts |
 | `Alt+←` / `Alt+→` | back / forward |
 | `Ctrl+,` | settings |
 

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use formalmusic_api::BrowseTarget;
 use formalmusic_core::art::ArtCache;
 use formalmusic_core::cache::StateCache;
-use formalmusic_core::store::{SEEK_STEP_MS, VOLUME_STEP};
+use formalmusic_core::store::VOLUME_STEP;
 use formalmusic_core::{ConnectionStatus, MusicStore, Route, StoreOptions, TransportKind, paths};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -169,6 +169,10 @@ pub struct AppRoot {
     new_playlist: Option<Entity<NewPlaylist>>,
     settings: Option<Entity<Settings>>,
     menu: Option<Entity<ContextMenu>>,
+    /// The `?` overlay is open.
+    shortcuts: bool,
+    /// When a `g` was pressed, while it waits for the rest of its chord.
+    chord_at: Option<std::time::Instant>,
     toast: Option<(u64, SharedString)>,
     toast_shown: Presence<SharedString>,
     root_focus: FocusHandle,
@@ -285,6 +289,8 @@ impl AppRoot {
             new_playlist: None,
             settings: None,
             menu: None,
+            shortcuts: false,
+            chord_at: None,
             toast: None,
             toast_shown: Presence::new(DURATION_FAST),
             root_focus,
@@ -442,6 +448,7 @@ impl AppRoot {
     /// search field.
     fn on_dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
         if self.menu.take().is_some()
+            || std::mem::take(&mut self.shortcuts)
             || self.new_playlist.take().is_some()
             || self.settings.take().is_some()
         {
@@ -502,76 +509,82 @@ impl AppRoot {
         if modifiers.control || modifiers.platform || modifiers.alt {
             return;
         }
-        let key = keystroke
+        let typed = keystroke
             .key_char
             .as_deref()
             .unwrap_or(keystroke.key.as_str());
+        let after_g = self
+            .chord_at
+            .take()
+            .is_some_and(|at| at.elapsed() < crate::shortcuts::CHORD_TIMEOUT);
+        let Some(shortcut) =
+            crate::shortcuts::resolve(after_g, keystroke.key.as_str(), typed, modifiers.shift)
+        else {
+            return;
+        };
+        cx.stop_propagation();
+        use crate::shortcuts::Shortcut;
         let store = self.store.clone();
-        let volume = store.state().player.volume;
-        let handled = match (keystroke.key.as_str(), key, modifiers.shift) {
-            ("space", _, _) | (_, "k", false) => {
-                store.toggle();
-                true
+        let rate = |liked: formalmusic_api::Rating| {
+            let state = store.state();
+            let Some(track) = state.player.track.clone() else {
+                return;
+            };
+            let rating = if state.rating(&track) == liked {
+                formalmusic_api::Rating::Indifferent
+            } else {
+                liked
+            };
+            drop(state);
+            store.rate(&track, rating);
+        };
+        match shortcut {
+            Shortcut::Toggle => store.toggle(),
+            Shortcut::Next => store.next(),
+            Shortcut::Previous => store.previous(),
+            Shortcut::Seek(delta_ms) => store.seek_by(delta_ms),
+            Shortcut::Volume(steps) => {
+                let volume = store.state().player.volume;
+                store.set_volume(volume + steps * VOLUME_STEP);
             }
-            ("left", _, true) | (_, "j", false) | (_, "h", false) => {
-                store.seek_by(-(SEEK_STEP_MS as i64));
-                true
-            }
-            ("right", _, true) | (_, "l", false) => {
-                store.seek_by(SEEK_STEP_MS as i64);
-                true
-            }
-            (_, "n" | "N", _) => {
-                store.next();
-                true
-            }
-            (_, "p" | "P", _) => {
-                store.previous();
-                true
-            }
-            (_, "+" | "=", _) | ("up", _, true) => {
-                store.set_volume(volume + VOLUME_STEP);
-                true
-            }
-            (_, "-", _) | ("down", _, true) => {
-                store.set_volume(volume - VOLUME_STEP);
-                true
-            }
-            (_, "m", false) => {
+            Shortcut::Mute => {
                 let muted = store.state().player.muted;
                 store.set_muted(!muted);
-                true
             }
-            (_, "r", false) => {
-                store.cycle_repeat();
-                true
-            }
-            (_, "s", false) => {
-                store.toggle_shuffle();
-                true
-            }
-            (_, "/", _) => {
+            Shortcut::Shuffle => store.toggle_shuffle(),
+            Shortcut::Repeat => store.cycle_repeat(),
+            Shortcut::Like => rate(formalmusic_api::Rating::Like),
+            Shortcut::Dislike => rate(formalmusic_api::Rating::Dislike),
+            Shortcut::Search => {
                 let handle = self.topbar.read(cx).search_handle(cx);
                 window.focus(&handle, cx);
-                true
             }
-            (_, "q", false) => {
+            Shortcut::Queue => {
                 let open = self
                     .expanded
                     .as_ref()
                     .is_none_or(|view| view.read(cx).tab() != Tab::UpNext);
                 self.set_expanded(open.then_some(Tab::UpNext), cx);
-                true
             }
-            (_, "f", false) => {
+            Shortcut::Expand => {
                 let open = self.expanded.is_none();
                 self.set_expanded(open.then_some(Tab::UpNext), cx);
-                true
             }
-            _ => false,
-        };
-        if handled {
-            cx.stop_propagation();
+            Shortcut::Help => {
+                self.shortcuts = !self.shortcuts;
+                cx.notify();
+            }
+            Shortcut::Chord => self.chord_at = Some(std::time::Instant::now()),
+            Shortcut::Home => self.navigate(Route::Browse(BrowseTarget::Home), false, cx),
+            Shortcut::Explore => self.navigate(Route::Browse(BrowseTarget::Explore), false, cx),
+            Shortcut::Library => self.navigate(
+                Route::Browse(BrowseTarget::Library(
+                    formalmusic_api::LibraryTab::Playlists,
+                )),
+                false,
+                cx,
+            ),
+            Shortcut::Settings => self.open_settings(window, cx),
         }
     }
 
@@ -837,6 +850,16 @@ impl Render for AppRoot {
             .when_some(self.sign_in.clone(), |el, screen| {
                 el.child(div().absolute().inset_0().child(screen))
             })
+            .when(self.shortcuts, |el| {
+                let weak = cx.entity().downgrade();
+                el.child(crate::shortcuts::overlay(palette, move |window, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.shortcuts = false;
+                        this.root_focus.focus(window, cx);
+                        cx.notify();
+                    });
+                }))
+            })
             .when_some(self.menu.clone(), |el, menu| el.child(menu))
             .when(caption, |el| {
                 el.child(
@@ -1019,6 +1042,7 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
             }
             "related" => this.set_expanded(Some(Tab::Related), cx),
             "signin" => {}
+            "shortcuts" => this.shortcuts = true,
             "settings" => this.open_settings(window, cx),
             "collapsed" => this.sidebar.update(cx, |sidebar, cx| sidebar.toggle(cx)),
             "menu" => {

@@ -110,28 +110,29 @@ rows come from ytmusicapi and the help page, not from the live menus.
 
 ## Keyboard shortcuts
 
-Read from the web app's `?` overlay. FormalMusic's single keys are in
-`desktop/src/app.rs` (`on_key_down`), the chords in the same file's `bind_keys`.
+Read from the web app's `?` overlay. FormalMusic's single keys and `g` chords
+are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
+(`init`).
 
 | Feature | Web app | FormalMusic | Notes |
 |---|---|---|---|
-| Play or pause | `Space`, `;` | partial | `Space` and `k` work; `;` does not |
-| Next song | `j`, `Shift+n` | partial | `n` and `N` work; `j` seeks back instead |
-| Previous song | `k`, `Shift+p` | partial | `p` and `P` work; `k` toggles play instead |
-| Forward 10s | `l`, `Shift+Right` | yes | `desktop/src/app.rs` |
-| Back 10s | `h`, `Shift+Left` | yes | `desktop/src/app.rs` (`j` too, which the web uses for next) |
-| Forward or back 1s | `Shift+l`, `Shift+h` | no | |
-| Shuffle | `s` | yes | `desktop/src/app.rs` |
-| Toggle repeat | `r` | yes | `desktop/src/app.rs` |
-| Volume up, down | `=`, `-` | yes | `desktop/src/app.rs` (`+` and `Shift+Up` too) |
-| Mute | `m` | yes | `desktop/src/app.rs` |
-| Toggle queue or expanded player | `q`, `Esc` | yes | `desktop/src/app.rs` |
+| Play or pause | `Space`, `;` | yes | `desktop/src/shortcuts.rs` |
+| Next song | `j`, `Shift+n` | yes | `desktop/src/shortcuts.rs`; `n` too |
+| Previous song | `k`, `Shift+p` | yes | `desktop/src/shortcuts.rs`; `p` too |
+| Forward 10s | `l`, `Shift+Right` | yes | `desktop/src/shortcuts.rs` |
+| Back 10s | `h`, `Shift+Left` | yes | `desktop/src/shortcuts.rs` |
+| Forward or back 1s | `Shift+l`, `Shift+h` | yes | `desktop/src/shortcuts.rs` |
+| Shuffle | `s` | yes | `desktop/src/shortcuts.rs` |
+| Toggle repeat | `r` | yes | `desktop/src/shortcuts.rs` |
+| Volume up, down | `=`, `-` | yes | `desktop/src/shortcuts.rs` (`Shift+Up` and `Shift+Down` too) |
+| Mute | `m` | yes | `desktop/src/shortcuts.rs` |
+| Toggle queue or expanded player | `q`, `Esc` | yes | `desktop/src/shortcuts.rs`, `desktop/src/app.rs` |
 | Full screen | `f` | partial | `f` opens the in-window expanded player, not OS full screen |
-| Like current song | `+` | no | `+` raises volume here |
-| Dislike current song | `_` | no | |
-| Go to Home, Explore, Library, Settings | `gh`, `ge`, `gl`, `g,` | partial | Only `Ctrl+,` for Settings; no `g` chords |
-| Search | `/` | yes | `desktop/src/app.rs`, also `Ctrl+F` |
-| Shortcuts overlay | `?` | no | Shortcuts are listed in `README.md` only |
+| Like current song | `+` | yes | `desktop/src/shortcuts.rs` |
+| Dislike current song | `_` | yes | `desktop/src/shortcuts.rs` |
+| Go to Home, Explore, Library, Settings | `gh`, `ge`, `gl`, `g,` | yes | `desktop/src/shortcuts.rs` (`resolve`), `Ctrl+,` for Settings too |
+| Search | `/` | yes | `desktop/src/shortcuts.rs`, also `Ctrl+F` |
+| Shortcuts overlay | `?` | yes | `desktop/src/shortcuts.rs` (`overlay`) |
 | Back and forward in history | `Alt+Left`, `Alt+Right` | yes | `desktop/src/app.rs` |
 
 ## Settings
@@ -153,11 +154,9 @@ Read from the web app's `?` overlay. FormalMusic's single keys are in
 
 Most used first.
 
-3. Match the web's playback keys: `j`/`k` as next/previous, `;` for play, `+`/`_` for like and dislike. Needs a decision on the current `j`/`k` seek habit. ~1 hour.
 4. Playlist editing UI: rename, description, privacy, delete, reorder (all in `PlaylistEdit`). ~a day.
 5. Save a single song to the library (`edit_song_library_status`): new command, parser state, menu row. ~half a day.
 6. Quality, autoplay, explicit filter and pause history in the Settings dialog, writing `daemon.json`. ~half a day.
-7. `g` chords and a `?` shortcuts overlay. ~3 hours.
 8. Search filters Episodes and Profiles, plus library search. ~2 hours.
 9. Clear queue and save queue as playlist. ~2 hours.
 10. Episodes for Later entry, podcast resume position, episode save. ~a day.

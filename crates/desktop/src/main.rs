@@ -20,6 +20,7 @@ mod player_bar;
 mod primitives;
 mod settings;
 mod shelves;
+mod shortcuts;
 mod sidebar;
 mod signin;
 mod single_instance;
