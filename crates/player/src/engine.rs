@@ -25,6 +25,10 @@ const NEEDS_NEXT_MS: u64 = 15_000;
 const MIN_WRITE_FRAMES: usize = 256;
 const MAX_WRITE_FRAMES: usize = 4096;
 const NORMALISATION_RAMP_SECONDS: f32 = 0.05;
+/// Overlap when the playing track hands over to another recording of the
+/// same music. Masters differ in level and phase; a short equal-power fade
+/// hides the seam without the two being heard as an echo.
+const SWITCH_FADE_MS: u64 = 120;
 
 pub(crate) enum Command {
     Load {
@@ -36,6 +40,13 @@ pub(crate) enum Command {
     PreloadNext {
         id: TrackId,
         source: StreamSource,
+        loudness_db: Option<f32>,
+    },
+    Switch {
+        id: TrackId,
+        source: StreamSource,
+        start_ms: u64,
+        offset_ms: i64,
         loudness_db: Option<f32>,
     },
     Opened {
@@ -102,6 +113,82 @@ impl Active {
     }
 }
 
+/// Another recording of the current track, waiting to take over at the
+/// sample where `offset` lines the two up.
+struct Incoming {
+    /// The track it replaces; dropped if that one ends first.
+    of: TrackId,
+    track: Active,
+    /// Frames to add to a position in the current track to get the same
+    /// moment in this one.
+    offset: i64,
+}
+
+enum Step {
+    Idle,
+    /// Push no more than this many frames of the current track.
+    Ahead(usize),
+    Mixed,
+    Starved,
+}
+
+enum Align {
+    /// Both tracks sit at the same moment and the incoming one has the
+    /// whole fade decoded.
+    Ready,
+    /// The incoming track starts this many frames ahead of the current one.
+    Ahead(usize),
+    /// Still downloading or decoding up to the current moment.
+    NotYet,
+}
+
+/// Brings `incoming` to the moment `current` is about to push: drops what
+/// lies before it, or seeks back when the current track moved behind it.
+fn align(
+    current: &Active,
+    incoming: &mut Incoming,
+    fade: usize,
+    channels: usize,
+    rate: u32,
+) -> Result<Align, PlayerError> {
+    let target = current.cursor as i64 + incoming.offset;
+    let track = &mut incoming.track;
+    if track.cursor as i64 > target + rate as i64 {
+        let ms = target.max(0) as u64 * 1000 / rate as u64;
+        let reached = track.decoder.seek(ms)?;
+        track.fifo.clear();
+        track.eof = false;
+        track.cursor = reached * rate as u64 / 1000;
+    }
+    if track.cursor as i64 > target {
+        return Ok(Align::Ahead((track.cursor as i64 - target) as usize));
+    }
+    loop {
+        let behind = (target - track.cursor as i64) as usize;
+        let frames = track.frames(channels);
+        if behind > 0 && frames > 0 {
+            track.consume(behind.min(frames), channels);
+            continue;
+        }
+        if behind == 0 && frames >= fade {
+            return Ok(Align::Ready);
+        }
+        if track.eof {
+            return Err(PlayerError::Decode(
+                "the other version ends before this point".into(),
+            ));
+        }
+        let goal = if behind > 0 {
+            behind.min(MAX_WRITE_FRAMES)
+        } else {
+            fade
+        };
+        if !track.fill(goal, channels)? {
+            return Ok(Align::NotYet);
+        }
+    }
+}
+
 /// Where a track begins inside the current ring, so callback progress maps
 /// back to a track and a position.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -110,6 +197,9 @@ pub(crate) struct Segment {
     pub duration_ms: Option<u64>,
     pub ring_frame: u64,
     pub track_frame: u64,
+    /// Takes over from the segment before it in a switch, so that one does
+    /// not end.
+    pub continues: bool,
 }
 
 /// The segment playing after `played` ring frames, and its position in ms.
@@ -132,6 +222,10 @@ pub(crate) struct Engine {
     next: Option<Active>,
     pending: Option<Pending>,
     pending_next: Option<Pending>,
+    pending_switch: Option<(Pending, i64, TrackId)>,
+    incoming: Option<Incoming>,
+    /// Ring frame where a running switch fade ends.
+    switch_end: Option<u64>,
     segments: VecDeque<Segment>,
     pushed: u64,
     /// Ring frame where the running crossfade ends.
@@ -168,6 +262,9 @@ impl Engine {
             next: None,
             pending: None,
             pending_next: None,
+            pending_switch: None,
+            incoming: None,
+            switch_end: None,
             segments: VecDeque::new(),
             pushed: 0,
             fade_end: None,
@@ -276,6 +373,29 @@ impl Engine {
                         loudness_db,
                     });
                     self.open(id, source, 0);
+                }
+            }
+            Command::Switch {
+                id,
+                source,
+                start_ms,
+                offset_ms,
+                loudness_db,
+            } => {
+                self.incoming = None;
+                self.switch_end = None;
+                let of = self.current.as_ref().map(|c| c.id);
+                if let Some(of) = of.or(self.pending.as_ref().map(|p| p.id)) {
+                    self.pending_switch = Some((
+                        Pending {
+                            id,
+                            start_ms,
+                            loudness_db,
+                        },
+                        offset_ms,
+                        of,
+                    ));
+                    self.open(id, source, start_ms);
                 }
             }
             Command::Opened { id, result } => self.opened(id, result),
@@ -402,13 +522,23 @@ impl Engine {
     fn opened(&mut self, id: TrackId, result: Result<Box<TrackDecoder>, PlayerError>) {
         let is_current = self.pending.as_ref().is_some_and(|p| p.id == id);
         let is_next = self.pending_next.as_ref().is_some_and(|p| p.id == id);
-        if !is_current && !is_next {
+        let is_switch = self
+            .pending_switch
+            .as_ref()
+            .is_some_and(|(p, _, _)| p.id == id);
+        if !is_current && !is_next && !is_switch {
             return;
         }
+        let mut switch = (0, id);
         let pending = if is_current {
             self.pending.take()
-        } else {
+        } else if is_next {
             self.pending_next.take()
+        } else {
+            self.pending_switch.take().map(|(pending, offset, of)| {
+                switch = (offset, of);
+                pending
+            })
         };
         let Some(pending) = pending else { return };
         let decoder = match result {
@@ -440,6 +570,14 @@ impl Engine {
         };
         if is_next {
             self.next = Some(active);
+            return;
+        }
+        if is_switch {
+            self.incoming = Some(Incoming {
+                of: switch.1,
+                track: active,
+                offset: switch.0 * rate as i64 / 1000,
+            });
             return;
         }
         let track_frame = active.cursor;
@@ -479,9 +617,11 @@ impl Engine {
             duration_ms,
             ring_frame: 0,
             track_frame,
+            continues: false,
         });
         self.pushed = 0;
         self.fade_end = None;
+        self.switch_end = None;
         self.draining = false;
         self.starved = false;
     }
@@ -491,6 +631,9 @@ impl Engine {
         self.next = None;
         self.pending = None;
         self.pending_next = None;
+        self.pending_switch = None;
+        self.incoming = None;
+        self.switch_end = None;
         self.segments.clear();
         self.fade_end = None;
         self.draining = false;
@@ -515,10 +658,35 @@ impl Engine {
             pending.start_ms = ms;
             return;
         }
+        // A switch fading across starts over from the new place.
+        self.switch_end = None;
+        if let Some((pending, offset, _)) = &mut self.pending_switch {
+            pending.start_ms = (ms as i64 + *offset).max(0) as u64;
+        }
+        if self.current.is_none() {
+            return;
+        }
+        let rate = self.output.as_ref().map_or(48_000, |o| o.rate);
+        if let Some(incoming) = &mut self.incoming {
+            let at = ms as i64 + incoming.offset * 1000 / rate as i64;
+            let track = &mut incoming.track;
+            track.fifo.clear();
+            track.eof = false;
+            match track.decoder.seek(at.max(0) as u64) {
+                Ok(reached) => track.cursor = reached * rate as u64 / 1000,
+                Err(error) => {
+                    let id = track.id;
+                    self.incoming = None;
+                    self.emit(PlayerEvent::Error {
+                        track: Some(id),
+                        error,
+                    });
+                }
+            }
+        }
         let Some(current) = &mut self.current else {
             return;
         };
-        let rate = self.output.as_ref().map_or(48_000, |o| o.rate);
         let result = current.decoder.seek(ms);
         current.fifo.clear();
         current.eof = false;
@@ -601,6 +769,21 @@ impl Engine {
                 }
             }
 
+            let mut limit = usize::MAX;
+            if self.fade_end.is_none() {
+                match self.switch(want, channels, rate) {
+                    Step::Mixed => continue,
+                    Step::Starved => {
+                        self.starved = true;
+                        return;
+                    }
+                    Step::Ahead(frames) => limit = frames,
+                    Step::Idle => {}
+                }
+            }
+            let (Some(producer), Some(current)) = (&mut self.producer, &mut self.current) else {
+                return;
+            };
             let fading = self.fade_end.is_some()
                 || (xfade > 0
                     && self.next.is_some()
@@ -647,6 +830,7 @@ impl Engine {
                             duration_ms: next.decoder.duration_ms(),
                             ring_frame: self.pushed,
                             track_frame: next.cursor,
+                            continues: false,
                         });
                         *self.fade_end.insert(self.pushed + self.fade_len)
                     }
@@ -690,6 +874,7 @@ impl Engine {
                             duration_ms: next.decoder.duration_ms(),
                             ring_frame: self.pushed,
                             track_frame: next.cursor,
+                            continues: false,
                         });
                     }
                     self.current = Some(next);
@@ -704,7 +889,7 @@ impl Engine {
                 return;
             }
 
-            let n = want.min(current.frames(channels));
+            let n = want.min(current.frames(channels)).min(limit);
             let block = &mut current.fifo[..n * channels];
             current.gain.apply(block, channels);
             let _ = producer.push_partial_slice(block);
@@ -713,13 +898,100 @@ impl Engine {
         }
     }
 
+    /// Runs a pending switch for one block: lines the incoming version up
+    /// with the current one, then fades across and makes it current.
+    fn switch(&mut self, want: usize, channels: usize, rate: u32) -> Step {
+        let xfade = self.crossfade_frames(rate);
+        let (Some(current), Some(incoming)) = (&mut self.current, &mut self.incoming) else {
+            return Step::Idle;
+        };
+        if incoming.of != current.id {
+            self.incoming = None;
+            self.switch_end = None;
+            return Step::Idle;
+        }
+        let fade = (SWITCH_FADE_MS * rate as u64 / 1000) as usize;
+        let fade_end = match self.switch_end {
+            Some(end) => end,
+            None => {
+                // Too close to the end to bother: the next track takes over.
+                let ending = current.eof
+                    || current
+                        .remaining(rate)
+                        .is_some_and(|r| r <= xfade + fade as u64);
+                if ending {
+                    return Step::Idle;
+                }
+                match align(current, incoming, fade, channels, rate) {
+                    Ok(Align::Ready) => {}
+                    Ok(Align::Ahead(frames)) => return Step::Ahead(frames),
+                    Ok(Align::NotYet) => return Step::Idle,
+                    Err(error) => {
+                        let id = incoming.track.id;
+                        self.incoming = None;
+                        self.emit(PlayerEvent::Error {
+                            track: Some(id),
+                            error,
+                        });
+                        return Step::Idle;
+                    }
+                }
+                self.segments.push_back(Segment {
+                    id: incoming.track.id,
+                    duration_ms: incoming.track.decoder.duration_ms(),
+                    ring_frame: self.pushed,
+                    track_frame: incoming.track.cursor,
+                    continues: true,
+                });
+                *self.switch_end.insert(self.pushed + fade as u64)
+            }
+        };
+        let Some(producer) = &mut self.producer else {
+            return Step::Idle;
+        };
+        let incoming = &mut incoming.track;
+        let n = want
+            .min(current.frames(channels))
+            .min(incoming.frames(channels))
+            .min(fade_end.saturating_sub(self.pushed) as usize);
+        if n == 0 && self.pushed < fade_end {
+            return Step::Starved;
+        }
+        let outgoing = &mut current.fifo[..n * channels];
+        current.gain.apply(outgoing, channels);
+        let block = &mut incoming.fifo[..n * channels];
+        incoming.gain.apply(block, channels);
+        for (i, (out, inc)) in outgoing
+            .chunks_exact_mut(channels)
+            .zip(block.chunks_exact(channels))
+            .enumerate()
+        {
+            let left = fade_end.saturating_sub(self.pushed + i as u64);
+            let (w_out, w_in) = crossfade_weights(1.0 - left as f32 / fade as f32);
+            for (o, x) in out.iter_mut().zip(inc) {
+                *o = *o * w_out + x * w_in;
+            }
+        }
+        let _ = producer.push_partial_slice(outgoing);
+        current.consume(n, channels);
+        incoming.consume(n, channels);
+        self.pushed += n as u64;
+        if self.pushed >= fade_end {
+            self.switch_end = None;
+            self.current = self.incoming.take().map(|incoming| incoming.track);
+        }
+        Step::Mixed
+    }
+
     fn report(&mut self) {
         let Some(output) = &self.output else { return };
         let rate = output.rate;
         let played = output.played();
 
         while self.segments.len() > 1 && self.segments[1].ring_frame <= played {
-            if let Some(ended) = self.segments.pop_front() {
+            if let Some(ended) = self.segments.pop_front()
+                && !self.segments.front().is_some_and(|s| s.continues)
+            {
                 self.emit(PlayerEvent::TrackEnded { track: ended.id });
             }
             if let Some(&Segment {
@@ -836,12 +1108,14 @@ mod tests {
                 duration_ms: None,
                 ring_frame: 0,
                 track_frame: 60 * 48_000,
+                continues: false,
             },
             Segment {
                 id: b,
                 duration_ms: None,
                 ring_frame: 96_000,
                 track_frame: 0,
+                continues: false,
             },
         ]);
         assert_eq!(locate(&segments, 0, 48_000), Some((0, 60_000)));

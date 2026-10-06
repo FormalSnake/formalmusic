@@ -155,6 +155,32 @@ impl Player {
         id
     }
 
+    /// Moves playback over to `source`, another recording of the current
+    /// track whose timeline runs `offset_ms` ahead of it (a music video with
+    /// an intro the album track lacks). The current track plays on while
+    /// `source` opens at `start_ms`, a guess at where the hand-over lands,
+    /// then the two cross over in a short fade at the matching sample.
+    /// `TrackStarted` for the new id comes when that sample is heard, and
+    /// the old id gets no `TrackEnded`. If the old track ends first the
+    /// switch is dropped. A preloaded next track stays preloaded.
+    pub fn switch(
+        &self,
+        source: StreamSource,
+        start_ms: u64,
+        offset_ms: i64,
+        loudness_db: Option<f32>,
+    ) -> TrackId {
+        let id = self.next_id();
+        self.send(Command::Switch {
+            id,
+            source,
+            start_ms,
+            offset_ms,
+            loudness_db,
+        });
+        id
+    }
+
     pub fn play(&self) {
         self.send(Command::Play);
     }
