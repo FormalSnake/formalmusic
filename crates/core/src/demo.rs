@@ -1274,6 +1274,7 @@ impl DemoState {
         self.queue.current = Some(index);
         self.player.duration_ms = track.duration_ms;
         self.player.related_browse_id = Some(format!("MPTRdemo-{}", track.video_id));
+        self.player.playing_id = demo_video_file().is_some().then(|| track.video_id.clone());
         self.player.track = Some(track);
         self.base_ms = 0;
         self.since = None;
@@ -1347,8 +1348,13 @@ impl DemoTransport {
     pub fn new() -> Self {
         let signed_in = std::env::var("FORMALMUSIC_DEMO_SIGNED_OUT").ok().as_deref() != Some("1");
         let album = &catalog().albums[2];
-        let tracks = fixtures::tracks(&BrowseTarget::Album("recorded".into()))
+        let mut tracks = fixtures::tracks(&BrowseTarget::Album("recorded".into()))
             .unwrap_or_else(|| album.tracks.clone());
+        if demo_video_file().is_some() {
+            for track in &mut tracks {
+                track.kind = TrackKind::Video;
+            }
+        }
         let mut state = DemoState {
             player: PlayerState {
                 volume: 0.8,
@@ -1423,6 +1429,45 @@ async fn demo_cover() -> Option<String> {
         })
         .await
         .clone()
+}
+
+/// `FORMALMUSIC_DEMO_VIDEO=<file>`: the demo queue plays as music videos
+/// that all show this local file, so the video path can be measured without
+/// googlevideo in the way. It should run at least as long as a demo track.
+fn demo_video_file() -> Option<String> {
+    std::env::var("FORMALMUSIC_DEMO_VIDEO")
+        .ok()
+        .filter(|path| !path.is_empty())
+}
+
+async fn demo_video() -> Option<VideoStream> {
+    let path = demo_video_file()?;
+    let output = tokio::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0"])
+        .args(["-show_entries", "stream=width,height,avg_frame_rate"])
+        .args(["-of", "csv=p=0"])
+        .arg(&path)
+        .output()
+        .await
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut fields = text.trim().split(',');
+    let width = fields.next()?.parse().ok()?;
+    let height = fields.next()?.parse().ok()?;
+    let (numer, denom) = fields.next()?.split_once('/')?;
+    let fps = numer.parse::<f64>().ok()? / denom.parse::<f64>().ok()?;
+    Some(VideoStream {
+        url: path,
+        headers: Vec::new(),
+        width,
+        height,
+        fps: if fps.is_finite() && fps > 0. {
+            fps
+        } else {
+            30.
+        },
+        codec: "avc1".into(),
+    })
 }
 
 async fn tick(shared: Arc<DemoShared>) {
@@ -1679,11 +1724,14 @@ impl Transport for DemoTransport {
             }
             Command::Related { .. } => Reply::Page(fixtures::related().unwrap_or_else(related)),
             Command::AnimatedCover { .. } => Reply::AnimatedCover(demo_cover().await),
-            Command::VideoStream { video_id, .. } => {
-                return Err(
-                    ApiError::NotFound(format!("{video_id} has no video in the demo")).into(),
-                );
-            }
+            Command::VideoStream { video_id, .. } => match demo_video().await {
+                Some(stream) => Reply::VideoStream(stream),
+                None => {
+                    return Err(
+                        ApiError::NotFound(format!("{video_id} has no video in the demo")).into(),
+                    );
+                }
+            },
             Command::Rate { .. } => {
                 shared.emit(Event::LibraryChanged {
                     scope: LibraryScope::Likes,
