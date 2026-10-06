@@ -207,9 +207,11 @@ pub fn carousel(section: &Section, scroll: &ScrollHandle, env: &Env, id: usize) 
         .id(("carousel", id))
         // A flex parent and a non-shrinking row: as a block child the row is
         // squeezed to the viewport, and the scroll area then has nothing to
-        // scroll. Same for the track grid and the chips.
+        // scroll. Same for the track grid and the chips. The wheel's vertical
+        // motion stays with the page; only sideways motion moves the shelf.
         .flex()
         .overflow_x_scroll()
+        .restrict_scroll_to_axis()
         .track_scroll(scroll)
         .w_full()
         .child(
@@ -478,6 +480,7 @@ pub fn track_grid(section: &Section, scroll: &ScrollHandle, env: &Env, id: usize
         .id(("track-grid", id))
         .flex()
         .overflow_x_scroll()
+        .restrict_scroll_to_axis()
         .track_scroll(scroll)
         .w_full()
         .child(
@@ -975,6 +978,7 @@ pub fn chips(
         .id("chips")
         .flex()
         .overflow_x_scroll()
+        .restrict_scroll_to_axis()
         .w_full()
         .child(
             div()
