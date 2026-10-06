@@ -441,3 +441,79 @@ async fn record_counterpart_fixture() {
     )
     .unwrap();
 }
+
+fn renderer_keys(value: &serde_json::Value, keys: &mut std::collections::BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if key.ends_with("Renderer") || key.ends_with("ViewModel") {
+                    keys.insert(key.clone());
+                }
+                renderer_keys(value, keys);
+            }
+        }
+        serde_json::Value::Array(values) => values.iter().for_each(|v| renderer_keys(v, keys)),
+        _ => {}
+    }
+}
+
+/// Home, Search, an album and the player as YouTube answers them today,
+/// against the renderers the recorded fixtures cover. A renderer no fixture
+/// has is one no parser test has seen, so it fails; a fixture renderer that
+/// is gone is printed only, since anonymous Home changes shelves weekly.
+/// The player is checked only in the parts its parser reads; the rest is ads
+/// that change per request.
+#[tokio::test]
+#[ignore = "hits music.youtube.com"]
+async fn live_renderer_keys_match_fixtures() {
+    let dir = format!("{}/fixtures", env!("CARGO_MANIFEST_DIR"));
+    let mut known = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "json") {
+            let json = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            renderer_keys(&json, &mut known);
+        }
+    }
+
+    let client = client();
+    let player = client.player_body("IluRBvnYMoY").await;
+    let pages = [
+        ("home", "browse", json!({ "browseId": "FEmusic_home" })),
+        ("search_all", "search", json!({ "query": "daft punk" })),
+        (
+            "album",
+            "browse",
+            json!({ "browseId": "MPREb_K8qWMWVqXGi" }),
+        ),
+        ("player", "player", player),
+    ];
+    let mut unknown = Vec::new();
+    for (fixture, endpoint, body) in pages {
+        let parsed = |json: serde_json::Value| match endpoint {
+            "player" => json!([
+                json["playabilityStatus"],
+                json["playbackTracking"],
+                json["playerConfig"],
+                json["streamingData"],
+            ]),
+            _ => json,
+        };
+        let live_json = parsed(client.raw(endpoint, body).await.unwrap());
+        let recorded = parsed(
+            serde_json::from_slice(&std::fs::read(format!("{dir}/{fixture}.json")).unwrap())
+                .unwrap(),
+        );
+        let (mut live, mut fixed) = Default::default();
+        renderer_keys(&live_json, &mut live);
+        renderer_keys(&recorded, &mut fixed);
+        let new: Vec<_> = live.difference(&known).cloned().collect();
+        let gone: Vec<_> = fixed.difference(&live).collect();
+        eprintln!("{fixture}: new {new:?}, gone {gone:?}");
+        unknown.extend(new.into_iter().map(|k| format!("{fixture}: {k}")));
+    }
+    assert!(
+        unknown.is_empty(),
+        "renderers no fixture covers: {unknown:?}"
+    );
+}

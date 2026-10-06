@@ -187,6 +187,14 @@ cargo test -p formalmusic-innertube -- --ignored        # live checks against Yo
 nix build .#formalmusic                                 # Linux package
 ```
 
+`maintenance/live-check.sh` runs the live checks against an isolated daemon
+of the checkout: it plays 10 seconds of a fixed track into a null sink,
+fetches Home, Search and an album over the socket, runs the live innertube
+tests and diffs the renderer keys YouTube sends against the fixtures. A
+weekly systemd timer on the maintainer's machine runs Claude Code headless
+with `maintenance/weekly.md` as the prompt: it bumps yt-dlp, nixpkgs and the
+crates, runs the checks, repairs what broke and ships the result as a PR.
+
 `crates/api` is the socket contract, `crates/innertube` the YouTube Music
 client, `crates/player` the audio engine, `crates/extras` lyrics and motion
 artwork, `crates/daemon` ties them together, `crates/core` is the window's
