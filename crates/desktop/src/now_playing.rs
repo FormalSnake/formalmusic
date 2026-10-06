@@ -18,7 +18,10 @@ use crate::icons::{Icon, IconName};
 use crate::lyrics::LyricsView;
 use crate::primitives::IconButton;
 use crate::shelves::{self, Env};
-use crate::theme::{Palette, Theme, radius, spacing, tabular, type_scale, with_alpha};
+use crate::theme::{
+    PAGE_INSET, Palette, TITLEBAR_HEIGHT, Theme, radius, spacing, tabular, traffic_light_clearance,
+    type_scale, with_alpha,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
@@ -156,7 +159,7 @@ impl NowPlaying {
                     | formalmusic_api::SectionLayout::List => div()
                         .flex()
                         .flex_col()
-                        .px(spacing::X2)
+                        .mx(PAGE_INSET - spacing::X2)
                         .children(section.items.iter().enumerate().filter_map(|(row, item)| {
                             let Item::Track(track) = item else {
                                 return None;
@@ -374,8 +377,11 @@ impl Render for NowPlaying {
             .child(
                 div()
                     .absolute()
-                    .top(spacing::X4)
-                    .left(spacing::X4)
+                    .top_0()
+                    .left(traffic_light_clearance().max(spacing::X4))
+                    .h(TITLEBAR_HEIGHT)
+                    .flex()
+                    .items_center()
                     .occlude()
                     .child(
                         IconButton::new(
