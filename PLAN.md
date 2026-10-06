@@ -54,6 +54,23 @@ single app's team.
   `playbackTracking` URLs, so Home recommendations and History stay accurate.
   Without it the account goes stale.
 
+## Speed budget
+
+The bar is Spotifast (Rust and egui, opens in well under a second, 100 to
+250 MB). FormalMusic has to beat it, measured on g815 and on e1504g:
+
+| | g815 | e1504g |
+|---|---|---|
+| Cold start to cached Home painted | < 300 ms | < 700 ms |
+| Click to a cached page | same frame | same frame |
+| RSS after Home, artist, 1000-track playlist, player | < 120 MB | < 150 MB |
+| CPU paused and unfocused | 0% | 0% |
+
+The window paints from `state.json` before the socket connects, pages are
+stale-while-revalidate, cards prefetch on hover, and images decode at display
+size into a byte-bounded LRU. `FORMALMUSIC_TRACE=1` logs startup and
+navigation timings so the weekly run can catch regressions.
+
 ## Workspace
 
 ```
