@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=FormalMusic
+Comment=YouTube Music on Linux
+Exec=formalmusic
+Icon=es.canarycoders.formalmusic
+Terminal=false
+Categories=AudioVideo;Audio;Player;Music;
+Keywords=YouTube;Music;YTM;player;
+StartupWMClass=es.canarycoders.formalmusic
