@@ -135,6 +135,32 @@ fn nav_item(
         })
 }
 
+fn brand(palette: Palette) -> impl IntoElement {
+    static ICON: std::sync::LazyLock<std::sync::Arc<Image>> = std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            include_bytes!("../assets/icon-64.png").to_vec(),
+        ))
+    });
+    div()
+        .id("brand")
+        .occlude()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(spacing::X3)
+        .cursor_pointer()
+        .on_click(|_, _, cx| crate::app::navigate(Route::Browse(BrowseTarget::Home), cx))
+        .child(img(ICON.clone()).size(px(20.)).flex_shrink_0())
+        .child(
+            div()
+                .text_size(type_scale::BODY.font_size)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette.text)
+                .child("FormalMusic"),
+        )
+}
+
 impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::trace::render("Sidebar");
@@ -187,9 +213,12 @@ impl Render for Sidebar {
                     .items_center()
                     .when(collapsed, |el| el.justify_center())
                     .when(!collapsed, |el| {
-                        el.pl(traffic_light_clearance().max(spacing::X4))
+                        // X5 is the nav rows' margin plus padding, so the app
+                        // icon sits in the same column as their icons.
+                        el.pl(traffic_light_clearance().max(spacing::X5))
                             .pr(spacing::X2)
-                            .justify_end()
+                            .justify_between()
+                            .child(brand(palette))
                     })
                     // Above the drag strip, so the button takes its own clicks.
                     .child(div().occlude().child(toggle)),
