@@ -1267,6 +1267,7 @@ impl Pane {
         let edge = |top: f32, height: f32| {
             ((top.min(viewport - (top + height))) / edge_ramp).clamp(0., 1.)
         };
+        let pane = self.bounds;
         let mut painter = Painter {
             window,
             cx,
@@ -1381,12 +1382,17 @@ impl Pane {
             let ink = state.ink.value(now);
             let sung = mix(palette.secondary, palette.text, ink);
             let chunks = &model.chunks[index];
-            if ink <= 0.001 {
-                painter.glyphs(row, &transform, |_| fade(palette.secondary, alpha), offsets);
-                continue;
-            }
-            if line.words.is_empty() {
-                painter.glyphs(row, &transform, |_| fade(sung, alpha), offsets);
+            let flat = if ink <= 0.001 {
+                Some(palette.secondary)
+            } else if line.words.is_empty() {
+                Some(sung)
+            } else {
+                None
+            };
+            if let Some(color) = flat {
+                painter.layer(pane, |painter| {
+                    painter.glyphs(row, &transform, |_| fade(color, alpha), offsets)
+                });
                 continue;
             }
             // The glow sits under the chunk being sung, only on lit rows.
@@ -1487,6 +1493,26 @@ impl Painter<'_> {
             self.window
                 .paint_glyph(origin, glyph.font_id, glyph.id, px(size), color)
         };
+    }
+
+    /// Paints into one layer of the scene. A layer takes a single place in
+    /// the scene's bounds tree, where each sprite would otherwise search it
+    /// for its own; the blur copies stacked over each other made that most
+    /// of a frame. Inside a layer sprites are drawn grouped by atlas tile,
+    /// which only blends the same as painting order when they share a colour.
+    fn layer(&mut self, bounds: Bounds<Pixels>, paint: impl FnOnce(&mut Painter<'_>)) {
+        let (cx, origin, spread) = (self.cx, self.origin, self.spread);
+        self.sprites += self.window.paint_layer(bounds, |window| {
+            let mut painter = Painter {
+                window,
+                cx,
+                origin,
+                sprites: 0,
+                spread,
+            };
+            paint(&mut painter);
+            painter.sprites
+        });
     }
 
     fn glyphs(
