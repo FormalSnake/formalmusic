@@ -1679,6 +1679,11 @@ impl Transport for DemoTransport {
             }
             Command::Related { .. } => Reply::Page(fixtures::related().unwrap_or_else(related)),
             Command::AnimatedCover { .. } => Reply::AnimatedCover(demo_cover().await),
+            Command::VideoStream { video_id, .. } => {
+                return Err(
+                    ApiError::NotFound(format!("{video_id} has no video in the demo")).into(),
+                );
+            }
             Command::Rate { .. } => {
                 shared.emit(Event::LibraryChanged {
                     scope: LibraryScope::Likes,
@@ -1872,6 +1877,11 @@ impl Transport for DemoTransport {
             }
             Command::SetShuffle { shuffle } => {
                 shared.state.lock().player.shuffle = shuffle;
+                shared.emit_player();
+                Reply::Ok
+            }
+            Command::SetMode { mode } => {
+                shared.state.lock().player.mode = mode;
                 shared.emit_player();
                 Reply::Ok
             }

@@ -552,6 +552,26 @@ pub struct PlayerState {
     /// [`crate::Command::Related`]. It comes with the `next` response.
     #[serde(default)]
     pub related_browse_id: Option<String>,
+    #[serde(default)]
+    pub mode: PlaybackMode,
+    /// The video id the audio streams from: the track's own, or its
+    /// [`Track::counterpart`] when `mode` picked that one.
+    #[serde(default)]
+    pub playing_id: Option<String>,
+}
+
+/// A video-only stream for [`crate::Command::VideoStream`], to be decoded
+/// muted beside the daemon's audio.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VideoStream {
+    pub url: String,
+    /// Sent with every request to `url`.
+    pub headers: Vec<(String, String)>,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    /// As yt-dlp names it, such as `avc1.4D401F`.
+    pub codec: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

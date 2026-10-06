@@ -170,6 +170,15 @@ pub enum Command {
         artist: String,
         album: String,
     },
+    /// A video-only stream of `video_id` no taller than `max_height`, from
+    /// the same yt-dlp run as its audio. `refresh` resolves it again, after
+    /// googlevideo refused the last URL.
+    VideoStream {
+        video_id: String,
+        max_height: u32,
+        #[serde(default)]
+        refresh: bool,
+    },
     /// The "Related" tab of the player page.
     Related {
         browse_id: String,
@@ -251,6 +260,11 @@ pub enum Command {
     SetShuffle {
         shuffle: bool,
     },
+    /// Song or Video for every track that has both; the playing one
+    /// switches at the same place in the song.
+    SetMode {
+        mode: PlaybackMode,
+    },
     PlayerState,
     QueueState,
 
@@ -282,6 +296,7 @@ pub enum Reply {
     Lyrics(Option<Lyrics>),
     /// Local path to the mp4; the daemon and client share a machine.
     AnimatedCover(Option<String>),
+    VideoStream(VideoStream),
     PlaylistCreated {
         playlist_id: String,
     },
@@ -428,6 +443,15 @@ mod tests {
         assert_eq!(track.map_position("video", "song", 5_000), 0);
         assert_eq!(track.map_position("song", "song", 7), 7);
         assert_eq!(track.map_position("song", "elsewhere", 7), 7);
+    }
+
+    #[test]
+    fn older_player_states_still_parse() {
+        let state: PlayerState = serde_json::from_str(
+            r#"{"status":"playing","track":null,"position_ms":0,"duration_ms":null,"volume":1.0,"muted":false,"repeat":"off","shuffle":false,"stream":null}"#,
+        )
+        .unwrap();
+        assert_eq!((state.mode, state.playing_id), (PlaybackMode::Song, None));
     }
 
     #[test]

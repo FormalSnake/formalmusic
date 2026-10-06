@@ -1,7 +1,7 @@
 //! The play queue as a plain data structure: order, current entry, shuffle and
 //! repeat. No I/O, so every rule here is unit tested.
 
-use formalmusic_api::{EnqueuePosition, Rating, Repeat, Track};
+use formalmusic_api::{Counterpart, EnqueuePosition, Rating, Repeat, Track};
 use serde::{Deserialize, Serialize};
 
 /// Radio tops the queue up once fewer than this many tracks follow the current one.
@@ -253,6 +253,18 @@ impl Queue {
             .original
             .as_ref()
             .map(|_| self.entries.iter().map(|e| e.uid).collect());
+    }
+
+    /// Gives entry `uid` the other version of its track. False when the
+    /// entry is gone or knows one already.
+    pub fn set_counterpart(&mut self, uid: u64, counterpart: Counterpart) -> bool {
+        match self.entries.iter_mut().find(|e| e.uid == uid) {
+            Some(entry) if entry.track.counterpart.is_none() => {
+                entry.track.counterpart = Some(Box::new(counterpart));
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn jump(&mut self, index: usize) -> bool {
@@ -519,5 +531,23 @@ mod tests {
         fn get_id(&self, index: usize) -> &str {
             &self.entries[index].track.video_id
         }
+    }
+
+    #[test]
+    fn a_counterpart_is_set_once() {
+        let mut q = queue("a b", 0);
+        let uid = q.entries()[1].uid;
+        let video = |id: &str| Counterpart {
+            video_id: id.into(),
+            kind: TrackKind::Video,
+            thumbnails: Vec::new(),
+            duration_ms: None,
+            segments: Vec::new(),
+        };
+        assert!(q.set_counterpart(uid, video("mv")));
+        assert!(!q.set_counterpart(uid, video("other")));
+        assert!(!q.set_counterpart(999, video("mv")));
+        let track = &q.entries()[1].track;
+        assert_eq!(track.counterpart.as_ref().unwrap().video_id, "mv");
     }
 }

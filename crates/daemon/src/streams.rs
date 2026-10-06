@@ -1,9 +1,12 @@
 //! Stream resolution through yt-dlp, cached until the signed URL expires.
+//! One run gives the audio the daemon plays and the video-only formats a
+//! client may decode beside it.
 
 mod worker;
 
 use crate::config::{Quality, write_private};
 use crate::session::{Session, netscape_cookies};
+use formalmusic_api::VideoStream;
 use formalmusic_player::{Codec, StreamSource};
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -23,7 +26,23 @@ const MAX_ATTEMPTS: usize = 3;
 /// Bytes asked for at the end of the stream to check the whole of it is served.
 const PROBE_BYTES: u64 = 1024;
 
-type Slot = Arc<OnceCell<Result<StreamSource, String>>>;
+/// Heights a client's video request rounds up to. Past 720 an iGPU spends
+/// more on decoding than the player box can show.
+const VIDEO_HEIGHTS: [u32; 3] = [360, 480, 720];
+
+#[derive(Clone)]
+struct Resolved {
+    audio: StreamSource,
+    video: Arc<Vec<VideoFormat>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VideoFormat {
+    pub stream: VideoStream,
+    pub content_length: Option<u64>,
+}
+
+type Slot = Arc<OnceCell<Result<Resolved, String>>>;
 
 pub struct Resolver {
     inner: Arc<Inner>,
@@ -105,11 +124,52 @@ impl Resolver {
         video_id: &str,
         cookies: Option<&str>,
     ) -> Result<StreamSource, String> {
+        Ok(self.resolved(video_id, cookies).await?.audio)
+    }
+
+    /// A video-only stream of `video_id` at most `max_height` tall, rounded
+    /// up to a step in [`VIDEO_HEIGHTS`], from the same yt-dlp run as the
+    /// audio. A gated URL is resolved again, as for audio.
+    pub async fn video(
+        &self,
+        video_id: &str,
+        cookies: Option<&str>,
+        max_height: u32,
+    ) -> Result<VideoStream, String> {
+        let cap = VIDEO_HEIGHTS
+            .into_iter()
+            .find(|h| *h >= max_height)
+            .unwrap_or(VIDEO_HEIGHTS[VIDEO_HEIGHTS.len() - 1]);
+        for _ in 0..MAX_ATTEMPTS {
+            let resolved = self.resolved(video_id, cookies).await?;
+            let format = pick_video(&resolved.video, cap)
+                .ok_or_else(|| "no video-only format".to_owned())?;
+            let stream = &format.stream;
+            if !self
+                .inner
+                .gates(
+                    video_id,
+                    &stream.url,
+                    &stream.headers,
+                    format.content_length,
+                )
+                .await
+            {
+                return Ok(format.stream.clone());
+            }
+            self.invalidate(video_id);
+        }
+        Err(format!(
+            "googlevideo refused the end of the video {MAX_ATTEMPTS} times"
+        ))
+    }
+
+    async fn resolved(&self, video_id: &str, cookies: Option<&str>) -> Result<Resolved, String> {
         let inner = &self.inner;
         let slot = {
             let mut cache = inner.cache.lock();
             cache.retain(|_, slot| match slot.get() {
-                Some(Ok(source)) => !source.expires_within(EXPIRY_MARGIN),
+                Some(Ok(resolved)) => !resolved.audio.expires_within(EXPIRY_MARGIN),
                 Some(Err(_)) => false,
                 None => true,
             });
@@ -124,13 +184,13 @@ impl Resolver {
             .await
             .clone();
         match &result {
-            Ok(source) if fresh => {
+            Ok(resolved) if fresh => {
                 tokio::spawn(Inner::check(
                     inner.clone(),
                     video_id.to_owned(),
                     cookies.map(str::to_owned),
                     slot,
-                    source.clone(),
+                    resolved.audio.clone(),
                 ));
             }
             Ok(_) => {}
@@ -191,7 +251,15 @@ impl Inner {
         slot: Slot,
         source: StreamSource,
     ) {
-        if !self.gates(&video_id, &source).await {
+        if !self
+            .gates(
+                &video_id,
+                &source.url,
+                &source.headers,
+                source.content_length,
+            )
+            .await
+        {
             return;
         }
         let retry: Slot = Arc::default();
@@ -213,9 +281,13 @@ impl Inner {
         let result = retry
             .get_or_init(|| async {
                 for _ in 1..MAX_ATTEMPTS {
-                    let source = self.run_once(&video_id, cookies.as_deref()).await?;
-                    if !self.gates(&video_id, &source).await {
-                        return Ok(source);
+                    let resolved = self.run_once(&video_id, cookies.as_deref()).await?;
+                    let audio = &resolved.audio;
+                    if !self
+                        .gates(&video_id, &audio.url, &audio.headers, audio.content_length)
+                        .await
+                    {
+                        return Ok(resolved);
                     }
                 }
                 Err(format!(
@@ -234,15 +306,21 @@ impl Inner {
     /// True when googlevideo refuses the last bytes of the stream. A probe
     /// that fails for any other reason passes: the player retries its own
     /// network errors.
-    async fn gates(&self, video_id: &str, source: &StreamSource) -> bool {
-        let Some(len) = source.content_length.filter(|len| *len > PROBE_BYTES) else {
+    async fn gates(
+        &self,
+        video_id: &str,
+        url: &str,
+        headers: &[(String, String)],
+        content_length: Option<u64>,
+    ) -> bool {
+        let Some(len) = content_length.filter(|len| *len > PROBE_BYTES) else {
             return false;
         };
-        let mut request = self.http.get(&source.url).header(
+        let mut request = self.http.get(url).header(
             reqwest::header::RANGE,
             format!("bytes={}-{}", len - PROBE_BYTES, len - 1),
         );
-        for (name, value) in &source.headers {
+        for (name, value) in headers {
             request = request.header(name, value);
         }
         match request.send().await {
@@ -265,11 +343,7 @@ impl Inner {
         }
     }
 
-    async fn run_once(
-        &self,
-        video_id: &str,
-        cookies: Option<&str>,
-    ) -> Result<StreamSource, String> {
+    async fn run_once(&self, video_id: &str, cookies: Option<&str>) -> Result<Resolved, String> {
         let cookie_file = cookies.map(|header| self.cookie_file(header)).transpose()?;
         let premium = cookies.is_some() && self.session.info().premium;
         let started = std::time::Instant::now();
@@ -284,7 +358,10 @@ impl Inner {
         let source = pick_format(&answer.info, self.quality)
             .ok_or_else(|| "no playable audio format".to_owned())?;
         tracing::debug!(video_id, premium, format = %source.label(), elapsed_ms = started.elapsed().as_millis() as u64, "resolved");
-        Ok(source)
+        Ok(Resolved {
+            audio: source,
+            video: Arc::new(video_formats(&answer.info)),
+        })
     }
 
     /// The daemon's own 0600 copy of the session cookies for yt-dlp, written
@@ -357,6 +434,59 @@ pub fn pick_format(info: &Value, quality: Quality) -> Option<StreamSource> {
         .cloned()
 }
 
+/// The video-only https formats of a `yt-dlp -J` document.
+pub fn video_formats(info: &Value) -> Vec<VideoFormat> {
+    let formats = info.get("formats").and_then(Value::as_array);
+    formats
+        .into_iter()
+        .flatten()
+        .filter_map(|format| {
+            let str_field = |key: &str| format.get(key).and_then(Value::as_str);
+            let uint = |key: &str| format.get(key).and_then(Value::as_u64);
+            let codec = str_field("vcodec").filter(|v| *v != "none")?;
+            if str_field("acodec").is_some_and(|a| a != "none")
+                || str_field("protocol") != Some("https")
+                || format.get("has_drm").and_then(Value::as_bool) == Some(true)
+            {
+                return None;
+            }
+            let headers = format
+                .get("http_headers")
+                .and_then(Value::as_object)
+                .map(|h| {
+                    h.iter()
+                        .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(VideoFormat {
+                stream: VideoStream {
+                    url: str_field("url")?.to_owned(),
+                    headers,
+                    width: uint("width")? as u32,
+                    height: uint("height")? as u32,
+                    fps: format.get("fps").and_then(Value::as_f64).unwrap_or(30.),
+                    codec: codec.to_owned(),
+                },
+                content_length: uint("filesize"),
+            })
+        })
+        .collect()
+}
+
+/// The tallest H.264 format within `cap`, since it decodes in hardware or
+/// cheaply in software everywhere; any codec within `cap` otherwise, and the
+/// shortest format there is when all are taller.
+pub fn pick_video(formats: &[VideoFormat], cap: u32) -> Option<&VideoFormat> {
+    let avc = |f: &VideoFormat| f.stream.codec.starts_with("avc1");
+    let rank = |f: &&VideoFormat| (avc(f), f.stream.height);
+    formats
+        .iter()
+        .filter(|f| f.stream.height <= cap)
+        .max_by_key(rank)
+        .or_else(|| formats.iter().min_by_key(|f| f.stream.height))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +542,75 @@ mod tests {
                 .unwrap()
                 .url
                 .contains("itag=251")
+        );
+    }
+
+    fn video_info() -> Value {
+        let format = |id: &str, vcodec: &str, height: u32| {
+            json!({
+                "format_id": id,
+                "vcodec": vcodec,
+                "acodec": "none",
+                "protocol": "https",
+                "width": height * 16 / 9,
+                "height": height,
+                "fps": 24,
+                "filesize": 1_000_000,
+                "url": format!("https://rr1---sn-redacted.googlevideo.com/videoplayback?expire=1791306028&itag={id}"),
+                "http_headers": { "User-Agent": "Mozilla/5.0" },
+            })
+        };
+        let mut info = fixture();
+        let formats = info["formats"].as_array_mut().unwrap();
+        formats.extend([
+            format("134", "avc1.4D401E", 360),
+            format("135", "avc1.4D401E", 480),
+            format("244", "vp9", 480),
+            format("136", "avc1.4D401F", 720),
+            format("247", "vp9", 720),
+            format("137", "avc1.640028", 1080),
+            format("248", "vp9", 1080),
+        ]);
+        // A muxed format has audio and is no use beside the daemon's.
+        let mut muxed = format("18", "avc1.42001E", 360);
+        muxed["acodec"] = json!("mp4a.40.2");
+        formats.push(muxed);
+        info
+    }
+
+    #[test]
+    fn video_formats_skip_audio_and_muxed_streams() {
+        let formats = video_formats(&video_info());
+        // The recorded run's own 144p format does not say how tall it is.
+        assert_eq!(formats.len(), 7);
+        assert!(formats.iter().all(|f| !f.stream.url.contains("itag=18")));
+        let first = formats.iter().find(|f| f.stream.height == 480).unwrap();
+        assert_eq!((first.stream.width, first.stream.fps), (853, 24.));
+        assert!(first.stream.headers.iter().any(|(k, _)| k == "User-Agent"));
+    }
+
+    #[test]
+    fn video_prefers_h264_at_the_tallest_step_within_the_cap() {
+        let formats = video_formats(&video_info());
+        let itag = |cap| {
+            let url = &pick_video(&formats, cap).unwrap().stream.url;
+            url.rsplit('=').next().unwrap().to_owned()
+        };
+        assert_eq!(itag(480), "135");
+        assert_eq!(itag(720), "136");
+        assert_eq!(itag(360), "134");
+        assert_eq!(itag(100), "134");
+        let vp9_only: Vec<_> = formats
+            .iter()
+            .filter(|f| f.stream.codec == "vp9")
+            .cloned()
+            .collect();
+        assert!(
+            pick_video(&vp9_only, 720)
+                .unwrap()
+                .stream
+                .url
+                .ends_with("247")
         );
     }
 

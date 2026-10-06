@@ -220,6 +220,15 @@ impl Daemon {
             Command::AnimatedCover { artist, album } => Ok(Reply::AnimatedCover(
                 self.extras.animated_cover(&artist, &album).await?,
             )),
+            Command::VideoStream {
+                video_id,
+                max_height,
+                refresh,
+            } => Ok(Reply::VideoStream(
+                playback
+                    .video_stream(&video_id, max_height, refresh)
+                    .await?,
+            )),
             Command::Related { browse_id } => Ok(Reply::Page(client.related(&browse_id).await?)),
 
             Command::Rate { target, rating } => {
@@ -336,6 +345,10 @@ impl Daemon {
             }
             Command::SetShuffle { shuffle } => {
                 playback.set_shuffle(shuffle);
+                Ok(Reply::Ok)
+            }
+            Command::SetMode { mode } => {
+                playback.set_mode(mode);
                 Ok(Reply::Ok)
             }
             Command::PlayerState => Ok(Reply::Player(playback.player_state())),

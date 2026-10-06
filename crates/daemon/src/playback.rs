@@ -14,14 +14,14 @@ use crate::session::Session;
 use crate::streams::Resolver;
 use crate::tracking::Watch;
 use formalmusic_api::{
-    ApiError, Continuation, EnqueuePosition, Event, PlaySource, PlayerState, QueueState, Rating,
-    Repeat, Status, Track,
+    ApiError, Continuation, Counterpart, EnqueuePosition, Event, PlaySource, PlaybackMode,
+    PlayerState, QueueState, Rating, Repeat, SharedSegment, Status, Track, TrackKind, VideoStream,
 };
 use formalmusic_innertube::PlaybackTracking;
 use formalmusic_player::{Player, PlayerError, PlayerEvent, StreamSource, TrackId};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -43,6 +43,9 @@ const PERSIST_DEBOUNCE: Duration = Duration::from_secs(2);
 /// A restart this soon after a shutdown that cut playback off plays on, so
 /// a deploy restarting the unit goes by as a short gap.
 const RESUME_WITHIN: Duration = Duration::from_secs(30);
+/// How far past the current moment a switch opens the other version: about
+/// what opening a googlevideo stream takes, so little is decoded and dropped.
+const SWITCH_LEAD_MS: u64 = 500;
 
 pub struct Playback {
     state: Mutex<State>,
@@ -56,6 +59,8 @@ pub struct Playback {
     /// Every new play of a track, repeats included, for scrobbling.
     plays: broadcast::Sender<crate::scrobble::Play>,
     tracking: Mutex<HashMap<String, PlaybackTracking>>,
+    /// Video ids already asked `next` for their other version.
+    looked_up: Mutex<HashSet<String>>,
     persist: Notify,
     queue_path: PathBuf,
     rt: Handle,
@@ -79,6 +84,10 @@ struct State {
     muted: bool,
     stream: Option<String>,
     related_browse_id: Option<String>,
+    mode: PlaybackMode,
+    /// The version of the current entry being played or loaded.
+    playing_id: Option<String>,
+    switch: Option<Switching>,
     generation: u64,
     loaded: Option<Loaded>,
     preload: Option<Preload>,
@@ -105,6 +114,17 @@ struct Loaded {
 #[derive(Debug, Clone)]
 struct Preload {
     uid: u64,
+    video_id: String,
+    /// `None` while the stream is resolving.
+    id: Option<TrackId>,
+    label: Option<String>,
+}
+
+/// The current entry moving over to its other version.
+#[derive(Debug, Clone)]
+struct Switching {
+    uid: u64,
+    video_id: String,
     /// `None` while the stream is resolving.
     id: Option<TrackId>,
     label: Option<String>,
@@ -193,6 +213,7 @@ impl Playback {
             seeked,
             plays,
             tracking: Mutex::new(HashMap::new()),
+            looked_up: Mutex::new(HashSet::new()),
             persist: Notify::new(),
             queue_path,
             rt: Handle::current(),
@@ -502,10 +523,43 @@ impl Playback {
         }
     }
 
+    pub fn set_mode(self: &Arc<Self>, mode: PlaybackMode) {
+        let mut st = self.state.lock();
+        if st.mode == mode {
+            return;
+        }
+        st.mode = mode;
+        self.emit_player(&st);
+        self.follow_mode(&mut st);
+        if let (Some(loaded), Some(_)) = (st.loaded, &st.preload) {
+            self.preload_next(&mut st, loaded.id);
+        }
+        self.resolve_ahead(&st);
+    }
+
+    /// A video-only stream for a client to show beside the audio. `refresh`
+    /// drops the cached run after googlevideo refused its URL.
+    pub async fn video_stream(
+        &self,
+        video_id: &str,
+        max_height: u32,
+        refresh: bool,
+    ) -> Result<VideoStream, ApiError> {
+        if refresh {
+            self.resolver.invalidate(video_id);
+        }
+        let cookies = self.session.cookies();
+        self.resolver
+            .video(video_id, cookies.as_deref(), max_height)
+            .await
+            .map_err(ApiError::Playback)
+    }
+
     /// Cached streams and radio tokens belong to the previous account.
     pub fn session_changed(&self) {
         self.resolver.clear();
         self.tracking.lock().clear();
+        self.looked_up.lock().clear();
         if let Some(radio) = &mut self.state.lock().radio {
             radio.continuation = None;
         }
@@ -541,20 +595,122 @@ impl Playback {
         st.position_ms = start_ms;
         st.stream = None;
         st.related_browse_id = None;
+        st.switch = None;
         let Some(entry) = st.queue.current().cloned() else {
             self.stop(st);
             return;
         };
         self.player.stop();
-        st.duration_ms = entry.track.duration_ms;
+        let video_id = entry.track.version(st.mode).to_owned();
+        st.duration_ms = match &entry.track.counterpart {
+            Some(other) if other.video_id == video_id => other.duration_ms,
+            _ => entry.track.duration_ms,
+        };
+        st.playing_id = Some(video_id.clone());
         st.status = Status::Loading;
         self.emit_player(st);
 
         let generation = st.generation;
         let this = self.clone();
         self.rt.spawn(async move {
-            let prepared = this.prepare(&entry.track.video_id).await;
+            let prepared = this.prepare(&video_id).await;
             this.on_prepared(generation, entry.uid, prepared, start_ms, false);
+        });
+    }
+
+    /// Moves the current entry to the version the mode wants, at the same
+    /// place in the song. Playing, the engine hands over without a gap;
+    /// otherwise the other version loads where this one stands.
+    fn follow_mode(self: &Arc<Self>, st: &mut State) {
+        // A switch in flight finishes first, then comes back here.
+        if st.switch.is_some() {
+            return;
+        }
+        let (Some(entry), Some(from)) = (st.queue.current().cloned(), st.playing_id.clone()) else {
+            return;
+        };
+        let to = entry.track.version(st.mode).to_owned();
+        if to == from {
+            return;
+        }
+        let Some(loaded) = st.loaded.filter(|_| st.status == Status::Playing) else {
+            if st.status == Status::Stopped || st.loaded.is_none() && st.status == Status::Loading {
+                return;
+            }
+            let at = entry.track.map_position(&from, &to, st.position_ms);
+            self.reload(st, entry.uid, to, at, true);
+            return;
+        };
+        st.switch = Some(Switching {
+            uid: entry.uid,
+            video_id: to.clone(),
+            id: None,
+            label: None,
+        });
+        let generation = st.generation;
+        let this = self.clone();
+        self.rt.spawn(async move {
+            let prepared = this.prepare(&to).await;
+            let mut st = this.state.lock();
+            let still_wanted = st.generation == generation
+                && st.loaded.is_some_and(|l| l.id == loaded.id)
+                && st
+                    .switch
+                    .as_ref()
+                    .is_some_and(|s| s.uid == entry.uid && s.video_id == to && s.id.is_none());
+            if !still_wanted {
+                return;
+            }
+            match prepared {
+                Ok((source, loudness)) => {
+                    let now = live_position(&st);
+                    let offset = entry.track.map_position(&from, &to, now) as i64 - now as i64;
+                    let start = (now as i64 + offset).max(0) as u64 + SWITCH_LEAD_MS;
+                    let label = source.label();
+                    let id = this.player.switch(source, start, offset, loudness);
+                    if let Some(switch) = &mut st.switch {
+                        switch.id = Some(id);
+                        switch.label = Some(label);
+                    }
+                }
+                Err(message) => {
+                    st.switch = None;
+                    this.emit(Event::Notice {
+                        message: format!("Could not switch versions: {message}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Loads `video_id` for entry `uid` again at `start_ms`: the other
+    /// version, or a fresh URL for this one. `resumed` keeps a track that
+    /// already started from being reported twice.
+    fn reload(
+        self: &Arc<Self>,
+        st: &mut State,
+        uid: u64,
+        video_id: String,
+        start_ms: u64,
+        resumed: bool,
+    ) {
+        st.generation += 1;
+        st.loaded = None;
+        st.preload = None;
+        st.switch = None;
+        st.position_ms = start_ms;
+        st.playing_id = Some(video_id.clone());
+        st.status = if st.want_play {
+            Status::Loading
+        } else {
+            Status::Paused
+        };
+        self.emit_player(st);
+        let generation = st.generation;
+        let this = self.clone();
+        self.rt.spawn(async move {
+            let prepared = this.prepare(&video_id).await;
+            this.on_prepared(generation, uid, prepared, start_ms, resumed);
         });
     }
 
@@ -563,6 +719,7 @@ impl Playback {
         st.generation += 1;
         st.loaded = None;
         st.preload = None;
+        st.switch = None;
         st.want_play = false;
         st.status = Status::Stopped;
         st.position_ms = 0;
@@ -684,12 +841,58 @@ impl Playback {
     /// waits for yt-dlp.
     fn resolve_ahead(self: &Arc<Self>, st: &State) {
         for entry in st.queue.upcoming(RESOLVE_AHEAD) {
+            self.look_up_counterpart(entry.uid, &entry.track);
             let this = self.clone();
-            let video_id = entry.track.video_id.clone();
+            let video_id = entry.track.version(st.mode).to_owned();
             self.rt.spawn(async move {
                 let _ = this.prepare(&video_id).await;
             });
         }
+    }
+
+    /// Asks `next` once for the other version of a track queued from a page
+    /// that did not say, so the Song and Video switch knows it before the
+    /// track plays. Only signed-in sessions get an answer.
+    fn look_up_counterpart(self: &Arc<Self>, uid: u64, track: &Track) {
+        if track.counterpart.is_some()
+            || !matches!(track.kind, TrackKind::Song | TrackKind::Video)
+            || !self.session.info().signed_in
+            || !self.looked_up.lock().insert(track.video_id.clone())
+        {
+            return;
+        }
+        let this = self.clone();
+        let video_id = track.video_id.clone();
+        self.rt.spawn(async move {
+            let next = this.session.client().next(Some(&video_id), None).await;
+            let Some(counterpart) = next
+                .ok()
+                .and_then(|next| counterpart_of(next.tracks, &video_id))
+            else {
+                return;
+            };
+            let mut st = this.state.lock();
+            this.learned_counterpart(&mut st, uid, counterpart);
+        });
+    }
+
+    /// Records the other version of entry `uid`, and moves to it when the
+    /// mode wants it.
+    fn learned_counterpart(self: &Arc<Self>, st: &mut State, uid: u64, counterpart: Counterpart) {
+        if !st.queue.set_counterpart(uid, counterpart) {
+            return;
+        }
+        let current = st.queue.current().is_some_and(|e| e.uid == uid);
+        self.emit_queue(st);
+        if current {
+            self.emit_player(st);
+            self.follow_mode(st);
+        } else if let (Some(loaded), Some(preload)) = (st.loaded, &st.preload)
+            && preload.uid == uid
+        {
+            self.preload_next(st, loaded.id);
+        }
+        self.resolve_ahead(st);
     }
 
     /// Hands the engine the entry that follows `current`, for a gapless start.
@@ -699,22 +902,30 @@ impl Playback {
             return;
         };
         let entry = st.queue.entries()[index].clone();
+        let video_id = entry.track.version(st.mode).to_owned();
+        if st
+            .preload
+            .as_ref()
+            .is_some_and(|p| p.uid == entry.uid && p.video_id == video_id)
+        {
+            return;
+        }
         st.preload = Some(Preload {
             uid: entry.uid,
+            video_id: video_id.clone(),
             id: None,
             label: None,
         });
         let generation = st.generation;
         let this = self.clone();
         self.rt.spawn(async move {
-            let prepared = this.prepare(&entry.track.video_id).await;
+            let prepared = this.prepare(&video_id).await;
             let mut st = this.state.lock();
             let still_wanted = st.generation == generation
                 && st.loaded.is_some_and(|l| l.id == current)
-                && st
-                    .preload
-                    .as_ref()
-                    .is_some_and(|p| p.uid == entry.uid && p.id.is_none());
+                && st.preload.as_ref().is_some_and(|p| {
+                    p.uid == entry.uid && p.video_id == video_id && p.id.is_none()
+                });
             if !still_wanted {
                 return;
             }
@@ -724,6 +935,7 @@ impl Playback {
                     let id = this.player.preload_next(source, loudness);
                     st.preload = Some(Preload {
                         uid: entry.uid,
+                        video_id,
                         id: Some(id),
                         label: Some(label),
                     });
@@ -871,10 +1083,11 @@ impl Playback {
                     else {
                         continue;
                     };
-                    if entry.uid == loaded.uid && entry.track.video_id == video_id {
+                    if entry.uid == loaded.uid && st.playing_id.as_deref() == Some(&video_id) {
                         tracing::info!(video_id, "playing url is gated, switching to a new one");
                         let started = st.status != Status::Loading;
-                        self.reload(&mut st, entry, started);
+                        let start_ms = st.position_ms;
+                        self.reload(&mut st, entry.uid, video_id, start_ms, started);
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
@@ -924,7 +1137,23 @@ impl Playback {
                 }
             }
             PlayerEvent::TrackStarted { track, duration_ms } => {
-                if let Some(preload) = st.preload.clone().filter(|p| p.id == Some(track)) {
+                if let Some(switch) = st.switch.clone().filter(|s| s.id == Some(track)) {
+                    // The same play goes on in the other version.
+                    st.switch = None;
+                    if let (Some(entry), Some(from)) = (st.queue.current(), &st.playing_id) {
+                        let now = live_position(&st);
+                        st.position_ms = entry.track.map_position(from, &switch.video_id, now);
+                        st.position_at = Some(Instant::now());
+                    }
+                    st.loaded = Some(Loaded {
+                        id: track,
+                        uid: switch.uid,
+                        retried: false,
+                        resumed: true,
+                    });
+                    st.playing_id = Some(switch.video_id);
+                    st.stream = switch.label;
+                } else if let Some(preload) = st.preload.clone().filter(|p| p.id == Some(track)) {
                     // Gapless hand-over to the preloaded entry.
                     self.finish_watch(&mut st);
                     let Some(index) = st.queue.index_of(preload.uid) else {
@@ -940,7 +1169,9 @@ impl Playback {
                         resumed: false,
                     });
                     st.preload = None;
+                    st.switch = None;
                     st.stream = preload.label;
+                    st.playing_id = Some(preload.video_id);
                     st.related_browse_id = None;
                     st.position_ms = 0;
                     self.emit_queue(&st);
@@ -958,6 +1189,7 @@ impl Playback {
                 self.emit_player(&st);
                 self.emit_position(&mut st, 0);
                 self.track_started(&mut st);
+                self.follow_mode(&mut st);
             }
             PlayerEvent::Position {
                 track,
@@ -1039,28 +1271,14 @@ impl Playback {
         let Some(entry) = st.queue.current().cloned().filter(|e| e.uid == loaded.uid) else {
             return;
         };
-        tracing::info!(
-            video_id = entry.track.video_id,
-            "stream url expired, resolving again"
-        );
-        self.resolver.invalidate(&entry.track.video_id);
-        self.reload(st, entry, true);
-    }
-
-    /// Loads the current entry again where it is, for a new stream URL.
-    /// `resumed` keeps a track that already started from being reported twice.
-    fn reload(self: &Arc<Self>, st: &mut State, entry: crate::queue::Entry, resumed: bool) {
-        st.generation += 1;
-        st.loaded = None;
-        st.preload = None;
-        st.status = Status::Loading;
-        self.emit_player(st);
-        let (generation, start_ms) = (st.generation, st.position_ms);
-        let this = self.clone();
-        self.rt.spawn(async move {
-            let prepared = this.prepare(&entry.track.video_id).await;
-            this.on_prepared(generation, entry.uid, prepared, start_ms, resumed);
-        });
+        let video_id = st
+            .playing_id
+            .clone()
+            .unwrap_or_else(|| entry.track.video_id.clone());
+        tracing::info!(video_id, "stream url expired, resolving again");
+        self.resolver.invalidate(&video_id);
+        let start_ms = st.position_ms;
+        self.reload(st, entry.uid, video_id, start_ms, true);
     }
 
     /// Reporting, the Related tab, resolving ahead and radio, once a track is audible.
@@ -1079,7 +1297,12 @@ impl Playback {
             position_ms: st.position_ms,
             duration_ms: st.duration_ms,
         });
-        let video_id = entry.track.video_id;
+        let video_id = st
+            .playing_id
+            .clone()
+            .unwrap_or_else(|| entry.track.video_id.clone());
+        let lookup = entry.track.counterpart.is_none()
+            && self.looked_up.lock().insert(entry.track.video_id.clone());
         let report = self.config.report_history && self.session.info().signed_in;
         let this = self.clone();
         self.rt.spawn(async move {
@@ -1103,6 +1326,9 @@ impl Playback {
                     this.emit_queue(&st);
                 }
                 this.emit_player(&st);
+                if lookup && let Some(counterpart) = counterpart_of(next.tracks, &video_id) {
+                    this.learned_counterpart(&mut st, entry.uid, counterpart);
+                }
             }
             if let Some(tracking) = tracking {
                 let watch = Watch::new(tracking, 0);
@@ -1216,7 +1442,35 @@ fn player_state(st: &State) -> PlayerState {
         shuffle: st.queue.shuffled(),
         stream: st.stream.clone(),
         related_browse_id: st.related_browse_id.clone(),
+        mode: st.mode,
+        playing_id: st.playing_id.clone(),
     }
+}
+
+/// The other version of `video_id` from a `next` queue, whichever side of
+/// the row it sits on.
+fn counterpart_of(rows: Vec<Track>, video_id: &str) -> Option<Counterpart> {
+    rows.into_iter().find_map(|row| {
+        let other = *row.counterpart?;
+        if row.video_id == video_id {
+            return Some(other);
+        }
+        (other.video_id == video_id).then(|| Counterpart {
+            video_id: row.video_id,
+            kind: row.kind,
+            thumbnails: row.thumbnails,
+            duration_ms: row.duration_ms,
+            segments: other
+                .segments
+                .iter()
+                .map(|s| SharedSegment {
+                    start_ms: s.counterpart_start_ms,
+                    counterpart_start_ms: s.start_ms,
+                    duration_ms: s.duration_ms,
+                })
+                .collect(),
+        })
+    })
 }
 
 fn queue_state(st: &State) -> QueueState {
@@ -1252,5 +1506,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(saved.interrupted_at, None);
+    }
+
+    #[test]
+    fn counterparts_come_from_either_side_of_a_row() {
+        let json = include_str!("../../innertube/fixtures/next_counterpart.json");
+        let next =
+            formalmusic_innertube::parse::next::parse_next(&serde_json::from_str(json).unwrap())
+                .unwrap();
+        let video = counterpart_of(next.tracks.clone(), "J7p4bzqLvCw").unwrap();
+        assert_eq!(
+            (video.video_id.as_str(), video.kind),
+            ("4NRXx6U8ABQ", TrackKind::Video)
+        );
+
+        // Asked for the music video, the row still leads with the song.
+        let song = counterpart_of(next.tracks, "4NRXx6U8ABQ").unwrap();
+        assert_eq!(
+            (song.video_id.as_str(), song.kind),
+            ("J7p4bzqLvCw", TrackKind::Song)
+        );
+        assert_eq!(
+            song.segments[0],
+            SharedSegment {
+                start_ms: 22_498,
+                counterpart_start_ms: 0,
+                duration_ms: 127_378,
+            }
+        );
+        assert!(counterpart_of(Vec::new(), "x").is_none());
     }
 }
