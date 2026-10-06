@@ -67,7 +67,6 @@ pub struct TypeStyle {
     pub font_size: Pixels,
     /// Line height as an absolute pixel value.
     pub line_height: Pixels,
-    pub font_weight: f32,
 }
 
 pub mod type_scale {
@@ -78,41 +77,34 @@ pub mod type_scale {
     pub const DISPLAY: TypeStyle = TypeStyle {
         font_size: px(30.),
         line_height: px(36.),
-        font_weight: 700.,
     };
     /// Shelf titles and the sign-in heading.
     pub const LARGE: TypeStyle = TypeStyle {
         font_size: px(20.),
         line_height: px(26.),
-        font_weight: 700.,
     };
     /// The now playing title in the expanded player and the current lyric.
     pub const TITLE: TypeStyle = TypeStyle {
         font_size: px(14.),
         line_height: px(18.),
-        font_weight: 600.,
     };
     /// Every list row, menu item and button label. macOS control size.
     pub const BODY: TypeStyle = TypeStyle {
         font_size: px(13.),
         line_height: px(18.),
-        font_weight: 400.,
     };
     /// Lyrics: the one place that reads as content, not as chrome.
     pub const LYRIC: TypeStyle = TypeStyle {
         font_size: px(22.),
         line_height: px(30.),
-        font_weight: 700.,
     };
     pub const CAPTION: TypeStyle = TypeStyle {
         font_size: px(12.),
         line_height: px(16.),
-        font_weight: 400.,
     };
     pub const MICRO: TypeStyle = TypeStyle {
         font_size: px(11.),
         line_height: px(14.),
-        font_weight: 400.,
     };
 }
 
@@ -131,8 +123,6 @@ pub const PLAYER_HEIGHT: Pixels = px(76.);
 pub const PAGE_INSET: Pixels = px(32.);
 pub const TRACK_ROW: Pixels = px(56.);
 pub const CARD_ART: Pixels = px(168.);
-/// A page wider than this keeps its content left and lets the rest breathe.
-pub const PAGE_MAX: Pixels = px(1400.);
 
 /// macOS traffic lights sit inside this clearance; other platforms draw their
 /// own controls flush right, so there is nothing to clear.

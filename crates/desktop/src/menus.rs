@@ -7,31 +7,6 @@ use gpui_kit::*;
 use crate::icons::{Icon, IconName};
 use crate::theme::{Palette, Theme, radius, spacing, type_scale};
 
-/// A menu hint reads the way the platform writes it, "⇧⌘U" on macOS,
-/// "Ctrl+Shift+U" elsewhere.
-pub fn shortcut(key: &str, shift: bool, alt: bool) -> String {
-    if cfg!(target_os = "macos") {
-        format!(
-            "{}{}⌘{}",
-            if shift { "⇧" } else { "" },
-            if alt { "⌥" } else { "" },
-            key.to_uppercase()
-        )
-    } else {
-        let key = if key.chars().count() == 1 {
-            key.to_uppercase()
-        } else {
-            key.to_owned()
-        };
-        format!(
-            "Ctrl+{}{}{}",
-            if shift { "Shift+" } else { "" },
-            if alt { "Alt+" } else { "" },
-            key
-        )
-    }
-}
-
 pub enum MenuItem {
     Item {
         label: SharedString,
@@ -80,46 +55,17 @@ impl MenuItem {
         self
     }
 
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        if let MenuItem::Item { disabled: slot, .. } = &mut self {
-            *slot = disabled;
-        }
-        self
-    }
-
-    pub fn shortcut(mut self, shortcut: impl Into<SharedString>) -> Self {
-        if let MenuItem::Item { shortcut: slot, .. } = &mut self {
-            *slot = Some(shortcut.into());
-        }
-        self
-    }
-
     fn is_selectable(&self) -> bool {
         matches!(self, MenuItem::Item { .. })
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Placement {
-    /// Hangs the menu off the point, like every context menu.
-    Below,
-    /// Rests its bottom edge on the point, for a menu opened from the player bar.
-    Above,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Align {
-    Start,
-    /// Centre the menu on `x` instead of starting there.
-    Center,
-}
-
 pub struct MenuRequest {
     pub position: Point<Pixels>,
     pub items: Vec<MenuItem>,
-    pub placement: Placement,
-    pub align: Align,
-    pub min_width: Option<Pixels>,
+    /// Rests the menu's bottom edge on the point instead of hanging it
+    /// below, for a menu opened from the player bar.
+    pub above: bool,
 }
 
 impl MenuRequest {
@@ -127,33 +73,20 @@ impl MenuRequest {
         Self {
             position,
             items,
-            placement: Placement::Below,
-            align: Align::Start,
-            min_width: None,
+            above: false,
         }
     }
 
     pub fn above(mut self) -> Self {
-        self.placement = Placement::Above;
-        self
-    }
-
-    pub fn centered(mut self) -> Self {
-        self.align = Align::Center;
-        self
-    }
-
-    pub fn min_width(mut self, width: Pixels) -> Self {
-        self.min_width = Some(width);
+        self.above = true;
         self
     }
 
     fn anchor(&self) -> Anchor {
-        match (self.placement, self.align) {
-            (Placement::Below, Align::Start) => Anchor::TopLeft,
-            (Placement::Below, Align::Center) => Anchor::TopCenter,
-            (Placement::Above, Align::Start) => Anchor::BottomLeft,
-            (Placement::Above, Align::Center) => Anchor::BottomCenter,
+        if self.above {
+            Anchor::BottomLeft
+        } else {
+            Anchor::TopLeft
         }
     }
 }
@@ -283,7 +216,7 @@ impl Render for ContextMenu {
                     .track_focus(&self.focus_handle)
                     .flex()
                     .flex_col()
-                    .min_w(self.request.min_width.unwrap_or(px(196.)))
+                    .min_w(px(196.))
                     .p(spacing::X1)
                     .rounded(radius::MENU)
                     .bg(palette.overlay)

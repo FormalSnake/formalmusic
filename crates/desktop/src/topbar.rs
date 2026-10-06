@@ -94,15 +94,6 @@ impl TopBar {
         }
     }
 
-    /// Puts a search's query in the field, as when going back to it.
-    pub fn show_query(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.input.read(cx).value().as_ref() != query {
-            let query = query.to_owned();
-            self.input
-                .update(cx, |state, cx| state.set_value(query, window, cx));
-        }
-    }
-
     fn suggestions(&self) -> Vec<Suggestion> {
         self.store
             .state()

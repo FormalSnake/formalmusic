@@ -28,12 +28,6 @@ pub fn open(target: BrowseTarget, cx: &mut App) {
     app::navigate(Route::Browse(target), cx);
 }
 
-pub fn open_link(link: &Link, cx: &mut App) {
-    if let Some(target) = link.target.clone() {
-        open(target, cx);
-    }
-}
-
 /// The play button on a card: albums and playlists play whole, a song starts
 /// its radio, as on the web app.
 pub fn play_item(item: &Item, store: &MusicStore) {
@@ -85,6 +79,18 @@ pub struct MenuContext {
 pub fn open_menu(position: Point<Pixels>, items: Vec<MenuItem>, window: &mut Window, cx: &mut App) {
     if let Some(root) = app::root(cx) {
         AppRoot::open_menu(&root, MenuRequest::at(position, items), window, cx);
+    }
+}
+
+/// `open_menu` growing upwards, for the player bar along the bottom.
+pub fn open_menu_above(
+    position: Point<Pixels>,
+    items: Vec<MenuItem>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if let Some(root) = app::root(cx) {
+        AppRoot::open_menu(&root, MenuRequest::at(position, items).above(), window, cx);
     }
 }
 

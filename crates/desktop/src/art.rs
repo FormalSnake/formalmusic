@@ -364,13 +364,13 @@ fn fit(image: DynamicImage, px: u32) -> RgbaImage {
 mod tests {
     use super::*;
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn a_wide_still_is_cut_to_its_centre_square_and_scaled_down() {
         let wide = DynamicImage::ImageRgba8(RgbaImage::new(480, 360));
         assert_eq!(fit(wide, 120).dimensions(), (120, 120));
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn a_small_cover_is_never_scaled_up() {
         let small = DynamicImage::ImageRgba8(RgbaImage::new(60, 60));
         assert_eq!(fit(small, 240).dimensions(), (60, 60));

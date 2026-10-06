@@ -155,6 +155,7 @@ impl Render for SignIn {
                                     .flex_col()
                                     .gap(spacing::X1)
                                     .flex_grow(1.)
+                                    .min_w(px(0.))
                                     .child(Icon::new(IconName::Music).size(px(28.)).color(palette.accent))
                                     .child(div().pt(spacing::X2).text_size(type_scale::LARGE.font_size).line_height(type_scale::LARGE.line_height).font_weight(FontWeight::BOLD).text_color(palette.text).child("Sign in to YouTube Music"))
                                     .child(div().text_size(type_scale::BODY.font_size).line_height(px(20.)).text_color(palette.secondary).child("Your library, likes and recommendations come from your account. The cookies stay on this computer.")),

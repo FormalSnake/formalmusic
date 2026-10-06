@@ -9,11 +9,10 @@
 //! generation on every open/close flip and the helpers fold it into the id:
 //! each flip replays from its start, and nothing animates while idle.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, App, Context, ElementId, IntoElement, Pixels,
-    SharedString, Styled, px,
+    Animation, AnimationExt as _, AnyElement, App, Context, ElementId, IntoElement, SharedString,
 };
 
 /// Everything stays under 300ms: in a music player motion is feedback, never a show.
@@ -25,11 +24,6 @@ pub const DURATION_PANEL: Duration = Duration::from_millis(280);
 
 /// A strong ease-out: fast start, long settle. Fades and small reveals use it.
 pub const EASE_OUT: (f32, f32, f32, f32) = (0.23, 1.0, 0.32, 1.0);
-pub const EASE_IN_OUT: (f32, f32, f32, f32) = (0.77, 0.0, 0.175, 1.0);
-/// The iOS sheet curve, for anything that travels a long way. A strong
-/// ease-out covers most of a 280px slide in its first few frames, which reads
-/// as a jump and a crawl however high the frame rate.
-pub const EASE_DRAWER: (f32, f32, f32, f32) = (0.32, 0.72, 0.0, 1.0);
 
 /// Builds a `Fn(f32) -> f32` for `Animation::with_easing` from the four
 /// control points of a `cubic-bezier(x1, y1, x2, y2)` curve. Solves for the
@@ -62,23 +56,6 @@ fn curve((x1, y1, x2, y2): (f32, f32, f32, f32)) -> impl Fn(f32) -> f32 {
     cubic_bezier(x1, y1, x2, y2)
 }
 
-/// Where a hand-stepped EASE_OUT fade that began at `started` is now: `None`
-/// once it has settled, and at once when the platform asks for reduced
-/// motion, which `with_animation` honours on its own but a caller stepping
-/// its own clock would not.
-pub fn eased_since(started: Instant, duration: Duration, cx: &App) -> Option<f32> {
-    if cx.reduce_motion() {
-        return None;
-    }
-    let elapsed = started.elapsed();
-    if elapsed >= duration {
-        return None;
-    }
-    Some(curve(EASE_OUT)(
-        elapsed.as_secs_f32() / duration.as_secs_f32(),
-    ))
-}
-
 /// `usePresence` plus `useHeld`: whether something is shown, whether it is
 /// still mounted while it animates out, and the last value it showed, so
 /// content on its way out keeps painting instead of blanking.
@@ -103,10 +80,6 @@ impl<T: Clone + 'static> Presence<T> {
 
     pub fn is_open(&self) -> bool {
         self.open
-    }
-
-    pub fn is_mounted(&self) -> bool {
-        self.mounted
     }
 
     /// What to paint: the live value while open, the last one while leaving.
@@ -160,62 +133,6 @@ impl<T: Clone + 'static> Presence<T> {
     }
 }
 
-/// `Fade`: opacity in over `enter`, out over `exit`.
-pub fn fade<E: IntoElement + Styled + 'static>(
-    element: E,
-    id: ElementId,
-    open: bool,
-    enter: Duration,
-    exit: Duration,
-) -> AnyElement {
-    let duration = if open { enter } else { exit };
-    element
-        .with_animation(
-            id,
-            Animation::new(duration).with_easing(curve(EASE_OUT)),
-            move |element, t| element.opacity(if open { t } else { 1. - t }),
-        )
-        .into_any_element()
-}
-
-/// `Reveal`: grows to `height` and fades in, collapses back on the way out.
-/// The child has to be exactly `height` tall: the box clips, it does not measure.
-pub fn reveal<E: IntoElement + Styled + 'static>(
-    element: E,
-    id: ElementId,
-    open: bool,
-    height: Pixels,
-) -> AnyElement {
-    let full: f32 = height.into();
-    element
-        .with_animation(
-            id,
-            Animation::new(DURATION_BASE).with_easing(curve(EASE_OUT)),
-            move |element, t| {
-                let amount = if open { t } else { 1. - t };
-                element.h(px(full * amount)).opacity(amount)
-            },
-        )
-        .into_any_element()
-}
-
-/// A side panel's clip box: width 0 to `width` on EASE_DRAWER.
-pub fn slide_width<E: IntoElement + Styled + 'static>(
-    element: E,
-    id: ElementId,
-    open: bool,
-    width: Pixels,
-) -> AnyElement {
-    let full: f32 = width.into();
-    element
-        .with_animation(
-            id,
-            Animation::new(DURATION_PANEL).with_easing(curve(EASE_DRAWER)),
-            move |element, t| element.w(px(full * if open { t } else { 1. - t })),
-        )
-        .into_any_element()
-}
-
 /// Anything else that moves between two states: `t` runs 0 to 1 towards
 /// `open`, on EASE_OUT, `enter` long opening and `exit` long closing.
 pub fn toward<E: IntoElement + 'static>(
@@ -249,7 +166,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn bezier_hits_both_ends() {
-        let ease = curve(EASE_DRAWER);
+        let ease = curve(EASE_OUT);
         assert!(ease(0.).abs() < 0.01);
         assert!((ease(1.) - 1.).abs() < 0.01);
         assert!(ease(0.5) > 0.5);

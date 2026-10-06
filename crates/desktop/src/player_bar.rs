@@ -507,7 +507,7 @@ impl Render for PlayerBar {
                 .child(
                     IconButton::new("bar-more", IconName::More, "More actions").on_click(
                         move |event, window, cx| {
-                            actions::open_menu(
+                            actions::open_menu_above(
                                 event.position(),
                                 actions::track_menu(
                                     &menu_track,

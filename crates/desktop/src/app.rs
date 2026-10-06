@@ -127,12 +127,6 @@ pub fn new_playlist(window: &mut Window, cx: &mut App) {
     });
 }
 
-pub fn relayout(cx: &mut App) {
-    if let Some(root) = root(cx) {
-        root.update(cx, |_, cx| cx.notify());
-    }
-}
-
 pub struct AppRoot {
     store: MusicStore,
     history: Vec<Route>,
@@ -265,10 +259,6 @@ impl AppRoot {
             screenshot(out.into(), window, cx);
         }
         this
-    }
-
-    pub fn store(&self) -> &MusicStore {
-        &self.store
     }
 
     fn current_route(&self) -> Option<&Route> {
@@ -889,10 +879,7 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                 this.set_expanded(Some(Tab::Lyrics), cx)
             }
             "related" => this.set_expanded(Some(Tab::Related), cx),
-            "signin" => {
-                this.sign_in_wanted = true;
-                cx.notify();
-            }
+            "signin" => {}
             "collapsed" => this.sidebar.update(cx, |sidebar, cx| sidebar.toggle(cx)),
             "menu" => {
                 let track = catalog.albums[2].tracks[0].clone();
