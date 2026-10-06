@@ -52,17 +52,31 @@ pub enum PlayerEvent {
     StateChanged(Status),
     /// A track became audible: after `load`, or at the exact sample a
     /// preloaded track took over.
-    TrackStarted { track: TrackId, duration_ms: Option<u64> },
+    TrackStarted {
+        track: TrackId,
+        duration_ms: Option<u64>,
+    },
     /// About four times a second while playing, and after every seek.
     /// `buffered_ms` is how far into the track the download reaches.
-    Position { track: TrackId, position_ms: u64, buffered_ms: u64 },
+    Position {
+        track: TrackId,
+        position_ms: u64,
+        buffered_ms: u64,
+    },
     /// The playing track is within 15 s of its end and nothing is preloaded.
-    NeedsNext { track: TrackId },
-    TrackEnded { track: TrackId },
+    NeedsNext {
+        track: TrackId,
+    },
+    TrackEnded {
+        track: TrackId,
+    },
     /// `track` is `None` for output failures not tied to a track. After
     /// [`PlayerError::Expired`] on the current track, resolve it again and
     /// `load` at the last reported position.
-    Error { track: Option<TrackId>, error: PlayerError },
+    Error {
+        track: Option<TrackId>,
+        error: PlayerError,
+    },
 }
 
 /// Handle to the audio engine. Cheap to clone; the engine thread stops when
@@ -94,7 +108,13 @@ impl Player {
         let (commands, receiver) = crossbeam_channel::unbounded();
         let (events, _) = broadcast::channel(256);
         Engine::spawn(output, receiver, commands.clone(), events.clone())?;
-        Ok(Self { inner: Arc::new(Inner { commands, events, next_id: AtomicU64::new(1) }) })
+        Ok(Self {
+            inner: Arc::new(Inner {
+                commands,
+                events,
+                next_id: AtomicU64::new(1),
+            }),
+        })
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<PlayerEvent> {
@@ -113,7 +133,12 @@ impl Player {
     /// `loudness_db` is the player response's `loudnessDb`.
     pub fn load(&self, source: StreamSource, start_ms: u64, loudness_db: Option<f32>) -> TrackId {
         let id = self.next_id();
-        self.send(Command::Load { id, source, start_ms, loudness_db });
+        self.send(Command::Load {
+            id,
+            source,
+            start_ms,
+            loudness_db,
+        });
         id
     }
 
@@ -122,7 +147,11 @@ impl Player {
     /// Replaces an earlier preload.
     pub fn preload_next(&self, source: StreamSource, loudness_db: Option<f32>) -> TrackId {
         let id = self.next_id();
-        self.send(Command::PreloadNext { id, source, loudness_db });
+        self.send(Command::PreloadNext {
+            id,
+            source,
+            loudness_db,
+        });
         id
     }
 

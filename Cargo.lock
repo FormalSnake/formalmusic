@@ -2172,7 +2172,21 @@ dependencies = [
 name = "formalmusicd"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "dirs 7.0.0",
+ "fastrand",
  "formalmusic-api",
+ "formalmusic-innertube",
+ "formalmusic-player",
+ "mpris-server",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4318,6 +4332,19 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "mpris-server"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "392ce2be7224867869df37e473f28871ab0ff725c0014f1b196ba56a38aea9a8"
+dependencies = [
+ "async-channel",
+ "futures-channel",
+ "serde",
+ "trait-variant",
+ "zbus",
 ]
 
 [[package]]
@@ -7786,6 +7813,17 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "trait-variant"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b19a4867a870f6edc4c283f2b455804b1879c0baf0e642f26b03ed8ee262d9d3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
