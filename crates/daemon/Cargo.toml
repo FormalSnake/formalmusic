@@ -6,3 +6,23 @@ version.workspace = true
 
 [dependencies]
 formalmusic-api = { workspace = true, features = ["io"] }
+formalmusic-innertube.workspace = true
+formalmusic-player.workspace = true
+formalmusic-extras.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
+fastrand = "2"
+parking_lot.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1 = "0.11"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+mpris-server = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
