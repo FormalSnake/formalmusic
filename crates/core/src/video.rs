@@ -353,13 +353,13 @@ async fn decode_from(
     // One decoder thread keeps 480p H.264 well under real time; taller
     // streams get a second so a slow core does not fall behind the audio.
     command.args(["-threads", if height > 480 { "2" } else { "1" }]);
-    // Frames stay on the GPU through decode, scaling and the conversion to
-    // BGRA, and the finished picture is mapped rather than downloaded: on
-    // an Intel iGPU that is about half the CPU of decoding in hardware and
-    // converting in software, and a third of decoding in software.
+    // Frames stay on the GPU through decode and scaling, and come down as
+    // NV12 at the drawn size for swscale to turn into BGRA. Reading BGRA
+    // back from the GPU instead is a slow uncached copy per frame: on an
+    // Arrow Lake iGPU it cost five times this, on an N305 about the same.
     let mut filter = if hardware {
         command.args(["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]);
-        format!("scale_vaapi=w={width}:h={height}:format=bgra,hwmap=mode=read,format=bgra")
+        format!("scale_vaapi=w={width}:h={height}:format=nv12,hwdownload,format=nv12")
     } else {
         format!("scale={width}:{height}:flags=bilinear")
     };
