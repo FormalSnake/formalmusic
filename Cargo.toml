@@ -35,3 +35,9 @@ strip = true
 # images unoptimised makes debug builds unusable for judging speed.
 [profile.dev.package."*"]
 opt-level = 2
+
+# Vulkan-only wgpu instance first, GL only as a fallback: creating the GL
+# backend maps Mesa's GL stack and LLVM (~59 MB RSS) even when Vulkan wins.
+# Same change as https://github.com/zed-industries/zed/pull/63313.
+[patch.crates-io]
+gpui-pre-wgpu = { path = "patches/gpui-pre-wgpu-0.3.6" }

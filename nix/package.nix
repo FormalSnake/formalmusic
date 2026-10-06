@@ -35,6 +35,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       ../Cargo.lock
       ../crates
       ../packaging
+      ../patches
     ];
   };
 
