@@ -1254,6 +1254,7 @@ struct DemoState {
     since: Option<Instant>,
     base_ms: u64,
     session: SessionInfo,
+    scrobbling: ScrobbleStatus,
 }
 
 impl DemoState {
@@ -1370,6 +1371,13 @@ impl DemoTransport {
             since: None,
             base_ms: 0,
             session: session(signed_in, None),
+            scrobbling: ScrobbleStatus {
+                lastfm: ScrobbleAccount {
+                    username: Some("demo".into()),
+                    ..ScrobbleAccount::default()
+                },
+                ..ScrobbleStatus::default()
+            },
         };
         state.load(1, false);
         state.base_ms = 63_000;
@@ -1546,6 +1554,40 @@ impl Transport for DemoTransport {
                 let session = session(true, None);
                 shared.state.lock().session = session.clone();
                 Reply::Session(session)
+            }
+            Command::Scrobbling => Reply::Scrobbling(shared.state.lock().scrobbling.clone()),
+            Command::ConnectLastFm => {
+                let mut state = shared.state.lock();
+                state.scrobbling.lastfm.username = Some("demo".into());
+                Reply::Scrobbling(state.scrobbling.clone())
+            }
+            Command::ConnectListenBrainz { .. } => {
+                let mut state = shared.state.lock();
+                state.scrobbling.listenbrainz.username = Some("demo".into());
+                Reply::Scrobbling(state.scrobbling.clone())
+            }
+            Command::DisconnectScrobbler { service } => {
+                let mut state = shared.state.lock();
+                let account = match service {
+                    ScrobbleService::LastFm => &mut state.scrobbling.lastfm,
+                    ScrobbleService::ListenBrainz => &mut state.scrobbling.listenbrainz,
+                };
+                account.username = None;
+                Reply::Scrobbling(state.scrobbling.clone())
+            }
+            Command::SetScrobbling {
+                service,
+                scrobble,
+                now_playing,
+            } => {
+                let mut state = shared.state.lock();
+                let account = match service {
+                    ScrobbleService::LastFm => &mut state.scrobbling.lastfm,
+                    ScrobbleService::ListenBrainz => &mut state.scrobbling.listenbrainz,
+                };
+                account.scrobble = scrobble;
+                account.now_playing = now_playing;
+                Reply::Scrobbling(state.scrobbling.clone())
             }
             Command::SignOut => {
                 let session = session(false, None);

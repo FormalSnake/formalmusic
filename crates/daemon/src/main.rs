@@ -9,6 +9,7 @@ mod extras;
 mod mpris;
 mod playback;
 mod queue;
+mod scrobble;
 mod server;
 mod session;
 mod signin;

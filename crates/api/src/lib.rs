@@ -126,6 +126,24 @@ pub enum Command {
         page_id: Option<String>,
     },
 
+    // Scrobbling
+    Scrobbling,
+    /// Open Last.fm's "allow access" page in the default browser and wait for
+    /// the user there in the background; [`Event::Scrobbling`] reports the
+    /// outcome.
+    ConnectLastFm,
+    ConnectListenBrainz {
+        source: ListenBrainzSource,
+    },
+    DisconnectScrobbler {
+        service: ScrobbleService,
+    },
+    SetScrobbling {
+        service: ScrobbleService,
+        scrobble: bool,
+        now_playing: bool,
+    },
+
     // Browsing
     Browse {
         target: BrowseTarget,
@@ -246,6 +264,7 @@ pub enum Reply {
     Browsers(Browsers),
     BrowserProfiles(Vec<ProfileBrowser>),
     Accounts(Vec<Account>),
+    Scrobbling(ScrobbleStatus),
     Page(Page),
     Continuation(ContinuationPage),
     Search(SearchResults),
@@ -273,6 +292,7 @@ pub enum Event {
     },
     Queue(QueueState),
     Session(SessionInfo),
+    Scrobbling(ScrobbleStatus),
     /// A like, subscription or playlist edit landed; clients drop cached pages
     /// of these kinds and refetch the visible one.
     LibraryChanged {

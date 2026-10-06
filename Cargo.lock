@@ -2208,6 +2208,7 @@ dependencies = [
  "formalmusic-innertube",
  "formalmusic-player",
  "libc",
+ "md-5",
  "mpris-server",
  "parking_lot",
  "reqwest",

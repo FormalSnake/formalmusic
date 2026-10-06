@@ -18,9 +18,10 @@ use std::time::{Duration, Instant};
 
 use formalmusic_api::{
     Account, BrowseTarget, Browsers, Command, Continuation, EnqueuePosition, Event, Item,
-    LibraryScope, LibraryTab, Lyrics, Page, PlaySource, PlayerState, PlaylistEdit, Privacy,
-    ProfileBrowser, QueueState, RateTarget, Rating, Repeat, Reply, SearchFilter, SearchResults,
-    SessionInfo, Status, Suggestion, Track,
+    LibraryScope, LibraryTab, ListenBrainzSource, Lyrics, Page, PlaySource, PlayerState,
+    PlaylistEdit, Privacy, ProfileBrowser, QueueState, RateTarget, Rating, Repeat, Reply,
+    ScrobbleService, ScrobbleStatus, SearchFilter, SearchResults, SessionInfo, Status, Suggestion,
+    Track,
 };
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use tokio::sync::{broadcast, mpsc};
@@ -129,6 +130,8 @@ pub struct AppState {
     pub ratings: HashMap<String, Rating>,
     /// A failure worth a toast, with a counter so the same text twice is two toasts.
     pub notice: Option<(u64, String)>,
+    /// `None` until the daemon has said.
+    pub scrobbling: Option<ScrobbleStatus>,
 }
 
 impl AppState {
@@ -206,6 +209,7 @@ pub enum StoreEvent {
     Related(String),
     Ratings,
     Notice,
+    Scrobbling,
 }
 
 impl StoreEvent {
@@ -510,6 +514,10 @@ impl MusicStore {
                     self.account_changed();
                 }
             }
+            Event::Scrobbling(status) => self.inner.update(|state, events| {
+                state.scrobbling = Some(status);
+                events.push(StoreEvent::Scrobbling);
+            }),
             Event::LibraryChanged { scope } => {
                 self.inner.update(|state, events| {
                     for (target, entry) in state.pages.iter_mut() {
@@ -1366,6 +1374,71 @@ impl MusicStore {
             Ok(_) => Err(message(&ClientError::UnexpectedReply)),
             Err(error) => Err(message(&error)),
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Scrobbling
+    // ---------------------------------------------------------------------
+
+    pub fn load_scrobbling(&self) {
+        let store = self.clone();
+        self.spawn(async move {
+            if let Ok(Reply::Scrobbling(status)) =
+                store.inner.transport.call(Command::Scrobbling).await
+            {
+                store.apply(Event::Scrobbling(status));
+            }
+        });
+    }
+
+    async fn scrobbling_call(&self, command: Command) -> Result<(), String> {
+        match self.inner.transport.call(command).await {
+            Ok(Reply::Scrobbling(status)) => {
+                self.apply(Event::Scrobbling(status));
+                Ok(())
+            }
+            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
+            Err(error) => Err(message(&error)),
+        }
+    }
+
+    /// Opens Last.fm's "allow access" page; the daemon reports the outcome
+    /// as a [`StoreEvent::Scrobbling`] once the user has answered there.
+    pub async fn connect_lastfm(&self) -> Result<(), String> {
+        self.scrobbling_call(Command::ConnectLastFm).await
+    }
+
+    pub async fn connect_listenbrainz(&self, source: ListenBrainzSource) -> Result<(), String> {
+        self.scrobbling_call(Command::ConnectListenBrainz { source })
+            .await
+    }
+
+    pub fn disconnect_scrobbler(&self, service: ScrobbleService) {
+        let store = self.clone();
+        self.spawn(async move {
+            if let Err(error) = store
+                .scrobbling_call(Command::DisconnectScrobbler { service })
+                .await
+            {
+                store.notice(error);
+            }
+        });
+    }
+
+    pub fn set_scrobbling(&self, service: ScrobbleService, scrobble: bool, now_playing: bool) {
+        let store = self.clone();
+        self.spawn(async move {
+            if let Err(error) = store
+                .scrobbling_call(Command::SetScrobbling {
+                    service,
+                    scrobble,
+                    now_playing,
+                })
+                .await
+            {
+                store.notice(error);
+            }
+        });
     }
 
     pub async fn cancel_sign_in(&self) {

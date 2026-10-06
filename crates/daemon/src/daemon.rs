@@ -3,6 +3,7 @@
 use crate::config::{Config, Paths};
 use crate::extras::Extras;
 use crate::playback::Playback;
+use crate::scrobble::Scrobbler;
 use crate::session::Session;
 use crate::signin::BrowserSignIn;
 use formalmusic_api::{ApiError, Command, Event, LibraryScope, RateTarget, Reply};
@@ -15,6 +16,7 @@ pub struct Daemon {
     pub playback: Arc<Playback>,
     extras: Arc<Extras>,
     signin: BrowserSignIn,
+    scrobbler: Arc<Scrobbler>,
     pub events: broadcast::Sender<Event>,
 }
 
@@ -31,11 +33,14 @@ impl Daemon {
             playback.clone(),
             events.subscribe(),
         ));
+        let scrobbler = Scrobbler::new(paths, session.clone(), events.clone())?;
+        tokio::spawn(scrobbler.clone().run(playback.clone()));
         Ok(Arc::new(Self {
             session,
             playback,
             extras,
             signin: BrowserSignIn::new(paths.signin()),
+            scrobbler,
             events,
         }))
     }
@@ -117,6 +122,29 @@ impl Daemon {
                 self.session_changed();
                 Ok(Reply::Session(info))
             }
+
+            Command::Scrobbling => Ok(Reply::Scrobbling(self.scrobbler.status())),
+            Command::ConnectLastFm => {
+                self.scrobbler.connect_lastfm().await?;
+                Ok(Reply::Scrobbling(self.scrobbler.status()))
+            }
+            Command::ConnectListenBrainz { source } => Ok(Reply::Scrobbling(
+                self.scrobbler
+                    .connect_listenbrainz(source, &self.signin)
+                    .await?,
+            )),
+            Command::DisconnectScrobbler { service } => {
+                Ok(Reply::Scrobbling(self.scrobbler.disconnect(service)))
+            }
+            Command::SetScrobbling {
+                service,
+                scrobble,
+                now_playing,
+            } => Ok(Reply::Scrobbling(self.scrobbler.set(
+                service,
+                scrobble,
+                now_playing,
+            ))),
 
             Command::Browse { target } => Ok(Reply::Page(client.browse(target).await?)),
             Command::Continue { token } => {

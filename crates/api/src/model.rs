@@ -501,3 +501,53 @@ pub struct Account {
     pub page_id: Option<String>,
     pub selected: bool,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrobbleService {
+    LastFm,
+    ListenBrainz,
+}
+
+/// Where [`crate::Command::ConnectListenBrainz`] takes the user token from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ListenBrainzSource {
+    /// A [`BrowserProfile`] signed in to listenbrainz.org, or with Web
+    /// Scrobbler connected to it.
+    Profile { browser: String, profile: String },
+    /// Pasted from listenbrainz.org/settings.
+    Token { token: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ScrobbleStatus {
+    pub lastfm: ScrobbleAccount,
+    pub listenbrainz: ScrobbleAccount,
+    /// Plays waiting for a service to take them, across both services.
+    pub queued: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScrobbleAccount {
+    /// Set once connected.
+    pub username: Option<String>,
+    /// Waiting for the user to allow access in the browser.
+    pub connecting: bool,
+    pub scrobble: bool,
+    pub now_playing: bool,
+    /// The service refused the stored credentials; connect again.
+    pub error: Option<String>,
+}
+
+impl Default for ScrobbleAccount {
+    fn default() -> Self {
+        Self {
+            username: None,
+            connecting: false,
+            scrobble: true,
+            now_playing: true,
+            error: None,
+        }
+    }
+}

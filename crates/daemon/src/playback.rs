@@ -49,6 +49,8 @@ pub struct Playback {
     events: broadcast::Sender<Event>,
     /// Seek targets, for the MPRIS `Seeked` signal.
     seeked: broadcast::Sender<u64>,
+    /// Every new play of a track, repeats included, for scrobbling.
+    plays: broadcast::Sender<crate::scrobble::Play>,
     tracking: Mutex<HashMap<String, PlaybackTracking>>,
     persist: Notify,
     queue_path: PathBuf,
@@ -159,6 +161,7 @@ impl Playback {
         player.set_volume(state.volume);
         player.set_muted(state.muted);
         let (seeked, _) = broadcast::channel(16);
+        let (plays, _) = broadcast::channel(16);
         let this = Arc::new(Self {
             state: Mutex::new(state),
             player,
@@ -167,6 +170,7 @@ impl Playback {
             config,
             events,
             seeked,
+            plays,
             tracking: Mutex::new(HashMap::new()),
             persist: Notify::new(),
             queue_path,
@@ -186,6 +190,10 @@ impl Playback {
 
     pub fn queue_state(&self) -> QueueState {
         queue_state(&self.state.lock())
+    }
+
+    pub fn subscribe_plays(&self) -> broadcast::Receiver<crate::scrobble::Play> {
+        self.plays.subscribe()
     }
 
     /// The entry that plays after the current one, for warming its extras.
@@ -877,6 +885,11 @@ impl Playback {
         if loaded.resumed {
             return;
         }
+        let _ = self.plays.send(crate::scrobble::Play {
+            track: entry.track.clone(),
+            position_ms: st.position_ms,
+            duration_ms: st.duration_ms,
+        });
         let video_id = entry.track.video_id;
         let report = self.config.report_history && self.session.info().signed_in;
         let this = self.clone();

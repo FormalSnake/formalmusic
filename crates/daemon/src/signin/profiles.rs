@@ -272,6 +272,24 @@ pub fn parse_netscape(file: &str, now: u64) -> Vec<Cookie> {
 
 /// The `Cookie` header of the YouTube session in `profile`.
 pub async fn import(profile: &Profile, scratch: &Path) -> Result<String, String> {
+    read(profile, scratch, signed_in_header)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "No YouTube Music session in {} ({}). Sign in to music.youtube.com there first.",
+                profile.browser.name(),
+                profile.name
+            )
+        })
+}
+
+/// The first answer `pick` finds in the profile's cookies, trying each
+/// keyring in turn.
+pub async fn read<T>(
+    profile: &Profile,
+    scratch: &Path,
+    pick: impl Fn(&[Cookie]) -> Option<T>,
+) -> Result<Option<T>, String> {
     crate::config::create_private_dir(scratch).map_err(|e| e.to_string())?;
     let program = crate::streams::ytdlp_program();
     for keyring in keyrings(profile.browser) {
@@ -311,26 +329,22 @@ pub async fn import(profile: &Profile, scratch: &Path) -> Result<String, String>
             now,
         );
         drop(file);
-        if let Some(header) = signed_in_header(&cookies) {
-            return Ok(header);
+        if let Some(found) = pick(&cookies) {
+            return Ok(Some(found));
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::info!(
             browser = profile.browser.id(),
             keyring,
             read = cookies.len(),
-            "no YouTube session in the profile: {}",
+            "no matching cookies in the profile: {}",
             stderr
                 .lines()
                 .rfind(|l| !l.contains("provide at least one URL"))
                 .unwrap_or_default()
         );
     }
-    Err(format!(
-        "No YouTube Music session in {} ({}). Sign in to music.youtube.com there first.",
-        profile.browser.name(),
-        profile.name
-    ))
+    Ok(None)
 }
 
 /// A 0600 file yt-dlp writes every cookie of the profile to, removed when

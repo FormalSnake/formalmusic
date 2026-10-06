@@ -104,11 +104,22 @@ impl BrowserSignIn {
 
     /// The `Cookie` header of the YouTube session in one of [`Self::profiles`].
     pub async fn import(&self, browser: &str, path: &str) -> Result<String, ApiError> {
-        let profile = profiles::list()
-            .into_iter()
-            .find(|p| p.browser.id() == browser && p.dir.as_os_str() == path)
-            .ok_or_else(|| ApiError::NotFound(format!("browser profile {browser} {path}")))?;
+        let profile = find_profile(browser, path)?;
         profiles::import(&profile, &self.dir.join("import"))
+            .await
+            .map_err(ApiError::BadRequest)
+    }
+
+    /// The first answer `pick` finds in the cookies of one of
+    /// [`Self::profiles`], for sites other than YouTube.
+    pub async fn read_cookies<T>(
+        &self,
+        browser: &str,
+        path: &str,
+        pick: impl Fn(&[Cookie]) -> Option<T>,
+    ) -> Result<Option<T>, ApiError> {
+        let profile = find_profile(browser, path)?;
+        profiles::read(&profile, &self.dir.join("import"), pick)
             .await
             .map_err(ApiError::BadRequest)
     }
@@ -156,6 +167,13 @@ impl BrowserSignIn {
             })
         })
     }
+}
+
+fn find_profile(browser: &str, path: &str) -> Result<profiles::Profile, ApiError> {
+    profiles::list()
+        .into_iter()
+        .find(|p| p.browser.id() == browser && p.dir.as_os_str() == path)
+        .ok_or_else(|| ApiError::NotFound(format!("browser profile {browser} {path}")))
 }
 
 async fn resolve(id: Option<&str>) -> Result<(Browser, Launcher), ApiError> {
