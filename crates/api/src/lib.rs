@@ -169,7 +169,9 @@ pub enum Reply {
 #[serde(tag = "event", content = "data", rename_all = "snake_case")]
 pub enum Event {
     Player(PlayerState),
-    /// Sent about four times a second while playing, and on every seek.
+    /// Sent about once a second while playing, and at once on every play,
+    /// pause, seek and track change. Clients interpolate in between from
+    /// [`PlayerState::status`].
     Position { position_ms: u64, buffered_ms: u64 },
     Queue(QueueState),
     Session(SessionInfo),
