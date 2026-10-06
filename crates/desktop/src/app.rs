@@ -945,11 +945,9 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                     cx,
                 ));
             }
-            "suggest" => {
-                let handle = this.topbar.read(cx).search_handle(cx);
-                window.focus(&handle, cx);
-                this.store.suggest("ha");
-            }
+            "suggest" => this
+                .topbar
+                .update(cx, |topbar, cx| topbar.type_query("ha", window, cx)),
             _ => {}
         });
         wait(2500).await;

@@ -16,6 +16,7 @@ use crate::primitives::{IconButton, overlay_shadows};
 use crate::theme::{TITLEBAR_HEIGHT, Theme, radius, spacing, type_scale};
 
 const SEARCH_WIDTH: Pixels = px(480.);
+const SUGGESTION_ART: Pixels = px(32.);
 
 pub struct TopBar {
     store: MusicStore,
@@ -80,6 +81,18 @@ impl TopBar {
 
     pub fn search_handle(&self, cx: &App) -> FocusHandle {
         self.input.focus_handle(cx)
+    }
+
+    /// Types `query` into the focused field, as the `suggest` screenshot shows it.
+    #[cfg(feature = "screenshot")]
+    pub fn type_query(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.input.update(cx, |state, cx| {
+            state.set_value(query.to_owned(), window, cx)
+        });
+        window.focus(&self.input.focus_handle(cx), cx);
+        self.focused = true;
+        self.store.suggest(query);
+        cx.notify();
     }
 
     /// Whether typing goes to the search field, so single-key shortcuts stand down.
@@ -233,15 +246,24 @@ impl TopBar {
                     }),
                 );
             match &suggestion {
+                // The icon sits in a box as wide as an item's cover, so
+                // query and item text start on the same edge.
                 Suggestion::Query { text, from_history } => row
                     .child(
-                        Icon::new(if *from_history {
-                            IconName::History
-                        } else {
-                            IconName::Search
-                        })
-                        .size(px(16.))
-                        .color(palette.secondary),
+                        div()
+                            .w(SUGGESTION_ART)
+                            .flex_shrink_0()
+                            .flex()
+                            .justify_center()
+                            .child(
+                                Icon::new(if *from_history {
+                                    IconName::History
+                                } else {
+                                    IconName::Search
+                                })
+                                .size(px(16.))
+                                .color(palette.secondary),
+                            ),
                     )
                     .child(
                         div()
@@ -303,7 +325,7 @@ impl TopBar {
                     };
                     row.child(art::cover(
                         &thumbnails,
-                        px(32.),
+                        SUGGESTION_ART,
                         radius::ART_SMALL,
                         round,
                         &palette,
