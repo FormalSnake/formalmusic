@@ -300,8 +300,16 @@ where
                     }
                 }
             },
-            move |err| {
-                let _ = errors.send(Command::OutputError(err.to_string()));
+            move |err| match err.kind() {
+                // An xrun is one audible glitch that the backend recovers from
+                // by itself (a CPU stall during a system switch is enough), and
+                // a reroute keeps the stream running. Neither ends the track.
+                cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged => {
+                    tracing::debug!(%err, "audio output glitch")
+                }
+                _ => {
+                    let _ = errors.send(Command::OutputError(err.to_string()));
+                }
             },
             None,
         )
