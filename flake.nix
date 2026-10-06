@@ -14,7 +14,7 @@
 
   outputs = { self, nixpkgs, yt-dlp }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
+      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
       overlay = final: prev: {
         yt-dlp = prev.yt-dlp.overrideAttrs {
