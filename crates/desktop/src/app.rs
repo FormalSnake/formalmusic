@@ -1001,6 +1001,11 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
     use formalmusic_core::SearchKey;
     cx.set_reduce_motion(true);
     let scene = std::env::var("FORMALMUSIC_SCREENSHOT_SCENE").unwrap_or_default();
+    // "artist-end" and the like: the scene scrolled to the bottom of its page.
+    let (scene, to_end) = match scene.strip_suffix("-end") {
+        Some(scene) => (scene.to_owned(), true),
+        None => (scene, false),
+    };
     cx.spawn_in(window, async move |this, cx| {
         let executor = cx.background_executor().clone();
         let wait = |ms| executor.timer(std::time::Duration::from_millis(ms));
@@ -1032,6 +1037,31 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                 cx,
             ),
             "explore" => this.navigate(Route::Browse(BrowseTarget::Explore), false, cx),
+            "charts" => this.navigate(Route::Browse(BrowseTarget::Charts), false, cx),
+            "new-releases" => this.navigate(Route::Browse(BrowseTarget::NewReleases), false, cx),
+            "moods" => this.navigate(Route::Browse(BrowseTarget::MoodsAndGenres), false, cx),
+            "mood" => this.navigate(
+                Route::Browse(BrowseTarget::MoodCategory {
+                    params: String::new(),
+                }),
+                false,
+                cx,
+            ),
+            "library-albums" => this.navigate(
+                Route::Browse(BrowseTarget::Library(LibraryTab::Albums)),
+                false,
+                cx,
+            ),
+            "library-artists" => this.navigate(
+                Route::Browse(BrowseTarget::Library(LibraryTab::Artists)),
+                false,
+                cx,
+            ),
+            "library-songs" => this.navigate(
+                Route::Browse(BrowseTarget::Library(LibraryTab::Songs)),
+                false,
+                cx,
+            ),
             "history" => this.navigate(Route::Browse(BrowseTarget::History), false, cx),
             "library" => this.navigate(
                 Route::Browse(BrowseTarget::Library(LibraryTab::Playlists)),
@@ -1046,6 +1076,29 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                 false,
                 cx,
             ),
+            // "search-songs", "search-albums" and so on: one filter chip.
+            filtered if filtered.starts_with("search-") => {
+                use formalmusic_api::SearchFilter::*;
+                let filter = match &filtered["search-".len()..] {
+                    "songs" => Songs,
+                    "videos" => Videos,
+                    "albums" => Albums,
+                    "artists" => Artists,
+                    "community" => CommunityPlaylists,
+                    "featured" => FeaturedPlaylists,
+                    "podcasts" => Podcasts,
+                    "episodes" => Episodes,
+                    _ => Profiles,
+                };
+                this.navigate(
+                    Route::Search(SearchKey {
+                        query: "light".into(),
+                        filter: Some(filter),
+                    }),
+                    false,
+                    cx,
+                )
+            }
             "queue" => this.set_expanded(Some(Tab::UpNext), cx),
             // Paused mid-word with a backing vocal lit, the wipe and the
             // depth ramp drawn as they play rather than jumped to an end.
@@ -1120,11 +1173,23 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                 .update(cx, |topbar, cx| topbar.type_query("ha", window, cx)),
             _ => {}
         });
-        wait(2500).await;
-        let _ = cx.update(|window, _| window.refresh());
-        wait(400).await;
-        let _ = cx.update(|window, _| window.refresh());
-        wait(200).await;
+        // A window that macOS reports as covered gets no frames, so each
+        // pass draws by hand rather than waiting for the display link.
+        let draw = |window: &mut Window, cx: &mut App| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        };
+        for (n, ms) in [1000, 1000, 500, 400, 200].into_iter().enumerate() {
+            wait(ms).await;
+            let _ = cx.update(draw);
+            if n == 0 && to_end {
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(page) = this.pages.last() {
+                        page.read(cx).scroll_to_end();
+                    }
+                });
+            }
+        }
         let _ = cx.update(|window, cx| {
             match window.render_to_image() {
                 Ok(image) => {

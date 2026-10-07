@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # One PNG of the demo data with animations jumped to their end.
 #
-#   scripts/screenshot.sh [out.png] [scene]     default docs/images/formalmusic.png
+#   scripts/screenshot.sh [out.png] [scene] [WxH]     default docs/images/formalmusic.png, 1280x820
 #
-# Scenes: home (default), album, artist, playlist, own-playlist, edit-playlist, explore, history, library, search,
+# Scenes: home (default), album, artist, playlist, own-playlist, edit-playlist, explore, charts,
+# new-releases, moods, mood, history, library, library-albums, library-artists, library-songs, search,
+# search-songs (and -videos, -albums, -artists, -community, -featured, -podcasts, -episodes, -profiles),
+# any page scene with -end (search-end, artist-end) scrolled to its bottom,
 # suggest, queue, lyrics, lyrics-duet, related, signin, settings, shortcuts, menu, collapsed.
 #
 # macOS renders the frame offscreen with Metal (the `screenshot` feature);
@@ -13,6 +16,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:-$root/docs/images/formalmusic.png}
 scene=${2:-home}
+[ -n "${3:-}" ] && export FORMALMUSIC_SCREENSHOT_SIZE=$3
 # The sign-in screen shows itself when nobody is signed in.
 [ "$scene" = signin ] && export FORMALMUSIC_DEMO_SIGNED_OUT=1
 mkdir -p "$(dirname "$out")"

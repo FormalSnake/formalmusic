@@ -48,13 +48,26 @@ fn window_options(cx: &App) -> WindowOptions {
     });
     options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
         None,
-        size(px(1280.), px(820.)),
+        window_size(),
         cx,
     )));
     options.window_min_size = Some(size(px(880.), px(560.)));
     options.app_id = Some(APP_ID.into());
     options.focus = std::env::var("GPUIX_BACKGROUND").ok().as_deref() != Some("1");
     options
+}
+
+/// `scripts/screenshot.sh` sets `FORMALMUSIC_SCREENSHOT_SIZE` ("1900x1024")
+/// to shoot a scene at another window size.
+fn window_size() -> Size<Pixels> {
+    let shot = cfg!(feature = "screenshot")
+        .then(|| std::env::var("FORMALMUSIC_SCREENSHOT_SIZE").ok())
+        .flatten()
+        .and_then(|value| {
+            let (width, height) = value.split_once('x')?;
+            Some(size(px(width.parse().ok()?), px(height.parse().ok()?)))
+        });
+    shot.unwrap_or(size(px(1280.), px(820.)))
 }
 
 /// glibc gives each thread that allocates under contention an arena of its
