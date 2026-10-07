@@ -20,8 +20,17 @@ use crate::actions::MenuContext;
 use crate::bridge::{Bridge, Topic};
 use crate::icons::{Icon, IconName};
 use crate::primitives::{Button, ButtonKind};
-use crate::shelves::{self, CARD_GAP, Env, MOOD_TILE, RowLayout};
-use crate::theme::{CARD_ART, PAGE_INSET, PLAYER_HEIGHT, Theme, spacing, type_scale};
+use crate::shelves::{self, CARD_GAP, Env, MOOD_TILE, QUICK_PICK_WIDTH, RowLayout};
+use crate::theme::{
+    CARD_ART, PAGE_INSET, PAGE_MAX_WIDTH, PLAYER_HEIGHT, Theme, spacing, type_scale,
+};
+
+/// Below this page width track rows drop their album and play count
+/// columns, and the top result stacks its songs under the card.
+const WIDE_ROWS: Pixels = px(860.);
+const HERO_SIDE_BY_SIDE: Pixels = px(1000.);
+/// Songs beside the top result.
+const HERO_SONGS: usize = 4;
 
 /// What a page shows, whichever command fetched it.
 #[derive(Clone)]
@@ -85,6 +94,8 @@ struct Rows {
     env: Option<Env>,
     /// The header's description is expanded past its clamp.
     description_open: bool,
+    /// The page's width as of last frame, up to [`PAGE_MAX_WIDTH`].
+    width: Pixels,
 }
 
 pub struct PageView {
@@ -134,6 +145,7 @@ impl PageView {
             has_more: false,
             env: None,
             description_open: false,
+            width: px(0.),
         }));
         let this = Self {
             route,
@@ -176,9 +188,13 @@ impl PageView {
         self.list.scroll_to_end();
     }
 
-    fn columns_for(width: Pixels, tile: Pixels) -> usize {
-        let available = width - PAGE_INSET * 2. + CARD_GAP;
-        ((available / (tile + CARD_GAP)).floor() as usize).max(1)
+    /// Cards and mood tiles per grid row at `width`.
+    fn columns_for(width: Pixels) -> (usize, usize) {
+        let width = width.min(PAGE_MAX_WIDTH);
+        (
+            shelves::tiles(width, CARD_ART).0,
+            shelves::tiles(width, MOOD_TILE).0,
+        )
     }
 
     fn build_rows(
@@ -188,6 +204,9 @@ impl PageView {
         has_more: bool,
         correction: bool,
     ) -> Vec<Row> {
+        // A filtered search lists albums, artists and playlists as rows; they
+        // read better as the card grid the library uses.
+        let search = matches!(content, Content::Search(_));
         let mut rows = Vec::new();
         if content.header().is_some() {
             rows.push(Row::Header);
@@ -203,7 +222,15 @@ impl PageView {
                 continue;
             }
             rows.push(Row::Title(index));
-            match section.layout {
+            let layout = match section.layout {
+                SectionLayout::List
+                    if search && !section.items.iter().any(|i| matches!(i, Item::Track(_))) =>
+                {
+                    SectionLayout::Grid
+                }
+                layout => layout,
+            };
+            match layout {
                 SectionLayout::Carousel => rows.push(Row::Carousel(index)),
                 SectionLayout::TrackGrid => rows.push(Row::TrackGrid(index)),
                 SectionLayout::Hero => rows.push(Row::Hero(index)),
@@ -237,10 +264,7 @@ impl PageView {
     /// so scroll position and measured heights survive an appended page.
     fn sync(&mut self, cx: &mut Context<Self>) -> Status {
         let width = self.width.get();
-        let columns = (
-            Self::columns_for(width, CARD_ART),
-            Self::columns_for(width, MOOD_TILE),
-        );
+        let columns = Self::columns_for(width);
         let (content, status, loading_more) = {
             let state = self.store.state();
             match &self.route {
@@ -286,6 +310,7 @@ impl PageView {
         };
         let mut shared = self.shared.borrow_mut();
         shared.env = Some(env);
+        shared.width = width.min(PAGE_MAX_WIDTH);
         shared.loading_more = loading_more;
         let Some(content) = content else {
             if shared.content.take().is_some() {
@@ -359,7 +384,9 @@ impl PageView {
             has_more,
             env,
             description_open,
+            width,
         } = &mut *guard;
+        let width = *width;
         let (Some(content), Some(env), Some(row)) =
             (content.clone(), env.clone(), rows.get(index).copied())
         else {
@@ -456,31 +483,72 @@ impl PageView {
                     SectionLayout::Carousel | SectionLayout::TrackGrid
                 )
                 .then(|| scrolls.entry(section).or_default().clone());
-                shelves::shelf_title(shelf, scroll.as_ref(), &env, section, notify_page)
+                let show_all = match (route, shelf.filter) {
+                    (Route::Search(key), Some(filter)) if key.filter.is_none() => {
+                        let query = key.query.clone();
+                        Some(Rc::new(move |cx: &mut App| {
+                            crate::app::navigate_replace(
+                                Route::Search(SearchKey {
+                                    query: query.clone(),
+                                    filter: Some(filter),
+                                }),
+                                cx,
+                            )
+                        }) as shelves::Callback)
+                    }
+                    _ => None,
+                };
+                shelves::shelf_title(shelf, scroll.as_ref(), &env, section, notify_page, show_all)
             }
             Row::Carousel(section) => shelves::carousel(
                 &sections[section],
                 scrolls.entry(section).or_default(),
                 &env,
                 section,
+                shelves::tiles(width, CARD_ART).1,
             ),
             Row::TrackGrid(section) => shelves::track_grid(
                 &sections[section],
                 scrolls.entry(section).or_default(),
                 &env,
                 section,
+                shelves::tiles(width, QUICK_PICK_WIDTH).1,
             ),
-            Row::Hero(section) => sections[section]
-                .items
-                .first()
-                .map(|item| shelves::hero(item, &env))
-                .unwrap_or_else(|| div().into_any_element()),
+            Row::Hero(section) => {
+                let tracks = |shelf: &Section| -> Vec<formalmusic_api::Track> {
+                    shelf
+                        .items
+                        .iter()
+                        .filter_map(|item| match item {
+                            Item::Track(track) => Some(track.clone()),
+                            _ => None,
+                        })
+                        .take(HERO_SONGS)
+                        .collect()
+                };
+                let mut songs = tracks(&sections[section]);
+                if songs.is_empty()
+                    && let Some(shelf) = sections
+                        .iter()
+                        .find(|shelf| shelf.filter == Some(SearchFilter::Songs))
+                {
+                    songs = tracks(shelf);
+                }
+                shelves::hero(&sections[section], &songs, &env, width >= HERO_SIDE_BY_SIDE)
+            }
             Row::Item(section, item) => {
                 let shelf = &sections[section];
                 let id = ElementId::NamedInteger(format!("row-{section}").into(), item as u64);
                 match &shelf.items[item] {
                     Item::Track(track) => {
                         let album = matches!(route, Route::Browse(BrowseTarget::Album(_)));
+                        let playlist = matches!(route, Route::Browse(BrowseTarget::Playlist(_)));
+                        let any = |has: fn(&formalmusic_api::Track) -> bool| {
+                            shelf
+                                .items
+                                .iter()
+                                .any(|item| matches!(item, Item::Track(track) if has(track)))
+                        };
                         let album_artists: Vec<Link> = match content.header() {
                             Some(Header::Detail { subtitle, .. }) if album => subtitle
                                 .iter()
@@ -502,10 +570,13 @@ impl PageView {
                             &album_artists,
                             &env,
                             on_play,
-                            match route {
-                                Route::Search(SearchKey { filter: None, .. }) => RowLayout::Byline,
-                                _ if window.viewport_size().width > px(1100.) => RowLayout::Wide,
-                                _ => RowLayout::Narrow,
+                            if width >= WIDE_ROWS {
+                                RowLayout::Wide {
+                                    album: !album && any(|track| track.album.is_some()),
+                                    plays: !playlist && any(|track| track.plays.is_some()),
+                                }
+                            } else {
+                                RowLayout::Narrow
                             },
                         )
                     }
@@ -514,6 +585,11 @@ impl PageView {
             }
             Row::Grid(section, start, count) => {
                 let shelf = &sections[section];
+                let moods = shelf
+                    .items
+                    .iter()
+                    .all(|item| matches!(item, Item::Mood { .. }));
+                let tile = shelves::tiles(width, if moods { MOOD_TILE } else { CARD_ART }).1;
                 div()
                     .flex()
                     .flex_row()
@@ -529,6 +605,7 @@ impl PageView {
                                     (start + n) as u64,
                                 ),
                                 &env,
+                                tile,
                             )
                         },
                     ))
@@ -694,11 +771,7 @@ impl Render for PageView {
         .h(px(0.));
         // Grids are cut by last frame's width; a resize that changes the
         // column count needs one more pass.
-        let width_now = self.width.get();
-        let columns = (
-            Self::columns_for(width_now, CARD_ART),
-            Self::columns_for(width_now, MOOD_TILE),
-        );
+        let columns = Self::columns_for(self.width.get());
         if columns != self.columns && self.shared.borrow().content.is_some() {
             cx.on_next_frame(window, |_, _, cx| cx.notify());
         }
@@ -708,8 +781,19 @@ impl Render for PageView {
                 let route = self.route.clone();
                 let page = cx.entity().downgrade();
                 list(self.list.clone(), move |index, window, cx| {
+                    // The artist banner runs the full width; it centres its
+                    // own text like the rest.
+                    let full_bleed = {
+                        let shared = shared.borrow();
+                        shared.rows.get(index) == Some(&Row::Header)
+                            && matches!(
+                                shared.content.as_ref().and_then(Content::header),
+                                Some(Header::Artist { .. })
+                            )
+                    };
                     div()
                         .w_full()
+                        .when(!full_bleed, |el| el.max_w(PAGE_MAX_WIDTH).mx_auto())
                         .child(PageView::render_row(
                             &shared, index, &route, &page, window, cx,
                         ))

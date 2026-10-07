@@ -35,11 +35,9 @@ pub struct Env {
 pub enum RowLayout {
     /// Title and artists, the duration on the right.
     Narrow,
-    /// Narrow plus the album, or the play count on an album page, in its own column.
-    Wide,
-    /// Search's mixed results: "Song \u{2022} artists \u{2022} album \u{2022} 3:07"
-    /// under the title, the way music.youtube.com lists them.
-    Byline,
+    /// Narrow plus a column for the album and one for the play count, each
+    /// kept on every row of a list where some row has one, so they line up.
+    Wide { album: bool, plays: bool },
 }
 
 impl Env {
@@ -52,9 +50,19 @@ impl Env {
 }
 
 pub const CARD_GAP: Pixels = px(20.);
-const QUICK_PICK_WIDTH: Pixels = px(360.);
+pub const QUICK_PICK_WIDTH: Pixels = px(360.);
 const ROW_ART: Pixels = px(40.);
 pub const MOOD_TILE: Pixels = px(196.);
+const HERO_ART: Pixels = px(160.);
+
+/// How many tiles at least `tile` wide fit across a page `width` wide, and
+/// the width that makes that many fill it edge to edge.
+pub fn tiles(width: Pixels, tile: Pixels) -> (usize, Pixels) {
+    let inner = width - PAGE_INSET * 2.;
+    let columns = (((inner + CARD_GAP) / (tile + CARD_GAP)).floor() as usize).max(1);
+    let fill = (inner - CARD_GAP * (columns - 1) as f32) / columns as f32;
+    (columns, fill.max(tile))
+}
 
 fn title_text(text: impl Into<SharedString>, palette: &Palette) -> Div {
     div()
@@ -88,14 +96,18 @@ fn explicit_badge(palette: &Palette) -> impl IntoElement {
         .child("E")
 }
 
+pub type Callback = Rc<dyn Fn(&mut App)>;
+
 /// Shelf heading: the small strapline over the title, "More" and, for
 /// shelves that scroll sideways, the arrows.
+/// `show_all` replaces "More" with the web app's "Show all" on search shelves.
 pub fn shelf_title(
     section: &Section,
     scroll: Option<&ScrollHandle>,
     env: &Env,
     id: usize,
     on_scrolled: Rc<dyn Fn(&mut App)>,
+    show_all: Option<Callback>,
 ) -> AnyElement {
     let palette = env.palette;
     let Some(title) = section.title.clone() else {
@@ -134,7 +146,15 @@ pub fn shelf_title(
                 }),
             )
     });
-    let more = section.more.clone().map(|target| {
+    let more: Option<(&str, Callback)> = match (show_all, section.more.clone()) {
+        (Some(show_all), _) => Some(("Show all", show_all)),
+        (None, Some(target)) => Some((
+            "More",
+            Rc::new(move |cx: &mut App| actions::open(target.clone(), cx)),
+        )),
+        (None, None) => None,
+    };
+    let more = more.map(|(label, on_click)| {
         div()
             .id(("shelf-more", id))
             .h(px(32.))
@@ -149,8 +169,8 @@ pub fn shelf_title(
             .text_size(type_scale::CAPTION.font_size)
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(palette.text)
-            .on_click(move |_, _, cx| actions::open(target.clone(), cx))
-            .child("More")
+            .on_click(move |_, _, cx| on_click(cx))
+            .child(label)
     });
     div()
         .w_full()
@@ -202,7 +222,13 @@ fn page_by(handle: &ScrollHandle, direction: f32) {
     handle.set_offset(point(x, offset.y));
 }
 
-pub fn carousel(section: &Section, scroll: &ScrollHandle, env: &Env, id: usize) -> AnyElement {
+pub fn carousel(
+    section: &Section,
+    scroll: &ScrollHandle,
+    env: &Env,
+    id: usize,
+    card_width: Pixels,
+) -> AnyElement {
     div()
         .id(("carousel", id))
         // A flex parent and a non-shrinking row: as a block child the row is
@@ -226,6 +252,7 @@ pub fn carousel(section: &Section, scroll: &ScrollHandle, env: &Env, id: usize) 
                         item,
                         ElementId::NamedInteger(format!("card-{id}").into(), n as u64),
                         env,
+                        card_width,
                     )
                 })),
         )
@@ -234,11 +261,11 @@ pub fn carousel(section: &Section, scroll: &ScrollHandle, env: &Env, id: usize) 
 
 /// A square cover, its title and a second line, with a play button over the
 /// cover on hover.
-pub fn card(item: &Item, id: ElementId, env: &Env) -> AnyElement {
+pub fn card(item: &Item, id: ElementId, env: &Env, width: Pixels) -> AnyElement {
     let palette = env.palette;
     let (title, subtitle, thumbnails, round) = card_text(item);
     match item {
-        Item::Mood { .. } => return mood_tile(item, id, env),
+        Item::Mood { .. } => return mood_tile(item, id, env, width),
         Item::Shortcut { .. } => return shortcut_tile(item, id, env),
         _ => {}
     }
@@ -280,7 +307,7 @@ pub fn card(item: &Item, id: ElementId, env: &Env) -> AnyElement {
     div()
         .id(id)
         .group(group.clone())
-        .w(CARD_ART)
+        .w(width)
         .flex_shrink_0()
         .flex()
         .flex_col()
@@ -308,18 +335,12 @@ pub fn card(item: &Item, id: ElementId, env: &Env) -> AnyElement {
         .child(
             div()
                 .relative()
-                .child(art::cover(
-                    &thumbnails,
-                    CARD_ART,
-                    radius::ART,
-                    round,
-                    &palette,
-                ))
+                .child(art::cover(&thumbnails, width, radius::ART, round, &palette))
                 .child(
                     div()
                         .absolute()
                         .inset_0()
-                        .rounded(if round { CARD_ART / 2. } else { radius::ART })
+                        .rounded(if round { width / 2. } else { radius::ART })
                         .group_hover(group, |style| style.bg(hsla(0., 0., 0., 0.18))),
                 )
                 .children(play),
@@ -409,7 +430,7 @@ fn card_text(
     }
 }
 
-pub fn mood_tile(item: &Item, id: ElementId, env: &Env) -> AnyElement {
+pub fn mood_tile(item: &Item, id: ElementId, env: &Env, width: Pixels) -> AnyElement {
     let Item::Mood { title, color, .. } = item else {
         return div().into_any_element();
     };
@@ -420,7 +441,7 @@ pub fn mood_tile(item: &Item, id: ElementId, env: &Env) -> AnyElement {
     let target = actions::target_of(item);
     div()
         .id(id)
-        .w(MOOD_TILE)
+        .w(width)
         .h(px(48.))
         .flex_shrink_0()
         .flex()
@@ -485,17 +506,24 @@ fn shortcut_tile(item: &Item, id: ElementId, env: &Env) -> AnyElement {
         .into_any_element()
 }
 
-/// Quick picks: columns of four track rows, scrolled sideways.
-pub fn track_grid(section: &Section, scroll: &ScrollHandle, env: &Env, id: usize) -> AnyElement {
+/// Quick picks: columns of four rows, scrolled sideways. Charts' top
+/// artists come in the same shelf as rows of artists.
+pub fn track_grid(
+    section: &Section,
+    scroll: &ScrollHandle,
+    env: &Env,
+    id: usize,
+    column_width: Pixels,
+) -> AnyElement {
     let columns = section.items.chunks(4).enumerate().map(|(column, items)| {
         div()
-            .w(QUICK_PICK_WIDTH)
+            .w(column_width)
             .flex_shrink_0()
             .flex()
             .flex_col()
             .children(items.iter().enumerate().map(|(row, item)| {
                 let Item::Track(track) = item else {
-                    return card(
+                    return compact_item(
                         item,
                         ElementId::NamedInteger(
                             format!("grid-{id}").into(),
@@ -747,42 +775,34 @@ pub fn track_row(
         }
         None => row_art(track, current, group.clone(), &palette),
     };
-    let mut line = LinkLine::new(SharedString::from(format!("{id}-byline")), palette.text);
-    if layout == RowLayout::Byline {
-        line = line.text(kind(track)).dot();
-    }
-    line = line.names(&track.artists);
-    if layout == RowLayout::Byline {
-        if let Some(album) = &track.album {
-            line = line.dot().link(album);
-        }
-        if let Some(ms) = track.duration_ms {
-            line = line.dot().text(&duration(ms));
-        }
-    }
+    let line = LinkLine::new(SharedString::from(format!("{id}-byline")), palette.text)
+        .names(&track.artists);
+    let (album_column, plays_column) = match layout {
+        RowLayout::Wide { album, plays } => (album, plays),
+        RowLayout::Narrow => (false, false),
+    };
     let artists = div()
         .min_w(px(0.))
         .text_size(type_scale::BODY.font_size)
         .line_height(type_scale::BODY.line_height)
         .text_color(palette.secondary)
         .child(line);
-    let album = track
-        .album
-        .as_ref()
-        .filter(|_| layout == RowLayout::Wide && number.is_none())
-        .map(|album| {
-            div()
-                .w(relative(0.3))
-                .min_w(px(0.))
-                .truncate()
-                .text_size(type_scale::BODY.font_size)
-                .text_color(palette.secondary)
-                .child(link_text(
+    let album = album_column.then(|| {
+        div()
+            .w(relative(0.28))
+            .flex_shrink_0()
+            .min_w(px(0.))
+            .truncate()
+            .text_size(type_scale::BODY.font_size)
+            .text_color(palette.secondary)
+            .children(track.album.as_ref().map(|album| {
+                link_text(
                     album,
                     SharedString::from(format!("{id}-album")),
                     palette.text,
-                ))
-        });
+                )
+            }))
+    });
     div()
         .id(id.clone())
         .group(group.clone())
@@ -873,23 +893,17 @@ pub fn track_row(
                 }),
         )
         .children(album)
-        .when_some(
-            track
-                .plays
-                .clone()
-                .filter(|_| layout == RowLayout::Wide && number.is_some()),
-            |el, plays| {
-                el.child(
-                    div()
-                        .w(px(120.))
-                        .flex_shrink_0()
-                        .text_size(type_scale::CAPTION.font_size)
-                        .text_color(palette.secondary)
-                        .truncate()
-                        .child(plays),
-                )
-            },
-        )
+        .when(plays_column, |el| {
+            el.child(
+                div()
+                    .w(px(120.))
+                    .flex_shrink_0()
+                    .text_size(type_scale::CAPTION.font_size)
+                    .text_color(palette.secondary)
+                    .truncate()
+                    .child(track.plays.clone().unwrap_or_default()),
+            )
+        })
         .child(
             div()
                 .flex()
@@ -909,18 +923,16 @@ pub fn track_row(
                     move |rating, _| rate_store.rate(&rate_track, rating),
                 )),
         )
-        .when(layout != RowLayout::Byline, |el| {
-            el.child(
-                div()
-                    .w(px(44.))
-                    .flex_shrink_0()
-                    .text_size(type_scale::BODY.font_size)
-                    .text_color(palette.secondary)
-                    .font_features(tabular())
-                    .text_align(TextAlign::Right)
-                    .child(track.duration_ms.map(duration).unwrap_or_default()),
-            )
-        })
+        .child(
+            div()
+                .w(px(44.))
+                .flex_shrink_0()
+                .text_size(type_scale::BODY.font_size)
+                .text_color(palette.secondary)
+                .font_features(tabular())
+                .text_align(TextAlign::Right)
+                .child(track.duration_ms.map(duration).unwrap_or_default()),
+        )
         .child(
             div()
                 .opacity(0.)
@@ -945,9 +957,16 @@ pub fn track_row(
         .into_any_element()
 }
 
-/// A list row for anything that is not a track (artists, albums and
-/// playlists in filtered search results).
+/// A list row for anything that is not a track, as library artists list.
 pub fn item_row(item: &Item, id: ElementId, env: &Env) -> AnyElement {
+    div()
+        .mx(PAGE_INSET - spacing::X2)
+        .child(compact_item(item, id, env))
+        .into_any_element()
+}
+
+/// Art, title and subtitle of an album, artist or playlist in one 56 px row.
+pub fn compact_item(item: &Item, id: ElementId, env: &Env) -> AnyElement {
     let palette = env.palette;
     let (title, subtitle, thumbnails, round) = card_text(item);
     let target = actions::target_of(item);
@@ -955,7 +974,6 @@ pub fn item_row(item: &Item, id: ElementId, env: &Env) -> AnyElement {
     div()
         .id(id)
         .h(TRACK_ROW)
-        .mx(PAGE_INSET - spacing::X2)
         .px(spacing::X2)
         .flex()
         .flex_row()
@@ -1009,9 +1027,13 @@ fn kind(track: &Track) -> &'static str {
     }
 }
 
-/// Search's "Top result": a large cover with the name and its own actions.
-pub fn hero(item: &Item, env: &Env) -> AnyElement {
+/// Search's "Top result": the card with its own play buttons, and beside it
+/// the first few songs, or under it when the page is too narrow for both.
+pub fn hero(section: &Section, songs: &[Track], env: &Env, side_by_side: bool) -> AnyElement {
     let palette = env.palette;
+    let Some(item) = section.items.first() else {
+        return div().into_any_element();
+    };
     let (title, subtitle, thumbnails, round) = card_text(item);
     let kind = match item {
         Item::Track(track) => kind(track),
@@ -1023,7 +1045,6 @@ pub fn hero(item: &Item, env: &Env) -> AnyElement {
         Item::Shortcut { .. } => "Page",
     };
     let target = actions::target_of(item);
-    let (play_item, play_store) = (item.clone(), env.store.clone());
     let subtitle = match (item, subtitle) {
         (Item::Track(track), _) => [kind.to_owned(), byline(track)]
             .into_iter()
@@ -1035,11 +1056,65 @@ pub fn hero(item: &Item, env: &Env) -> AnyElement {
         (_, Some(subtitle)) => format!("{kind} \u{2022} {subtitle}"),
         (_, None) => kind.to_owned(),
     };
-    div()
+    let playable = actions::playable(item);
+    let play_playlist = |playlist_id: String, shuffle: bool, radio: bool, store: MusicStore| {
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+            store.play(
+                formalmusic_api::PlaySource::Playlist {
+                    playlist_id: playlist_id.clone(),
+                    tracks: Vec::new(),
+                },
+                0,
+                shuffle,
+                radio,
+            )
+        }
+    };
+    let (play_item, play_store) = (item.clone(), env.store.clone());
+    let buttons = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap(spacing::X2)
+        .pt(spacing::X3)
+        .when(playable, |el| {
+            el.child(pill_button(
+                "top-result-play",
+                IconName::Play,
+                "Play",
+                true,
+                palette,
+                move |_, _, cx| {
+                    cx.stop_propagation();
+                    actions::play_item(&play_item, &play_store)
+                },
+            ))
+        })
+        .when_some(section.shuffle_playlist_id.clone(), |el, playlist_id| {
+            el.child(pill_button(
+                "top-result-shuffle",
+                IconName::Shuffle,
+                "Shuffle",
+                !playable,
+                palette,
+                play_playlist(playlist_id, true, false, env.store.clone()),
+            ))
+        })
+        .when_some(section.radio_playlist_id.clone(), |el, playlist_id| {
+            el.child(pill_button(
+                "top-result-radio",
+                IconName::Radio,
+                "Radio",
+                false,
+                palette,
+                play_playlist(playlist_id, false, true, env.store.clone()),
+            ))
+        });
+    let card = div()
         .id("top-result")
-        .mx(PAGE_INSET)
+        .mx(spacing::X2)
         .p(spacing::X4)
-        .max_w(px(720.))
         .flex()
         .flex_row()
         .items_center()
@@ -1048,12 +1123,13 @@ pub fn hero(item: &Item, env: &Env) -> AnyElement {
         .bg(palette.raised)
         .cursor_pointer()
         .hover(move |style| style.bg(palette.raised_hover))
+        .when(side_by_side, |el| el.flex_1().min_w(px(0.)))
         .when_some(target, |el, target| {
             el.on_click(move |_, _, cx| actions::open(target.clone(), cx))
         })
         .child(art::cover(
             &thumbnails,
-            px(120.),
+            HERO_ART,
             radius::ART,
             round,
             &palette,
@@ -1066,28 +1142,61 @@ pub fn hero(item: &Item, env: &Env) -> AnyElement {
                 .min_w(px(0.))
                 .child(
                     div()
-                        .text_size(type_scale::LARGE.font_size)
-                        .line_height(type_scale::LARGE.line_height)
+                        .text_size(type_scale::DISPLAY.font_size)
+                        .line_height(type_scale::DISPLAY.line_height)
                         .font_weight(FontWeight::BOLD)
                         .text_color(palette.text)
-                        .truncate()
+                        .line_clamp(2)
                         .child(title),
                 )
-                .child(sub_text(subtitle, &palette))
-                .when(actions::playable(item), |el| {
-                    el.child(div().pt(spacing::X3).child(pill_button(
-                        "top-result-play",
-                        IconName::Play,
-                        "Play",
-                        true,
-                        palette,
-                        move |_, _, cx| {
-                            cx.stop_propagation();
-                            actions::play_item(&play_item, &play_store)
-                        },
-                    )))
-                }),
-        )
+                .child(
+                    div()
+                        .text_size(type_scale::BODY.font_size)
+                        .line_height(type_scale::BODY.line_height)
+                        .text_color(palette.secondary)
+                        .truncate()
+                        .child(subtitle),
+                )
+                .child(buttons),
+        );
+    let list = (!songs.is_empty()).then(|| {
+        let tracks: Vec<Track> = songs.to_vec();
+        div()
+            .flex()
+            .flex_col()
+            .when(side_by_side, |el| el.flex_1().min_w(px(0.)))
+            .children(songs.iter().enumerate().map(|(n, track)| {
+                let (store, tracks) = (env.store.clone(), tracks.clone());
+                compact_track(
+                    track,
+                    ElementId::NamedInteger("top-result-song".into(), n as u64),
+                    env,
+                    Rc::new(move |_| {
+                        store.play(
+                            formalmusic_api::PlaySource::Tracks {
+                                tracks: tracks.clone(),
+                            },
+                            n,
+                            false,
+                            false,
+                        )
+                    }),
+                )
+            }))
+    });
+    div()
+        .px(PAGE_INSET - spacing::X2)
+        .flex()
+        .gap(spacing::X6)
+        .map(|el| {
+            if side_by_side {
+                el.flex_row()
+            } else {
+                el.flex_col()
+            }
+        })
+        .child(card)
+        .children(list)
         .into_any_element()
 }
 

@@ -22,8 +22,8 @@ use crate::music_video::MusicVideo;
 use crate::primitives::IconButton;
 use crate::shelves::{self, Env};
 use crate::theme::{
-    PAGE_INSET, Palette, TITLEBAR_HEIGHT, Theme, radius, spacing, tabular, traffic_light_clearance,
-    type_scale, with_alpha,
+    CARD_ART, PAGE_INSET, Palette, TITLEBAR_HEIGHT, Theme, radius, spacing, tabular,
+    traffic_light_clearance, type_scale, with_alpha,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -213,7 +213,7 @@ impl NowPlaying {
                             ))
                         }))
                         .into_any_element(),
-                    _ => shelves::carousel(section, &scroll, &env, 100 + n),
+                    _ => shelves::carousel(section, &scroll, &env, 100 + n, CARD_ART),
                 };
                 div()
                     .flex()
@@ -224,6 +224,7 @@ impl NowPlaying {
                         &env,
                         100 + n,
                         noop.clone(),
+                        None,
                     ))
                     .child(body)
             }))

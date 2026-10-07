@@ -121,6 +121,9 @@ pub const TITLEBAR_HEIGHT: Pixels = px(52.);
 pub const PLAYER_HEIGHT: Pixels = px(76.);
 /// Gutter each side of a page. Shelves, headers and rows share it.
 pub const PAGE_INSET: Pixels = px(32.);
+/// A page stops widening here and centres, gutters included, as the web
+/// app's content column does on very wide windows.
+pub const PAGE_MAX_WIDTH: Pixels = px(1664.);
 pub const TRACK_ROW: Pixels = px(56.);
 pub const CARD_ART: Pixels = px(168.);
 
