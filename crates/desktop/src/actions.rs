@@ -136,6 +136,7 @@ pub fn item_menu(item: &Item, context: &MenuContext, store: &MusicStore) -> Vec<
                     .icon(IconName::Album),
             );
             items.extend(artist_rows(artists));
+            items.extend(share_row(item, store));
             items
         }
         Item::Playlist { playlist_id, .. } => {
@@ -175,21 +176,64 @@ pub fn item_menu(item: &Item, context: &MenuContext, store: &MusicStore) -> Vec<
                 })
                 .icon(IconName::Saved),
             ]
+            .into_iter()
+            .chain(share_row(item, store))
+            .collect()
         }
         Item::Artist { browse_id, .. } => {
             let target = BrowseTarget::Artist(browse_id.clone());
-            vec![
+            std::iter::once(
                 MenuItem::item("Go to artist", move |_, cx| open(target.clone(), cx))
                     .icon(IconName::Artist),
-            ]
+            )
+            .chain(share_row(item, store))
+            .collect()
         }
         Item::Podcast { .. } | Item::Mood { .. } | Item::Shortcut { .. } => {
             let Some(target) = target_of(item) else {
                 return Vec::new();
             };
-            vec![MenuItem::item("Open", move |_, cx| open(target.clone(), cx)).icon(IconName::Open)]
+            std::iter::once(
+                MenuItem::item("Open", move |_, cx| open(target.clone(), cx)).icon(IconName::Open),
+            )
+            .chain(share_row(item, store))
+            .collect()
         }
     }
+}
+
+/// The web app's link to an item, as its Share copies it.
+pub fn share_url(item: &Item) -> Option<String> {
+    const BASE: &str = "https://music.youtube.com";
+    Some(match item {
+        Item::Track(track) => format!("{BASE}/watch?v={}", track.video_id),
+        Item::Album {
+            playlist_id: Some(playlist_id),
+            ..
+        }
+        | Item::Playlist { playlist_id, .. } => format!("{BASE}/playlist?list={playlist_id}"),
+        Item::Album { browse_id, .. } => format!("{BASE}/browse/{browse_id}"),
+        Item::Artist { browse_id, .. } => format!("{BASE}/channel/{browse_id}"),
+        // A podcast's page is its playlist with the MPSP prefix dropped.
+        Item::Podcast { browse_id, .. } => match browse_id.strip_prefix("MPSP") {
+            Some(playlist_id) => format!("{BASE}/playlist?list={playlist_id}"),
+            None => format!("{BASE}/browse/{browse_id}"),
+        },
+        Item::Mood { .. } | Item::Shortcut { .. } => return None,
+    })
+}
+
+/// "Share": copies the item's link and says so.
+fn share_row(item: &Item, store: &MusicStore) -> Option<MenuItem> {
+    let url = share_url(item)?;
+    let store = store.clone();
+    Some(
+        MenuItem::item("Share", move |_, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+            store.confirm("Link copied".into());
+        })
+        .icon(IconName::Share),
+    )
 }
 
 fn artist_rows(artists: &[Link]) -> Vec<MenuItem> {
@@ -321,6 +365,8 @@ pub fn track_menu(track: &Track, context: &MenuContext, store: &MusicStore) -> V
         );
     }
     items.extend(artists);
+    items.push(MenuItem::Separator);
+    items.extend(share_row(&Item::Track(track.clone()), store));
     items
 }
 
@@ -392,4 +438,51 @@ pub fn prefetch_on_hover(target: Option<BrowseTarget>, hovered: bool, cx: &mut A
         }
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn share_copies_the_web_apps_links() {
+        let album = |playlist_id: Option<&str>| Item::Album {
+            browse_id: "MPREb_x".into(),
+            playlist_id: playlist_id.map(Into::into),
+            title: "A".into(),
+            album_type: None,
+            artists: Vec::new(),
+            year: None,
+            thumbnails: Vec::new(),
+            explicit: false,
+        };
+        let urls = [
+            album(Some("OLAK5uy_x")),
+            album(None),
+            Item::Artist {
+                browse_id: "UCx".into(),
+                name: "B".into(),
+                subtitle: None,
+                thumbnails: Vec::new(),
+            },
+            Item::Podcast {
+                browse_id: "MPSPPLx".into(),
+                title: "C".into(),
+                subtitle: None,
+                thumbnails: Vec::new(),
+            },
+        ]
+        .iter()
+        .map(|item| share_url(item).unwrap())
+        .collect::<Vec<_>>();
+        assert_eq!(
+            urls,
+            [
+                "https://music.youtube.com/playlist?list=OLAK5uy_x",
+                "https://music.youtube.com/browse/MPREb_x",
+                "https://music.youtube.com/channel/UCx",
+                "https://music.youtube.com/playlist?list=PLx",
+            ]
+        );
+    }
 }

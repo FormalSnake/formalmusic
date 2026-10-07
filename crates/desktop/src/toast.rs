@@ -12,7 +12,7 @@ pub const MAX_WIDTH: Pixels = px(480.);
 
 /// The resting pill. `app.rs` animates the bottom padding (rise) and the
 /// opacity, and keeps the last message mounted through the exit fade.
-pub fn toast(message: &str, cx: &App) -> Div {
+pub fn toast(message: &str, failure: bool, cx: &App) -> Div {
     let palette = Theme::get(cx);
     div()
         .absolute()
@@ -36,11 +36,15 @@ pub fn toast(message: &str, cx: &App) -> Div {
                 .border_color(palette.overlay_border)
                 .shadow(crate::primitives::overlay_shadows(&palette))
                 .max_w(MAX_WIDTH)
-                .child(
+                .child(if failure {
                     Icon::new(IconName::Alert)
                         .size(px(14.))
-                        .color(palette.danger),
-                )
+                        .color(palette.danger)
+                } else {
+                    Icon::new(IconName::Check)
+                        .size(px(14.))
+                        .color(palette.secondary)
+                })
                 .child(
                     div()
                         .text_size(type_scale::CAPTION.font_size)

@@ -83,6 +83,14 @@ pub struct SearchEntry {
     fetched_at: Option<Instant>,
 }
 
+/// One toast. `seq` counts them, so the same text twice is two toasts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notice {
+    pub seq: u64,
+    pub text: String,
+    pub failure: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LyricsEntry {
     pub lyrics: Option<Arc<Lyrics>>,
@@ -142,8 +150,8 @@ pub struct AppState {
     /// Songs saved to or removed from the library here, by video id, over
     /// what their pages said.
     pub saved_songs: HashMap<String, bool>,
-    /// A failure worth a toast, with a counter so the same text twice is two toasts.
-    pub notice: Option<(u64, String)>,
+    /// A failure or a confirmation worth a toast.
+    pub notice: Option<Notice>,
     /// `None` until the daemon has said.
     pub scrobbling: Option<ScrobbleStatus>,
 }
@@ -1991,14 +1999,24 @@ impl MusicStore {
     // Notices
     // ---------------------------------------------------------------------
 
+    /// A toast saying something failed.
     pub fn notice(&self, text: String) {
+        self.show_notice(text, true);
+    }
+
+    /// A toast confirming something done, such as a copied link.
+    pub fn confirm(&self, text: String) {
+        self.show_notice(text, false);
+    }
+
+    fn show_notice(&self, text: String, failure: bool) {
         let seq = {
             let mut private = self.inner.private.lock();
             private.notices += 1;
             private.notices
         };
         self.inner.update(|state, events| {
-            state.notice = Some((seq, text));
+            state.notice = Some(Notice { seq, text, failure });
             events.push(StoreEvent::Notice);
         });
     }
@@ -2006,11 +2024,7 @@ impl MusicStore {
     /// Clears the toast, unless a newer one replaced it meanwhile.
     pub fn clear_notice(&self, seq: u64) {
         self.inner.update(|state, events| {
-            if state
-                .notice
-                .as_ref()
-                .is_some_and(|(shown, _)| *shown == seq)
-            {
+            if state.notice.as_ref().is_some_and(|shown| shown.seq == seq) {
                 state.notice = None;
                 events.push(StoreEvent::Notice);
             }

@@ -88,7 +88,7 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Go to album, go to artist | track menu | yes | `desktop/src/actions.rs` |
 | Remove from queue | queue menu | yes | `desktop/src/now_playing.rs` |
 | Remove from history | history menu | yes | `desktop/src/actions.rs` (`track_menu`), `core/src/store.rs` (`remove_from_history`) |
-| Share, copy link | menu | no | No clipboard or share code outside sign-in |
+| Share, copy link | menu | yes | `desktop/src/actions.rs` (`share_url`): every song, video, album, playlist, artist and podcast menu, the player bar's and the expanded player's, copies the web app's link with a "Link copied" toast |
 | Report, not interested | menu | no | |
 | Shuffle play an album or playlist | menu | yes | `desktop/src/actions.rs` |
 | Subscribe to an artist | artist header | yes | `desktop/src/header.rs`, `daemon/src/daemon.rs` |
@@ -156,5 +156,5 @@ Most used first.
 
 1. Clear queue and save queue as playlist. ~2 hours.
 2. Episodes for Later entry, podcast resume position, episode save. ~a day.
-3. Share and copy link, desktop notifications on track change. ~half a day.
+3. Desktop notifications on track change. ~2 hours.
 4. Song credits, taste profile, uploads, collaborative playlists. Each ~a day or more; uploads need new protocol work.

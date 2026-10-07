@@ -194,8 +194,9 @@ pub struct AppRoot {
     shortcuts: bool,
     /// When a `g` was pressed, while it waits for the rest of its chord.
     chord_at: Option<std::time::Instant>,
-    toast: Option<(u64, SharedString)>,
-    toast_shown: Presence<SharedString>,
+    toast: Option<(u64, SharedString, bool)>,
+    /// The message, and whether it is a failure.
+    toast_shown: Presence<(SharedString, bool)>,
     root_focus: FocusHandle,
 }
 
@@ -639,18 +640,21 @@ impl AppRoot {
     /// The toast follows the store's notice; each one clears itself.
     fn sync_toast(&mut self, cx: &mut Context<Self>) {
         let notice = self.store.state().notice.clone();
-        if notice.as_ref().map(|(seq, _)| *seq) != self.toast.as_ref().map(|(seq, _)| *seq) {
-            if let Some((seq, _)) = &notice {
-                let (seq, store) = (*seq, self.store.clone());
+        if notice.as_ref().map(|notice| notice.seq) != self.toast.as_ref().map(|(seq, ..)| *seq) {
+            if let Some(notice) = &notice {
+                let (seq, store) = (notice.seq, self.store.clone());
                 cx.spawn(async move |_, cx| {
                     cx.background_executor().timer(TOAST_FOR).await;
                     store.clear_notice(seq);
                 })
                 .detach();
             }
-            self.toast = notice.map(|(seq, text)| (seq, text.into()));
+            self.toast = notice.map(|notice| (notice.seq, notice.text.into(), notice.failure));
         }
-        let shown = self.toast.as_ref().map(|(_, text)| text.clone());
+        let shown = self
+            .toast
+            .as_ref()
+            .map(|(_, text, failure)| (text.clone(), *failure));
         self.toast_shown
             .set(shown, |this: &mut Self| &mut this.toast_shown, cx);
     }
@@ -724,21 +728,25 @@ impl Render for AppRoot {
             )
         });
 
-        let notice = self.toast_shown.current().cloned().map(|message| {
-            let open = self.toast_shown.is_open();
-            let pill = crate::toast::toast(&message, cx);
-            motion::toward(
-                pill,
-                self.toast_shown.id("toast"),
-                open,
-                DURATION_BASE,
-                DURATION_FAST,
-                |el, t| {
-                    el.pb(crate::toast::BOTTOM - crate::toast::RISE * (1. - t))
-                        .opacity(t)
-                },
-            )
-        });
+        let notice = self
+            .toast_shown
+            .current()
+            .cloned()
+            .map(|(message, failure)| {
+                let open = self.toast_shown.is_open();
+                let pill = crate::toast::toast(&message, failure, cx);
+                motion::toward(
+                    pill,
+                    self.toast_shown.id("toast"),
+                    open,
+                    DURATION_BASE,
+                    DURATION_FAST,
+                    |el, t| {
+                        el.pb(crate::toast::BOTTOM - crate::toast::RISE * (1. - t))
+                            .opacity(t)
+                    },
+                )
+            });
 
         let page = self.pages.last().cloned();
         let collapsed = self.sidebar.read(cx).collapsed();
@@ -1144,6 +1152,7 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                     Some(cx.new(|cx| EditPlaylist::new(store, current, close, window, cx)));
             }
             "signin" => {}
+            "copied" => this.store.confirm("Link copied".into()),
             "shortcuts" => this.shortcuts = true,
             "settings" => this.open_settings(window, cx),
             "collapsed" => this.sidebar.update(cx, |sidebar, cx| sidebar.toggle(cx)),

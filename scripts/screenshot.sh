@@ -7,7 +7,7 @@
 # new-releases, moods, mood, history, library, library-albums, library-artists, library-songs, search,
 # search-songs (and -videos, -albums, -artists, -community, -featured, -podcasts, -episodes, -profiles),
 # any page scene with -end (search-end, artist-end) scrolled to its bottom,
-# suggest, queue, lyrics, lyrics-duet, related, signin, settings, shortcuts, menu, collapsed.
+# copied (the Share toast), suggest, queue, lyrics, lyrics-duet, related, signin, settings, shortcuts, menu, collapsed.
 #
 # macOS renders the frame offscreen with Metal (the `screenshot` feature);
 # Linux runs the release build inside scripts/linux-headless.sh's own sway.
