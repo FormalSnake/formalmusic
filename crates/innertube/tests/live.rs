@@ -442,6 +442,65 @@ async fn record_counterpart_fixture() {
     .unwrap();
 }
 
+/// `fixtures/search_*.json`: the All tab and every filter but Library, plus
+/// the Songs filter's first continuation, as an anonymous session gets them.
+#[tokio::test]
+#[ignore = "writes fixtures/search_*.json when FORMALMUSIC_RECORD=1"]
+async fn record_search_fixtures() {
+    if std::env::var("FORMALMUSIC_RECORD").as_deref() != Ok("1") {
+        eprintln!("skipping: FORMALMUSIC_RECORD is not 1");
+        return;
+    }
+    let client = client();
+    let save = |name: &str, mut json: serde_json::Value| {
+        // The visitor data and token jar identify the session.
+        json.as_object_mut().unwrap().remove("responseContext");
+        std::fs::write(
+            format!("{}/fixtures/{name}.json", env!("CARGO_MANIFEST_DIR")),
+            serde_json::to_string(&json).unwrap(),
+        )
+        .unwrap();
+    };
+    let filters = [
+        ("search_all", None),
+        ("search_songs", Some(SearchFilter::Songs)),
+        ("search_videos", Some(SearchFilter::Videos)),
+        ("search_albums", Some(SearchFilter::Albums)),
+        ("search_artists", Some(SearchFilter::Artists)),
+        (
+            "search_community_playlists",
+            Some(SearchFilter::CommunityPlaylists),
+        ),
+        (
+            "search_featured_playlists",
+            Some(SearchFilter::FeaturedPlaylists),
+        ),
+        ("search_podcasts", Some(SearchFilter::Podcasts)),
+        ("search_episodes", Some(SearchFilter::Episodes)),
+        ("search_profiles", Some(SearchFilter::Profiles)),
+    ];
+    for (name, filter) in filters {
+        let json = client
+            .raw("search", Client::search_body("daft punk", filter))
+            .await
+            .unwrap();
+        if filter == Some(SearchFilter::Songs) {
+            let token =
+                formalmusic_innertube::parse::search::parse_search("daft punk", filter, &json)
+                    .unwrap()
+                    .continuation
+                    .expect("songs continue");
+            let token = token.0.trim_start_matches("search:").to_owned();
+            let more = client
+                .raw("search", json!({ "continuation": token }))
+                .await
+                .unwrap();
+            save("search_continuation", more);
+        }
+        save(name, json);
+    }
+}
+
 fn renderer_keys(value: &serde_json::Value, keys: &mut std::collections::BTreeSet<String>) {
     match value {
         serde_json::Value::Object(map) => {

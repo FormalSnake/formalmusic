@@ -141,12 +141,19 @@ impl Client {
     }
 
     pub async fn search(&self, query: &str, filter: Option<SearchFilter>) -> Result<SearchResults> {
+        let json = self
+            .post("search", Self::search_body(query, filter))
+            .await?;
+        parse::search::parse_search(query, filter, &json)
+    }
+
+    /// The `search` body [`Client::search`] sends, for recording.
+    pub fn search_body(query: &str, filter: Option<SearchFilter>) -> Value {
         let mut body = json!({ "query": query });
         if let Some(filter) = filter {
             body["params"] = search_params(filter).into();
         }
-        let json = self.post("search", body).await?;
-        parse::search::parse_search(query, filter, &json)
+        body
     }
 
     pub async fn suggestions(&self, query: &str) -> Result<Vec<Suggestion>> {

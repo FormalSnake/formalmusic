@@ -295,7 +295,7 @@ pub enum Item {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Section {
     pub title: Option<String>,
     /// Small caption over the title ("Similar to", an artist name).
@@ -305,9 +305,18 @@ pub struct Section {
     /// Where "More" goes, if the shelf has one.
     pub more: Option<BrowseTarget>,
     pub continuation: Option<Continuation>,
+    /// On a search's All tab, the filter whose chip shows every result of
+    /// this shelf's kind, for its "Show all".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<SearchFilter>,
+    /// The search top result's Shuffle and Mix buttons, as playlists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shuffle_playlist_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radio_playlist_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SectionLayout {
     /// Horizontal row of square cards.
@@ -315,6 +324,7 @@ pub enum SectionLayout {
     /// The "Quick picks" grid of track rows, four rows per column.
     TrackGrid,
     /// Vertical track list, as on album and playlist pages.
+    #[default]
     List,
     /// Wrapping grid of tiles (moods, library albums).
     Grid,

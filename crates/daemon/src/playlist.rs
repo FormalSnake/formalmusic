@@ -361,6 +361,7 @@ mod tests {
                     items,
                     more: None,
                     continuation,
+                    ..Default::default()
                 }],
                 continuation: None,
             })

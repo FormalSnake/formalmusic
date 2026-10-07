@@ -2465,6 +2465,7 @@ mod tests {
                     .collect(),
                 more: None,
                 continuation: None,
+                ..Default::default()
             }],
             continuation: None,
         }

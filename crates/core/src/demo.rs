@@ -410,6 +410,7 @@ fn section(title: &str, layout: SectionLayout, items: Vec<Item>) -> Section {
         items,
         more: None,
         continuation: None,
+        ..Default::default()
     }
 }
 
@@ -722,6 +723,7 @@ fn album_page(browse_id: &str) -> Option<Page> {
                 items: album.tracks.iter().cloned().map(Item::Track).collect(),
                 more: None,
                 continuation: None,
+                ..Default::default()
             },
             section(
                 &format!("More by {}", catalog.artists[album.artist].name),
@@ -852,6 +854,7 @@ fn playlist_page(playlist_id: &str) -> Option<Page> {
             items: first,
             more: None,
             continuation,
+            ..Default::default()
         }],
         continuation: None,
     })
@@ -1043,6 +1046,15 @@ fn search(query: &str, filter: Option<SearchFilter>) -> SearchResults {
                     playlists
                 },
             ));
+            for section in &mut sections {
+                section.filter = match section.title.as_deref() {
+                    Some("Songs") => Some(SearchFilter::Songs),
+                    Some("Albums") => Some(SearchFilter::Albums),
+                    Some("Artists") => Some(SearchFilter::Artists),
+                    Some("Community playlists") => Some(SearchFilter::CommunityPlaylists),
+                    _ => None,
+                };
+            }
             sections
         }
     };
@@ -2104,10 +2116,16 @@ mod fixtures {
 
     pub fn search(query: &str, filter: Option<SearchFilter>) -> Option<SearchResults> {
         let name = match filter {
-            Some(SearchFilter::Songs | SearchFilter::Videos) => "search_songs",
+            None | Some(SearchFilter::Library) => "search_all",
+            Some(SearchFilter::Songs) => "search_songs",
+            Some(SearchFilter::Videos) => "search_videos",
             Some(SearchFilter::Albums) => "search_albums",
             Some(SearchFilter::Artists) => "search_artists",
-            _ => "search_all",
+            Some(SearchFilter::CommunityPlaylists) => "search_community_playlists",
+            Some(SearchFilter::FeaturedPlaylists) => "search_featured_playlists",
+            Some(SearchFilter::Podcasts) => "search_podcasts",
+            Some(SearchFilter::Episodes) => "search_episodes",
+            Some(SearchFilter::Profiles) => "search_profiles",
         };
         parse::search::parse_search(query, filter, &load(name)?).ok()
     }

@@ -498,73 +498,148 @@ fn search_all() {
     let top = &results.sections[0];
     assert_eq!(top.layout, SectionLayout::Hero);
     assert!(matches!(&top.items[0], Item::Artist { name, .. } if name == "Daft Punk"));
+    assert!(tracks(top).len() >= 2);
     assert!(tracks(top).iter().all(|t| !t.artists.is_empty()));
-    let all: Vec<&Item> = results.sections.iter().flat_map(|s| &s.items).collect();
-    assert!(all.iter().any(|i| matches!(i, Item::Album { .. })));
-    assert!(all.iter().any(|i| matches!(i, Item::Playlist { .. })));
-    assert!(all.iter().any(|i| matches!(i, Item::Podcast { .. })));
     assert!(
-        all.iter()
-            .any(|i| matches!(i, Item::Track(t) if t.kind == TrackKind::Video))
+        top.shuffle_playlist_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("RD"))
     );
     assert!(
-        all.iter()
-            .any(|i| matches!(i, Item::Track(t) if t.kind == TrackKind::Episode))
+        top.radio_playlist_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("RD"))
     );
-}
 
-#[test]
-fn search_songs() {
-    let results = parse::search::parse_search(
-        "daft punk",
-        Some(SearchFilter::Songs),
-        &load("search_songs"),
-    )
-    .unwrap();
-    assert_sections(&results.sections);
+    // YouTube sends the rest as one untitled row per result; they come back
+    // as one shelf per kind, in the web app's order.
+    let shelves: Vec<(&str, SectionLayout, Option<SearchFilter>)> = results.sections[1..]
+        .iter()
+        .map(|s| (s.title.as_deref().unwrap(), s.layout, s.filter))
+        .collect();
+    use SearchFilter::*;
+    use SectionLayout::*;
+    assert_eq!(
+        shelves,
+        [
+            ("Songs", List, Some(Songs)),
+            ("Videos", List, Some(Videos)),
+            ("Albums", Carousel, Some(Albums)),
+            ("Artists", Carousel, Some(Artists)),
+            ("Community playlists", Carousel, Some(CommunityPlaylists)),
+            ("Featured playlists", Carousel, Some(FeaturedPlaylists)),
+            ("Episodes", List, Some(Episodes)),
+            ("Profiles", Carousel, Some(Profiles)),
+            ("Podcasts", Carousel, Some(Podcasts)),
+        ]
+    );
     let songs = titled(&results.sections, "Songs");
-    assert!(songs.items.len() >= 10);
     assert!(
         tracks(songs)
             .iter()
-            .all(|t| t.kind == TrackKind::Song && t.duration_ms.is_some() && t.album.is_some())
+            .all(|t| t.kind == TrackKind::Song && t.plays.is_some())
     );
-    let token = results.continuation.expect("filtered search continues");
-    assert!(token.0.starts_with("search:"));
+    let videos = titled(&results.sections, "Videos");
+    assert!(tracks(videos).iter().all(|t| t.kind == TrackKind::Video));
+    let episodes = titled(&results.sections, "Episodes");
+    assert!(
+        tracks(episodes)
+            .iter()
+            .all(|t| t.kind == TrackKind::Episode)
+    );
+    let albums = &titled(&results.sections, "Albums").items;
+    assert!(albums.iter().all(|i| matches!(i, Item::Album { .. })));
+    let featured = &titled(&results.sections, "Featured playlists").items;
+    assert!(featured.iter().all(
+        |i| matches!(i, Item::Playlist { subtitle: Some(s), .. } if s.contains("YouTube Music"))
+    ));
+    let community = &titled(&results.sections, "Community playlists").items;
+    assert!(community.iter().all(
+        |i| matches!(i, Item::Playlist { subtitle: Some(s), .. } if !s.contains("YouTube Music"))
+    ));
+    let profiles = &titled(&results.sections, "Profiles").items;
+    assert!(
+        profiles.iter().all(
+            |i| matches!(i, Item::Artist { subtitle: Some(s), .. } if s.starts_with("Profile"))
+        )
+    );
+    let podcasts = &titled(&results.sections, "Podcasts").items;
+    assert!(podcasts.iter().all(|i| matches!(i, Item::Podcast { .. })));
 }
 
+/// Each filter answers with one titled shelf of its own kind that continues.
 #[test]
-fn search_albums_and_artists() {
-    let albums = parse::search::parse_search(
-        "daft punk",
-        Some(SearchFilter::Albums),
-        &load("search_albums"),
-    )
-    .unwrap();
-    let items = &titled(&albums.sections, "Albums").items;
-    assert!(items.iter().all(|i| matches!(
-        i,
-        Item::Album {
-            album_type: Some(_),
-            year: Some(_),
-            ..
+fn search_filters() {
+    type IsKind = fn(&Item) -> bool;
+    let kinds: [(&str, SearchFilter, &str, IsKind); 9] = [
+        (
+            "search_songs",
+            SearchFilter::Songs,
+            "Songs",
+            |i| matches!(i, Item::Track(t) if t.kind == TrackKind::Song && t.duration_ms.is_some() && t.album.is_some()),
+        ),
+        (
+            "search_videos",
+            SearchFilter::Videos,
+            "Videos",
+            |i| matches!(i, Item::Track(t) if t.kind == TrackKind::Video && t.duration_ms.is_some()),
+        ),
+        ("search_albums", SearchFilter::Albums, "Albums", |i| {
+            matches!(
+                i,
+                Item::Album {
+                    album_type: Some(_),
+                    year: Some(_),
+                    ..
+                }
+            )
+        }),
+        ("search_artists", SearchFilter::Artists, "Artists", |i| {
+            matches!(i, Item::Artist { .. })
+        }),
+        (
+            "search_community_playlists",
+            SearchFilter::CommunityPlaylists,
+            "Community playlists",
+            |i| matches!(i, Item::Playlist { .. }),
+        ),
+        (
+            "search_featured_playlists",
+            SearchFilter::FeaturedPlaylists,
+            "Featured playlists",
+            |i| matches!(i, Item::Playlist { playlist_id, .. } if playlist_id.starts_with("RDCLAK")),
+        ),
+        ("search_podcasts", SearchFilter::Podcasts, "Podcasts", |i| {
+            matches!(i, Item::Podcast { .. })
+        }),
+        (
+            "search_episodes",
+            SearchFilter::Episodes,
+            "Episodes",
+            |i| matches!(i, Item::Track(t) if t.kind == TrackKind::Episode),
+        ),
+        ("search_profiles", SearchFilter::Profiles, "Profiles", |i| {
+            matches!(i, Item::Artist { .. })
+        }),
+    ];
+    for (fixture, filter, title, kind) in kinds {
+        let results =
+            parse::search::parse_search("daft punk", Some(filter), &load(fixture)).unwrap();
+        assert_sections(&results.sections);
+        assert_eq!(results.sections.len(), 1, "{fixture}");
+        let shelf = titled(&results.sections, title);
+        assert_eq!(shelf.layout, SectionLayout::List);
+        assert!(shelf.items.len() >= 5, "{fixture}");
+        assert!(shelf.items.iter().all(kind), "{fixture}");
+        // Artists and featured playlists fit on one page.
+        if !matches!(
+            filter,
+            SearchFilter::Artists | SearchFilter::FeaturedPlaylists
+        ) {
+            let token = results.continuation.expect(fixture);
+            assert!(token.0.starts_with("search:"));
         }
-    )));
-    assert_sections(&albums.sections);
-
-    let artists = parse::search::parse_search(
-        "daft punk",
-        Some(SearchFilter::Artists),
-        &load("search_artists"),
-    )
-    .unwrap();
-    assert!(
-        titled(&artists.sections, "Artists")
-            .items
-            .iter()
-            .all(|i| matches!(i, Item::Artist { .. }))
-    );
-    assert_sections(&artists.sections);
+    }
 }
 
 #[test]

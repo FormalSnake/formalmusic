@@ -60,12 +60,9 @@ fn flush(loose: &mut Vec<Item>, sections: &mut Vec<Section>) {
 
 fn empty_section(layout: SectionLayout, items: Vec<Item>) -> Section {
     Section {
-        title: None,
-        strapline: None,
         layout,
         items,
-        more: None,
-        continuation: None,
+        ..Section::default()
     }
 }
 
@@ -170,8 +167,24 @@ fn card(r: &Value) -> Section {
         }
     }
     list.extend(rows);
+    let playlist = |icon: &str| {
+        r["buttons"].as_array().into_iter().flatten().find_map(|b| {
+            let b = &b["buttonRenderer"];
+            let endpoint = if b["command"].is_object() {
+                &b["command"]
+            } else {
+                &b["navigationEndpoint"]
+            };
+            (b["icon"]["iconType"] == icon)
+                .then(|| endpoint["watchPlaylistEndpoint"]["playlistId"].as_str())
+                .flatten()
+                .map(str::to_owned)
+        })
+    };
     Section {
         title: text(&r["header"]["musicCardShelfHeaderBasicRenderer"]["title"]),
+        shuffle_playlist_id: playlist("MUSIC_SHUFFLE"),
+        radio_playlist_id: playlist("MIX"),
         ..empty_section(SectionLayout::Hero, list)
     }
 }
