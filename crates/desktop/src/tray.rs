@@ -376,7 +376,7 @@ mod platform {
                 ..Default::default()
             };
             if RegisterClassW(&class) == 0 {
-                return Err(windows::core::Error::from_win32());
+                return Err(windows::core::Error::from_thread());
             }
             // A real top-level window, never shown: a message-only window
             // never hears Explorer's TaskbarCreated broadcast.

@@ -90,8 +90,15 @@ pub fn claim() -> Launch {
 /// pipe's first instance is the lock.
 #[cfg(windows)]
 pub fn claim() -> Launch {
-    use formalmusic_core::model::local;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+
+    let serve = |pipe: &std::path::Path, first: bool| {
+        ServerOptions::new()
+            .first_pipe_instance(first)
+            .reject_remote_clients(true)
+            .create(pipe)
+    };
 
     let off = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     if std::env::var("FORMALMUSIC_DEMO").as_deref() == Ok("1") || off("FORMALMUSIC_SCREENSHOT") {
@@ -107,7 +114,9 @@ pub fn claim() -> Launch {
         "{}-instance",
         formalmusic_core::kopuz::socket_path().display()
     ));
-    let listener = runtime.block_on(async { local::Listener::bind(&pipe) });
+    // Taking the pipe's first instance is the lock; a second process is
+    // refused with PermissionDenied.
+    let listener = runtime.block_on(async { serve(&pipe, true) });
     let mut listener = match listener {
         Ok(listener) => listener,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -121,7 +130,7 @@ pub fn claim() -> Launch {
             }
             runtime.block_on(async {
                 let raise = async {
-                    let mut stream = local::connect(&pipe).await?;
+                    let mut stream = ClientOptions::new().open(&pipe)?;
                     stream.write_all(b"activate\n").await?;
                     stream.flush().await
                 };
@@ -136,7 +145,11 @@ pub fn claim() -> Launch {
         .name("formalmusic-instance".into())
         .spawn(move || {
             runtime.block_on(async move {
-                while let Ok(stream) = listener.accept().await {
+                // The next instance waits before this one is read, so a
+                // second launch never finds no pipe to connect to.
+                while listener.connect().await.is_ok() {
+                    let Ok(next) = serve(&pipe, false) else { break };
+                    let stream = std::mem::replace(&mut listener, next);
                     let mut line = String::new();
                     let _ = BufReader::new(stream).read_line(&mut line).await;
                     if line.trim() == "activate" && sender.send(()).is_err() {
