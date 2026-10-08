@@ -2,8 +2,9 @@
 
 Checklist of the web app's user-facing features and routes against FormalMusic.
 "yes" names the file that implements it, "partial" says what is missing, "no"
-means nothing in the repo does it. Paths are relative to `crates/`. A feature
-the daemon supports but no screen reaches is "partial", since the user cannot
+means nothing does it. Paths are relative to `crates/`; what kopuzd does
+happens in FormalSnake/kopuz at the rev `Cargo.toml` pins. A feature the
+daemon supports but no screen reaches is "partial", since the user cannot
 use it.
 
 Sources: the web app's own shortcut overlay (read from music.youtube.com with
@@ -19,59 +20,59 @@ rows come from ytmusicapi and the help page, not from the live menus.
 
 | Feature | Web app | FormalMusic | Notes |
 |---|---|---|---|
-| Home with shelves | `/` | yes | `desktop/src/page.rs`, `desktop/src/shelves.rs`, backend `innertube/src/parse/page.rs` |
+| Home with shelves | `/` | yes | `desktop/src/page.rs`, `desktop/src/shelves.rs`, pages from kopuzd through `core/src/convert.rs` (`page`) |
 | Home mood chips | Relax, Sleep, Focus, ... | yes | `desktop/src/page.rs` (`chip_target`) |
 | Home infinite scroll | continuation | yes | `core/src/store.rs` (`load_more`) |
 | Explore | `/explore` | yes | `desktop/src/sidebar.rs` |
-| New releases | `/new_releases` | yes | Explore's button, `innertube/src/parse/items/navigation_button.rs` (`Item::Shortcut`), `desktop/src/shelves.rs` (`shortcut_tile`) |
+| New releases | `/new_releases` | yes | Explore's button, `core/src/convert.rs` (`Item::Shortcut`), `desktop/src/shelves.rs` (`shortcut_tile`) |
 | Charts | `/charts` | yes | Same as new releases |
 | Moods and genres landing | `/moods_and_genres` | yes | Same as new releases; mood tiles open from `desktop/src/shelves.rs` (`mood_tile`) |
 | Mood or genre category | `/moods_and_genres_category` | yes | `desktop/src/actions.rs` (`target_of`) |
 | Library, Playlists tab | `/library` | yes | `desktop/src/page.rs` (`chip_target`) |
 | Library, Songs, Albums, Artists, Subscriptions, Podcasts tabs | `/library/*` | yes | `desktop/src/page.rs` |
-| Library, Uploads tab | `/library/uploads` | partial | Lists uploads (`innertube/src/parse/mod.rs`); no upload or delete |
+| Library, Uploads tab | `/library/uploads` | partial | Lists uploads through kopuzd; no upload or delete |
 | Liked music | `LM` playlist | yes | `desktop/src/sidebar.rs` playlist list, `desktop/src/page.rs` |
-| History | `/history` | yes | Sidebar entry in `desktop/src/sidebar.rs`; day shelves (Today, Yesterday, ...) come from the response, `innertube/src/parse/shelves.rs` |
+| History | `/history` | yes | Sidebar entry in `desktop/src/sidebar.rs`; day shelves (Today, Yesterday, ...) come from kopuzd |
 | Episodes for Later | `SE` playlist in sidebar | no | No entry; the playlist would browse generically |
 | Search results | `/search?q=` | yes | `desktop/src/topbar.rs`, `desktop/src/page.rs` |
 | Search suggestions and history | dropdown | yes | `desktop/src/topbar.rs` (`Suggestion::Query`, `from_history`) |
 | Search filters | Songs, Videos, Albums, Featured playlists, Community playlists, Artists, Podcasts, Episodes, Profiles | yes | `desktop/src/page.rs` (`SEARCH_FILTERS`) |
-| Search within library | library search | yes | Library chip in `desktop/src/page.rs`; `innertube/src/parse/search.rs` reads the selected tab |
-| Delete a search history entry | x on suggestion | no | ytmusicapi `remove_search_suggestions`, not in `api` |
+| Search within library | library search | yes | Library chip in `desktop/src/page.rs`, kopuzd's `library` filter |
+| Delete a search history entry | x on suggestion | no | Not in kopuz's API |
 | Search top result card | Top result | yes | `desktop/src/shelves.rs` |
 | Album page | `/browse/MPREb...` | yes | `desktop/src/header.rs`, `desktop/src/page.rs` |
 | Artist page | `/channel/UC...` | yes | `desktop/src/header.rs` (`Header::Artist`) |
-| Artist "see all" shelves | More | yes | `desktop/src/shelves.rs` (`ArtistShelf`) |
+| Artist "see all" shelves | More | yes | `desktop/src/shelves.rs`, the shelf's page in `core/src/convert.rs` (`section`) |
 | Playlist page | `/playlist?list=` | yes | `desktop/src/header.rs`, `desktop/src/page.rs` |
 | Podcast page | `/podcast/` | partial | Browses and lists episodes; no follow button of its own beyond `Save to library` |
 | Episode page | `/episode/` | partial | `BrowseTarget::Episode` browses, plays as `TrackKind::Episode`; no resume position, no "save for later" |
 | Channel and user pages | `get_user`, `get_channel` | partial | Reached as artist or podcast links and from the Profiles search filter; no page of their own |
 | Watch page, Up next | `/watch` | yes | `desktop/src/now_playing.rs` (`QueueView`) |
-| Watch page, Lyrics | tab | yes | `desktop/src/lyrics.rs`, `extras/src/lyrics/`; word-synced, beyond the web app |
+| Watch page, Lyrics | tab | yes | `desktop/src/lyrics.rs`; kopuzd picks Apple Music, YouTube Music or LRCLIB, `core/src/convert.rs` (`lyrics`); word-synced, beyond the web app |
 | Watch page, Related | tab | yes | `desktop/src/now_playing.rs`, `core/src/store.rs` (`load_related`) |
 | Song credits | `get_song_credits` | no | |
 | Taste profile (pick artists) | `get_tasteprofile` | no | |
-| Account switcher | avatar menu | yes | `desktop/src/topbar.rs`, `daemon/src/session.rs` |
+| Account switcher | avatar menu | no | Needs kopuz's `SourceApi::accounts` and `switch_account` (FormalSnake/kopuz `ytm/brand-accounts`, not in the pinned rev); `desktop/src/topbar.rs` lists them once kopuzd does |
 | Settings page | avatar menu | partial | `desktop/src/settings.rs`, see Settings |
 
 ## Playback and player
 
 | Feature | Web app | FormalMusic | Notes |
 |---|---|---|---|
-| Play, pause, next, previous, seek bar | player bar | yes | `desktop/src/player_bar.rs`, `daemon/src/playback.rs` |
+| Play, pause, next, previous, seek bar | player bar | yes | `desktop/src/player_bar.rs`, kopuzd |
 | Volume and mute | slider | yes | `desktop/src/player_bar.rs` |
-| Shuffle and repeat (off, all, one) | buttons | yes | `desktop/src/player_bar.rs`, `daemon/src/queue.rs` |
-| Like and dislike | thumbs | yes | `desktop/src/header.rs` (`rating_buttons`), `daemon/src/daemon.rs` |
+| Shuffle and repeat (off, all, one) | buttons | yes | `desktop/src/player_bar.rs`, kopuzd's queue |
+| Like and dislike | thumbs | yes | `desktop/src/header.rs` (`rating_buttons`), kopuz `LibraryApi::rate` |
 | Expanded player | full screen player | yes | `desktop/src/now_playing.rs` |
-| Song or Video toggle | switch | yes | `desktop/src/music_video.rs`, `desktop/src/now_playing.rs` |
-| Autoplay radio keeps queue filled | autoplay | yes | `daemon/src/queue.rs` (`RADIO_LOW_WATER`) |
+| Song or Video toggle | switch | no | kopuzd has no video stream and no song or video counterpart on a row |
+| Autoplay radio keeps queue filled | autoplay | partial | A track radio tops itself up in kopuzd; a list that runs out does not turn into radio |
 | Queue reorder, remove | drag | yes | `desktop/src/now_playing.rs` (`QueueDrag`) |
-| Clear queue | button | partial | `Command::ClearQueue` in `api/src/lib.rs`, no control in `desktop/src` |
+| Clear queue | button | partial | `MusicStore::clear_queue`, no control in `desktop/src` |
 | Save queue as playlist | menu | no | |
-| Gapless playback | automatic | yes | `player/src/engine.rs` |
-| Loudness normalisation | "stable volume" | yes | `player/src/gain.rs`, `daemon/src/config.rs` |
-| Media keys and now-playing widgets | OS media session | yes | `daemon/src/mpris.rs` (Linux only) |
-| Play reporting for History and recommendations | automatic | yes | `daemon/src/tracking.rs` |
+| Gapless playback | automatic | yes | kopuzd's engine |
+| Loudness normalisation | "stable volume" | yes | kopuzd, from `normalisation` in `config.json` |
+| Media keys and now-playing widgets | OS media session | yes | kopuzd (MPRIS, SMTC) |
+| Play reporting for History and recommendations | automatic | yes | kopuzd |
 
 ## Context menu and card actions
 
@@ -82,27 +83,27 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Add to queue | track menu | yes | `desktop/src/actions.rs` |
 | Add to playlist | track menu | yes | `desktop/src/actions.rs` (`playlist_picker`) |
 | Remove from playlist | playlist track menu | yes | `desktop/src/actions.rs` |
-| Save song to library | track menu | yes | `desktop/src/actions.rs` (`track_menu`), `innertube/src/parse/items/mod.rs` (`library_toggle`), `Command::SetSongInLibrary`; rows from the `next` queue carry no toggle |
+| Save song to library | track menu | yes | `desktop/src/actions.rs` (`track_menu`), the row's `Actions::save_ref`; queue rows carry no toggle |
 | Save album or playlist to library | menu and header | yes | `desktop/src/actions.rs`, `desktop/src/header.rs` |
 | Like, dislike from menu | track menu | yes | `desktop/src/actions.rs` |
 | Go to album, go to artist | track menu | yes | `desktop/src/actions.rs` |
 | Remove from queue | queue menu | yes | `desktop/src/now_playing.rs` |
 | Remove from history | history menu | yes | `desktop/src/actions.rs` (`track_menu`), `core/src/store.rs` (`remove_from_history`) |
-| Share, copy link | menu | yes | `desktop/src/actions.rs` (`share_url`): every song, video, album, playlist, artist and podcast menu, the player bar's and the expanded player's, copies the web app's link with a "Link copied" toast |
+| Share, copy link | menu | partial | `desktop/src/actions.rs` (`share_row`): song, video, album, artist and podcast menus copy the link kopuzd gives; playlists have none until kopuz has a web URL for them |
 | Report, not interested | menu | no | |
 | Shuffle play an album or playlist | menu | yes | `desktop/src/actions.rs` |
-| Subscribe to an artist | artist header | yes | `desktop/src/header.rs`, `daemon/src/daemon.rs` |
+| Subscribe to an artist | artist header | yes | `desktop/src/header.rs`, kopuz `LibraryApi::follow` |
 | Hover play button on cards | cards | yes | `desktop/src/shelves.rs`, `desktop/src/actions.rs` (`play_item`) |
 
 ## Playlists and library edits
 
 | Feature | Web app | FormalMusic | Notes |
 |---|---|---|---|
-| Create playlist | New playlist | partial | `desktop/src/new_playlist.rs` takes a title only; privacy and description exist in `Command::CreatePlaylist` |
+| Create playlist | New playlist | partial | `desktop/src/new_playlist.rs` takes a title only, as kopuz's `create_playlist` does |
 | Rename, describe, change privacy | edit playlist | yes | "Edit playlist" in `desktop/src/header.rs` opens `desktop/src/edit_playlist.rs` |
-| Reorder tracks in a playlist | drag | yes | `desktop/src/shelves.rs` (`RowDrag`), `core/src/store.rs` (`move_in_playlist`) |
+| Reorder tracks in a playlist | drag | no | kopuzd's YouTube Music source takes no reorder (`PlaylistCapability::AddRemove`); the drag in `desktop/src/shelves.rs` (`RowDrag`) comes back with it |
 | Delete playlist | menu | yes | `desktop/src/edit_playlist.rs`, after a confirmation |
-| Add whole playlist into another | menu | partial | `PlaylistEdit::AddPlaylist`, no UI |
+| Add whole playlist into another | menu | no | |
 | Collaborative playlists | `join_collaborative_playlist` | no | |
 | Upload songs | `upload_song` | no | |
 | Delete uploads | `delete_upload_entity` | no | |
@@ -139,16 +140,16 @@ are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
 
 | Feature | Web app | FormalMusic | Notes |
 |---|---|---|---|
-| Audio quality (Low, Normal, High, Always high) | playback settings | yes | Auto, Low, Normal, High in `desktop/src/settings.rs`, written to `config.json` and applied by `daemon/src/config.rs` (`Preferences`) through `Command::ReloadSettings` |
-| Premium bitrate | automatic with Premium | yes | `daemon/src/streams.rs` |
-| Autoplay | playback settings | yes | `desktop/src/settings.rs`; `daemon/src/playback.rs` (`autoplay`) turns a list into radio from its last track |
-| Show or hide music videos (audio only) | playback settings | yes | Song/Video switch in `desktop/src/music_video.rs`; no persistent default |
-| Restrict explicit content | playback settings | yes | "Skip explicit songs" in `desktop/src/settings.rs`; `daemon/src/playback.rs` keeps explicit tracks out of the queue |
-| Pause watch history | privacy | yes | `desktop/src/settings.rs`, `daemon/src/config.rs` (`pauseHistory` over `reportHistory`) |
+| Audio quality (Low, Normal, High, Always high) | playback settings | no | kopuzd has no quality setting |
+| Premium bitrate | automatic with Premium | yes | kopuzd |
+| Autoplay | playback settings | no | kopuzd has no autoplay setting |
+| Show or hide music videos (audio only) | playback settings | no | See the Song or Video toggle |
+| Restrict explicit content | playback settings | no | kopuzd says nothing of explicit tracks |
+| Pause watch history | privacy | no | kopuzd always reports plays when signed in |
 | Delete watch history | privacy | no | |
 | Notifications | account settings | no | No desktop notifications; in-app toasts only (`desktop/src/toast.rs`) |
-| Connected apps, scrobbling | account settings | yes | Last.fm and ListenBrainz, `desktop/src/settings.rs`, `daemon/src/scrobble/` |
-| Sign in, sign out, brand accounts | avatar menu | yes | `desktop/src/signin.rs`, `daemon/src/signin/` |
+| Connected apps, scrobbling | account settings | partial | Last.fm and ListenBrainz (token) in `desktop/src/settings.rs`, sent by kopuzd; no per-service switches |
+| Sign in, sign out, brand accounts | avatar menu | partial | `desktop/src/signin.rs` through kopuzd's browser sign-in, profile import and pasted cookies; no brand accounts yet |
 
 ## Gaps
 

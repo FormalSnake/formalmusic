@@ -1,9 +1,10 @@
 # FormalMusic: plan
 
-FormalMusic is a YouTube Music client. Binary `formalmusic`, daemon
-`formalmusicd`, repo `FormalSnake/formalmusic`, app id `es.canarycoders.formalmusic`.
+FormalMusic is a YouTube Music client. Binary `formalmusic`, daemon `kopuzd`
+from FormalSnake/kopuz, repo `FormalSnake/formalmusic`, app id
+`es.canarycoders.formalmusic`.
 
-A GPUI client at full parity with music.youtube.com, on top of our own daemon,
+A GPUI client at full parity with music.youtube.com, on top of Kopuz's daemon,
 themed by matugen the same way `../messages` is, packaged as a flake with a Home
 Manager module, and kept working by a weekly Claude Code maintenance run.
 
@@ -11,56 +12,34 @@ Manager module, and kept working by a weekly Claude Code maintenance run.
 
 Two binaries, one socket between them.
 
-- **`formalmusicd`**, the daemon. It owns the YouTube session, an InnerTube client
-  (WEB_REMIX) for every page and mutation, stream resolution through yt-dlp,
-  the audio engine, the queue and MPRIS. It runs as a systemd user service, so
+- **`kopuzd`**, Kopuz's headless daemon, at the rev `Cargo.toml` pins
+  `kopuz-client` to (FormalSnake/kopuz `ytm/integration`, where the YouTube
+  Music work lands ahead of upstream). It owns the session, the YouTube Music
+  source (pages, search, mutations, stream resolution), the audio engine with
+  gapless, crossfade, loudness normalisation and the equalizer, the queue,
+  lyrics, scrobbling and MPRIS/SMTC. It runs as a systemd user service, so
   music keeps playing when the window closes, and media keys work without it.
 - **`formalmusic`**, the GPUI app. It's a pure frontend: a store, a bridge and
-  screens. Its only I/O is the socket and artwork fetches.
+  screens. Its only I/O is the socket, artwork through kopuzd, and Apple
+  Music motion artwork, which kopuzd has no notion of.
 
-Why our own daemon and not Kopuz: Kopuz's API is generic (catalog, search,
-player), so parity would mean maintaining a fork with a YouTube Music service
-bolted on. That fork would carry an unstable upstream schema, a Bazel build and
-EUPL licensing. Writing the code costs nothing here; the ongoing cost is
-YouTube breaking stream extraction, and yt-dlp handles that faster than any
-single app's team.
+The app sets up a YouTube Music source in kopuzd on first connect and plays
+from it. That is the one place it names the service: every other question
+("can this be rated, followed, saved, reordered?", "which pages and search
+filters are there?") is answered by the source's capabilities.
 
-### formalmusicd internals
+### The seam
 
-- **InnerTube client:** `browse`, `next`, `search`, `music/get_search_suggestions`,
-  `like/*`, `playlist/*`, `browse/edit_playlist`, `account/accounts_list`.
-  Typed parsers per renderer, each tested against a recorded response in
-  `crates/innertube/fixtures/`. Responses keep YouTube Music's own shape
-  (shelves, chips, header variants), not a flattened track list.
-- **Auth:** the daemon copies the session out of a browser profile the user
-  picks (yt-dlp `--cookies-from-browser`), or opens the user's browser in a
-  throwaway profile at Google's sign-in page and reads the session cookies
-  back (DevTools pipe for Chromium browsers, `cookies.sqlite` for Firefox
-  ones), or the user pastes a cookie header in a fallback, with cookies stored in
-  `$XDG_STATE_HOME/formalmusicd/session.json` (chmod 600). Brand accounts use the
-  `X-Goog-PageId` header. yt-dlp gets the same cookies from a private copy in
-  the state dir (it rewrites any jar it reads), so Premium bitrates work.
-- **Streams:** yt-dlp's Python API in one long-lived worker process
-  (`crates/daemon/src/streams/ytdlp_worker.py`, JSON lines over stdin and
-  stdout), opus first, so interpreter start-up and the player JS are paid
-  once. A Premium session asks the `web_music` client alone and skips the
-  watch page, client configs and `next`. The tail probe for gated URLs runs
-  beside playback and swaps the URL only when it fails. Resolve the next two
-  queue entries ahead of time. URLs expire after ~6h, so re-resolve when one
-  is stale.
-- **Audio:** symphonia decoding opus/webm and aac/m4a, played through cpal
-  over HTTP range reads, with gapless playback and crossfade. Volume
-  normalisation uses `loudnessDb` from the player response, which is what
-  the web app does.
-- **MPRIS:** `mpris-server` crate, including `Rate` and the artwork URL.
-- **API:** JSON lines on `$XDG_RUNTIME_DIR/formalmusic/formalmusicd.sock`
-  (`crates/api`). Requests carry an id, responses echo it, and `subscribe`
-  turns on player, queue and library events. Both ends are Rust and ship in
-  one package, so there is no codegen; a shell or bar widget can drive it
-  with `socat`.
-- **Scrobbling and history:** report playback to YouTube Music's
-  `playbackTracking` URLs, so Home recommendations and History stay accurate.
-  Without it the account goes stale.
+`crates/core/src/kopuz.rs` holds the connection (spawning kopuzd when nothing
+answers, reconnecting with backoff, the wire revision handshake) and turns
+the store's calls into kopuz API calls. `convert.rs` turns kopuz's wire types
+into `model.rs`, the window's own model: YouTube Music's page shapes, serde so
+`state.json` can paint them, hashable where they key a cache. Every screen's
+data path has a live test in `crates/core/tests/live.rs`.
+
+Where kopuzd lacks something FormalMusic had, the gap is listed in the PR
+that moved the app onto it, as an API kopuz needs, rather than worked around
+here.
 
 ## Speed budget
 
@@ -82,13 +61,11 @@ navigation timings so the weekly run can catch regressions.
 ## Workspace
 
 ```
-crates/innertube     InnerTube requests, renderer parsers, fixtures
-crates/daemon        binary `formalmusicd`: session, streams, queue, MPRIS, socket server
-crates/api           wire types and JSON-lines framing shared by both ends
-crates/player        streaming decode and audio output
-crates/core          app store, StoreEvent, StateCache, socket client
+crates/core          app store, StoreEvent, StateCache, the kopuzd backend
 crates/desktop       binary `formalmusic`, gpui-kit 0.6.6, one file per screen
-nix/package.nix      both binaries
+crates/extras        Apple Music motion artwork
+nix/package.nix      the app
+nix/kopuzd.nix       kopuzd from the pinned kopuz rev
 nix/hm-module.nix    programs.formalmusic
 maintenance/         weekly run prompt and live checks
 docs/parity.md       checklist against music.youtube.com
@@ -98,7 +75,7 @@ docs/parity.md       checklist against music.youtube.com
 state under a short `RwLock`, and narrow events (`Page(id)`, `Playlist(id)`,
 `Library(tab)`, `Like(video_id)`, `Player`, `Queue`) go through one
 `bridge.rs`. Pages paint from `$XDG_CACHE_HOME/formalmusic/state.json` before
-the daemon answers.
+kopuzd answers.
 
 ## Theming
 
@@ -117,20 +94,19 @@ it never replaces the tokens. Once two apps share it,
 
 ## Nix
 
-- **yt-dlp:** a flake input pinned to its GitHub release tag, applied as an
-  overlay over nixpkgs' derivation. Nixpkgs lags releases by days, and the
-  curl-cffi test breakage already worked around in
-  `~/.config/nix/modules/shared/mixins/nix.nix` shows that tracking unstable
-  is fragile. `formalmusicd` gets the pinned yt-dlp baked into its wrapper `PATH`,
-  and `FORMALMUSIC_YTDLP_PYTHON` pointing at an interpreter that imports it.
-- **`packages.formalmusic`:** builds both binaries for x86_64 and aarch64
-  Linux. It copies messages' `package.nix`: the same `patchelf --add-rpath`
-  for wayland, vulkan, xkbcommon and X11, plus `alsa-lib` (cpal), and `wrapProgram` putting yt-dlp on `formalmusicd`'s `PATH`.
+- **kopuz:** a flake input (`flake = false`) at the same rev `Cargo.toml` pins
+  `kopuz-client` to; the two move together. Kopuz's own flake packages the
+  Dioxus app and not kopuzd, so `nix/kopuzd.nix` builds `kopuz-kopuzd` from
+  that source, with the prebuilt librusty_v8 kopuz's packaging also uses.
+- **`packages.formalmusic`:** builds the app for x86_64 and aarch64 Linux. It
+  copies messages' `package.nix`: the same `patchelf --add-rpath` for
+  wayland, vulkan, xkbcommon and X11, and `wrapProgram` putting kopuzd on the
+  app's `PATH` so a window with no service still finds the daemon it was
+  built against. `packages.kopuzd` is the daemon alone.
 - **`hm-module.nix`:** `programs.formalmusic.enable` installs the package,
-  runs `formalmusicd` as a `systemd.user.services` unit with `Restart=on-failure`,
+  runs `kopuzd` as a `systemd.user.services` unit with `Restart=on-failure`,
   registers the matugen template, and never owns `config.json`.
-- **Dev shell:** messages' `linuxLibs` plus `socat` and the pinned
-  yt-dlp.
+- **Dev shell:** messages' `linuxLibs` plus kopuzd.
 - **App id:** `es.canarycoders.formalmusic`, with the same single-instance
   handover as messages.
 
@@ -146,15 +122,17 @@ package from `claude-code-nix`, and starts headless Claude Code with
 1. **Preflight:** checks drift in this repo and `~/.config/nix` on every host,
    following the nix repo's "keep all three hosts in sync" rule. If any tree is
    dirty, it stops and notifies instead of touching anything.
-2. **Update:** bumps the `yt-dlp` and `nixpkgs` flake inputs and runs
-   `cargo update`.
-3. **Check:** runs `cargo test --workspace` (fixture parsers) and
-   `maintenance/live-check.sh`. The live check resolves and decodes 10 seconds
-   of a fixed track, fetches Home, Search and one album with the stored
-   session, and diffs the renderer keys against the fixtures.
-4. **Repair:** fixes whatever fails. Changed YouTube responses get
-   re-recorded fixtures and parser fixes. After three distinct failed fix
-   attempts it stops and opens a GitHub issue with the log.
+2. **Update:** moves the kopuz pin (`Cargo.toml` and the `kopuz` flake
+   input together) to the head of FormalSnake/kopuz `ytm/integration`, bumps
+   `nixpkgs` and runs `cargo update`.
+3. **Check:** runs `cargo test --workspace` and `maintenance/live-check.sh`,
+   which runs the live data-path tests against an isolated, anonymous kopuzd
+   of the pinned rev.
+4. **Repair:** fixes whatever fails on this side of the seam. YouTube
+   breaking stream resolution or a page is kopuz's to fix: the run pins back
+   to the last kopuz rev that passed and opens an issue saying what broke.
+   After three distinct failed fix attempts it stops and opens a GitHub issue
+   with the log.
 5. **Ship through a PR:** commits on a `maintenance/<date>` branch, opens a PR
    with what changed and the check output, and merges it into main with
    `gh pr merge` once step 3 passes. A run that fails step 3 leaves its PR

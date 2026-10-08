@@ -1,6 +1,6 @@
 //! Every screen's data path against a running kopuzd. Run with
 //! `FORMALMUSIC_SOCKET=<socket> cargo test -p formalmusic-core --test live -- --ignored --test-threads 1`;
-//! the signed-in checks need a source that is signed in.
+//! the signed-in checks skip themselves unless the source is signed in.
 
 use std::time::Duration;
 
@@ -237,10 +237,13 @@ async fn search_suggestions_lyrics_and_related() {
 }
 
 #[tokio::test]
-#[ignore = "needs a running kopuzd signed in to YouTube Music"]
+#[ignore = "needs a running kopuzd"]
 async fn the_library_of_a_signed_in_account() {
     let (backend, session) = connected().await;
-    assert!(session.signed_in, "sign the source in first");
+    if !session.signed_in {
+        eprintln!("skipped: the source is not signed in");
+        return;
+    }
     for tab in [
         LibraryTab::Playlists,
         LibraryTab::Songs,
@@ -319,11 +322,14 @@ async fn playing_a_page_queues_all_of_it() {
 /// Likes, follows, saves and a playlist of its own, each undone again, so
 /// the account ends as it started.
 #[tokio::test]
-#[ignore = "needs a running kopuzd signed in to YouTube Music; changes the account and puts it back"]
+#[ignore = "needs a running kopuzd; changes the account and puts it back"]
 async fn library_changes_land_and_are_undone() {
     let (backend, session) = connected().await;
     let backend = &backend;
-    assert!(session.signed_in, "sign the source in first");
+    if !session.signed_in {
+        eprintln!("skipped: the source is not signed in");
+        return;
+    }
     let album_target = BrowseTarget::Album("MPREb_K8qWMWVqXGi".into());
     let album = backend.browse(&album_target).await.unwrap();
     let Some(Header::Detail { actions, .. }) = &album.header else {
@@ -418,9 +424,12 @@ async fn library_changes_land_and_are_undone() {
 /// `Cookie` header signs it in, and signing out leaves it anonymous again.
 /// `FORMALMUSIC_LIVE_SESSION` names a JSON file whose `cookies` is that header.
 #[tokio::test]
-#[ignore = "needs a fresh kopuzd and FORMALMUSIC_LIVE_SESSION"]
+#[ignore = "needs a fresh kopuzd"]
 async fn a_fresh_daemon_signs_in_and_out() {
-    let path = std::env::var("FORMALMUSIC_LIVE_SESSION").expect("FORMALMUSIC_LIVE_SESSION");
+    let Ok(path) = std::env::var("FORMALMUSIC_LIVE_SESSION") else {
+        eprintln!("skipped: FORMALMUSIC_LIVE_SESSION is not set");
+        return;
+    };
     let session: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let cookies = session["cookies"].as_str().unwrap().to_owned();
