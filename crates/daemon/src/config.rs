@@ -4,6 +4,7 @@
 //! the playback settings the Settings dialog writes, which win over
 //! `daemon.json`'s.
 
+use formalmusic_api::Equalizer;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -20,6 +21,7 @@ pub struct Config {
     pub autoplay: bool,
     /// Leave tracks YouTube marks explicit out of the queue.
     pub restrict_explicit: bool,
+    pub equalizer: Equalizer,
 }
 
 impl Default for Config {
@@ -31,6 +33,7 @@ impl Default for Config {
             preferred_quality: Quality::Auto,
             autoplay: true,
             restrict_explicit: false,
+            equalizer: Equalizer::default(),
         }
     }
 }
@@ -80,6 +83,7 @@ pub struct AppSettings {
     pub autoplay: Option<bool>,
     pub restrict_explicit: Option<bool>,
     pub pause_history: Option<bool>,
+    pub equalizer: Option<Equalizer>,
 }
 
 impl Default for AppSettings {
@@ -90,18 +94,20 @@ impl Default for AppSettings {
             autoplay: None,
             restrict_explicit: None,
             pause_history: None,
+            equalizer: None,
         }
     }
 }
 
 /// The playback settings in force: `daemon.json`, overridden by the app's
 /// `config.json`. Read again on [`formalmusic_api::Command::ReloadSettings`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Preferences {
     pub quality: Quality,
     pub autoplay: bool,
     pub restrict_explicit: bool,
     pub report_history: bool,
+    pub equalizer: Equalizer,
 }
 
 impl Preferences {
@@ -113,6 +119,7 @@ impl Preferences {
             report_history: app
                 .pause_history
                 .map_or(config.report_history, |paused| !paused),
+            equalizer: app.equalizer.unwrap_or(config.equalizer),
         }
     }
 }
@@ -231,6 +238,7 @@ mod tests {
                 autoplay: false,
                 restrict_explicit: false,
                 report_history: false,
+                equalizer: Equalizer::default(),
             }
         );
         let app: AppSettings = serde_json::from_str(

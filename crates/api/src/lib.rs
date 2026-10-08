@@ -7,13 +7,15 @@
 //! [`Command::Subscribe`]. JSON lines keep the daemon scriptable from a shell
 //! (`socat - UNIX-CONNECT:...`) and from bar widgets in any language.
 
-mod model;
+mod equalizer;
 #[cfg(feature = "io")]
 pub mod local;
+mod model;
 pub mod process;
 #[cfg(feature = "io")]
 pub mod wire;
 
+pub use equalizer::*;
 pub use model::*;
 
 use serde::{Deserialize, Serialize};

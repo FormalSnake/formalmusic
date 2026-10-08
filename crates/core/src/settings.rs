@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+use formalmusic_api::Equalizer;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -24,6 +25,7 @@ pub struct Settings {
     pub restrict_explicit: bool,
     /// Stop reporting plays to YouTube's watch history.
     pub pause_history: bool,
+    pub equalizer: Equalizer,
 }
 
 /// The web app's audio quality setting.
@@ -47,6 +49,7 @@ impl Default for Settings {
             autoplay: true,
             restrict_explicit: false,
             pause_history: false,
+            equalizer: Equalizer::default(),
         }
     }
 }

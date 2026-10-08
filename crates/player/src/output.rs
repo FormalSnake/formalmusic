@@ -18,6 +18,7 @@ use crossbeam_channel::Sender;
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::engine::Command;
+use crate::equalizer::Equalizer;
 use crate::error::PlayerError;
 use crate::gain::Ramp;
 
@@ -60,6 +61,10 @@ struct Shared {
     volume: AtomicU32,
     muted: AtomicBool,
     paused: AtomicBool,
+    /// Equalizer gains in dB, picked up by the callback with `try_lock`
+    /// while `eq_pending` is set.
+    eq: Mutex<Option<[f32; 10]>>,
+    eq_pending: AtomicBool,
 }
 
 struct Renderer {
@@ -67,6 +72,7 @@ struct Renderer {
     consumer: Option<Consumer<f32>>,
     channels: usize,
     gain: Ramp,
+    eq: Equalizer,
 }
 
 impl Renderer {
@@ -81,12 +87,18 @@ impl Renderer {
             shared.generation.store(swap.generation, Ordering::Release);
             shared.swap_pending.store(false, Ordering::Release);
         }
+        if shared.eq_pending.load(Ordering::Acquire)
+            && let Ok(gains) = shared.eq.try_lock()
+        {
+            self.eq.set(*gains);
+            shared.eq_pending.store(false, Ordering::Release);
+        }
 
         let paused = shared.paused.load(Ordering::Relaxed);
         let target = if paused || shared.muted.load(Ordering::Relaxed) {
             0.0
         } else {
-            f32::from_bits(shared.volume.load(Ordering::Relaxed))
+            f32::from_bits(shared.volume.load(Ordering::Relaxed)) * self.eq.preamp()
         };
         self.gain.set_target(target);
         // Hold the ring once a pause has faded out, so position freezes on
@@ -101,7 +113,13 @@ impl Renderer {
             None => 0,
         };
         out[filled..].fill(0.0);
+        self.eq.process(out);
         self.gain.apply(out, self.channels);
+        // The preamp covers one band's boost; neighbouring boosts can still
+        // add up past full scale.
+        if self.eq.is_active() {
+            out.iter_mut().for_each(|s| *s = s.clamp(-1.0, 1.0));
+        }
         shared
             .played
             .fetch_add((filled / self.channels) as u64, Ordering::Release);
@@ -132,6 +150,8 @@ impl Output {
             volume: AtomicU32::new(1f32.to_bits()),
             muted: AtomicBool::new(false),
             paused: AtomicBool::new(true),
+            eq: Mutex::new(None),
+            eq_pending: AtomicBool::new(false),
         });
         let (backend, rate, channels) = match kind {
             OutputKind::Default => open_cpal(&shared, errors)?,
@@ -197,6 +217,11 @@ impl Output {
         self.shared.muted.store(muted, Ordering::Relaxed);
     }
 
+    pub fn set_equalizer(&self, gains: Option<[f32; 10]>) {
+        *self.shared.eq.lock().unwrap_or_else(|e| e.into_inner()) = gains;
+        self.shared.eq_pending.store(true, Ordering::Release);
+    }
+
     /// Fades in and keeps the device running.
     pub fn play(&mut self) -> Result<(), PlayerError> {
         self.shared.paused.store(false, Ordering::Relaxed);
@@ -242,6 +267,7 @@ fn renderer(shared: &Arc<Shared>, rate: u32, channels: usize) -> Renderer {
         consumer: None,
         channels,
         gain: Ramp::new(0.0, (rate as f32 * RAMP_SECONDS) as u32),
+        eq: Equalizer::new(rate, channels),
     }
 }
 
@@ -381,6 +407,8 @@ mod tests {
             volume: AtomicU32::new(1f32.to_bits()),
             muted: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            eq: Mutex::new(None),
+            eq_pending: AtomicBool::new(false),
         })
     }
 
@@ -392,6 +420,7 @@ mod tests {
             consumer: None,
             channels: 2,
             gain: Ramp::new(1.0, 1),
+            eq: Equalizer::new(48_000, 2),
         };
         let (mut producer, consumer) = RingBuffer::new(16);
         shared.mailbox.lock().unwrap().incoming = Some(Swap {
@@ -418,6 +447,7 @@ mod tests {
             consumer: Some(consumer),
             channels: 1,
             gain: Ramp::new(1.0, 4),
+            eq: Equalizer::new(48_000, 1),
         };
         let _ = producer.push_partial_slice(&[1.0; 64]);
         shared.paused.store(true, Ordering::Relaxed);

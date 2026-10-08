@@ -1,12 +1,16 @@
-//! The Settings dialog. Playback and Privacy hold the settings kept in
-//! `config.json`; the daemon reads the audio ones from there too.
+//! The Settings dialog. Playback, Equalizer and Privacy hold the settings
+//! kept in `config.json`; the daemon reads the audio ones from there too.
 //! Scrobbling has Last.fm and ListenBrainz, each with its account, a switch
 //! for scrobbling and one for now playing, and a line for plays still
 //! waiting to go out. Last.fm asks for the user's own API account first
 //! when the daemon has none.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use formalmusic_api::{
-    LastFmApp, ListenBrainzSource, ProfileBrowser, ScrobbleAccount, ScrobbleService,
+    EQ_BANDS_HZ, EQ_MAX_DB, EqPreset, Equalizer, LastFmApp, ListenBrainzSource, ProfileBrowser,
+    ScrobbleAccount, ScrobbleService,
 };
 use formalmusic_core::MusicStore;
 use formalmusic_core::settings::{AudioQuality, Settings as ClientSettings};
@@ -17,9 +21,10 @@ use gpui_kit::*;
 use crate::bridge::{Bridge, Topic};
 use crate::icons::{Icon, IconName};
 use crate::primitives::{Button, ButtonKind, overlay_shadows};
-use crate::theme::{Palette, Theme, radius, spacing, type_scale};
+use crate::theme::{Palette, Theme, radius, spacing, tabular, type_scale};
 
 const LASTFM_CREATE: &str = "https://www.last.fm/api/account/create";
+const EQ_TRACK_HEIGHT: Pixels = px(112.);
 
 type OnClose = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -37,6 +42,10 @@ pub struct Settings {
     listenbrainz_error: Option<SharedString>,
     client: ClientSettings,
     client_error: Option<SharedString>,
+    /// Each band slider's bounds, for turning a pointer into a gain.
+    eq_bounds: [Rc<Cell<Bounds<Pixels>>>; 10],
+    /// The band being dragged.
+    eq_drag: Option<usize>,
     on_close: OnClose,
     _subscription: Subscription,
 }
@@ -80,6 +89,8 @@ impl Settings {
             listenbrainz_error: None,
             client: ClientSettings::load(&formalmusic_core::paths::settings_file()),
             client_error: None,
+            eq_bounds: Default::default(),
+            eq_drag: None,
             on_close: std::rc::Rc::new(on_close),
             _subscription: subscription,
         }
@@ -120,6 +131,217 @@ impl Settings {
         ) {
             self.store.reload_settings();
         }
+    }
+
+    fn set_equalizer(&mut self, equalizer: Equalizer, cx: &mut Context<Self>) {
+        if equalizer == self.client.equalizer {
+            return;
+        }
+        let value = serde_json::to_value(equalizer).unwrap_or_default();
+        if self.save(
+            "equalizer",
+            value,
+            |client| client.equalizer = equalizer,
+            cx,
+        ) {
+            self.store.reload_settings();
+        }
+    }
+
+    /// Moving a band turns the sliders into the Custom preset, starting from
+    /// what they showed.
+    fn set_band(&mut self, band: usize, at: f32, cx: &mut Context<Self>) {
+        let mut custom = self.client.equalizer.shown();
+        custom[band] = ((0.5 - at) * 2. * EQ_MAX_DB).round() + 0.;
+        self.set_equalizer(
+            Equalizer {
+                preset: EqPreset::Custom,
+                custom,
+            },
+            cx,
+        );
+    }
+
+    fn band_moved(&mut self, band: usize, at: f32, cx: &mut Context<Self>) {
+        if self.eq_drag != Some(band) {
+            self.eq_drag = Some(band);
+            cx.notify();
+        }
+        self.set_band(band, at, cx);
+    }
+
+    fn band_released(&mut self, band: usize, at: f32, cx: &mut Context<Self>) {
+        self.eq_drag = None;
+        self.set_band(band, at, cx);
+        cx.notify();
+    }
+
+    fn equalizer(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let equalizer = self.client.equalizer;
+        let gains = equalizer.shown();
+        let off = equalizer.gains().is_none();
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::X2)
+            .child(heading("Equalizer", palette))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(spacing::X4)
+                    .p(spacing::X4)
+                    .rounded(radius::CARD)
+                    .bg(palette.press_wash)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .gap(spacing::X1)
+                            .children(EqPreset::ALL.into_iter().map(|preset| {
+                                let selected = equalizer.preset == preset;
+                                div()
+                                    .id(SharedString::from(format!("eq-preset-{preset:?}")))
+                                    .h(px(28.))
+                                    .px(spacing::X3)
+                                    .flex()
+                                    .items_center()
+                                    .rounded(radius::PILL)
+                                    .text_size(type_scale::CAPTION.font_size)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .map(|el| {
+                                        if selected {
+                                            el.bg(palette.accent).text_color(palette.on_accent)
+                                        } else {
+                                            el.bg(palette.canvas)
+                                                .text_color(palette.secondary)
+                                                .cursor_pointer()
+                                                .hover(move |style| style.text_color(palette.text))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    let custom = this.client.equalizer.custom;
+                                                    this.set_equalizer(
+                                                        Equalizer { preset, custom },
+                                                        cx,
+                                                    )
+                                                }))
+                                        }
+                                    })
+                                    .child(preset.label())
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .when(off, |el| el.opacity(0.5))
+                            .children(
+                                (0..EQ_BANDS_HZ.len())
+                                    .map(|band| self.band_slider(band, gains[band], palette, cx)),
+                            ),
+                    )
+                    .child(caption(
+                        "Boosts lower the overall level so loud passages don't distort.",
+                        palette,
+                    )),
+            )
+            .into_any_element()
+    }
+
+    /// One band: its gain above, a vertical slider with 0 dB in the middle,
+    /// and its frequency below.
+    fn band_slider(
+        &self,
+        band: usize,
+        gain: f32,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let bounds = self.eq_bounds[band].clone();
+        let dragging = self.eq_drag == Some(band);
+        // Fractions from the top of the track.
+        let at = (0.5 - gain / (2. * EQ_MAX_DB)).clamp(0., 1.);
+        let (fill_top, fill_bottom) = if at < 0.5 { (at, 0.5) } else { (0.5, at) };
+        let hz = EQ_BANDS_HZ[band];
+        let label = if hz >= 1000. {
+            format!("{}k", hz / 1000.)
+        } else {
+            format!("{hz}")
+        };
+        let value = match gain {
+            g if g > 0. => format!("+{g}"),
+            g => format!("{g}"),
+        };
+        let group = SharedString::from(format!("eq-band-{band}"));
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(spacing::X1)
+            .text_size(type_scale::CAPTION.font_size)
+            .line_height(type_scale::CAPTION.line_height)
+            .font_features(tabular())
+            .child(
+                div()
+                    .text_color(if gain == 0. {
+                        palette.secondary
+                    } else {
+                        palette.text
+                    })
+                    .child(value),
+            )
+            .child(
+                div()
+                    .id(group.clone())
+                    .group(group.clone())
+                    .relative()
+                    .w_full()
+                    .h(EQ_TRACK_HEIGHT)
+                    .flex()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            let at = fraction_y(this.eq_bounds[band].get(), event.position.y);
+                            this.band_moved(band, at, cx);
+                        }),
+                    )
+                    .child(band_drag(bounds, band, dragging, cx.entity().downgrade()))
+                    .child(
+                        div()
+                            .relative()
+                            .w(px(3.))
+                            .h_full()
+                            .rounded(px(2.))
+                            .bg(palette.progress_track)
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top(relative(fill_top))
+                                    .h(relative(fill_bottom - fill_top))
+                                    .bg(palette.accent),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top(relative(at))
+                            .mt(px(-6.))
+                            .size(px(12.))
+                            .rounded(px(6.))
+                            .bg(palette.accent)
+                            .opacity(if dragging { 1. } else { 0.85 })
+                            .group_hover(group, |style| style.opacity(1.)),
+                    ),
+            )
+            .child(div().text_color(palette.secondary).child(label))
+            .into_any_element()
     }
 
     fn save(
@@ -741,6 +963,7 @@ impl Render for Settings {
                             .child("Settings"),
                     )
                     .child(self.playback(palette, cx))
+                    .child(self.equalizer(palette, cx))
                     .child(self.privacy(palette, cx))
                     .child(
                         div()
@@ -820,6 +1043,49 @@ fn switch(
                 ),
         )
         .into_any_element()
+}
+
+fn fraction_y(bounds: Bounds<Pixels>, y: Pixels) -> f32 {
+    let height = f32::from(bounds.size.height).max(1.);
+    (f32::from(y - bounds.origin.y) / height).clamp(0., 1.)
+}
+
+/// Records a band slider's bounds, and while it is dragged follows the
+/// pointer window-wide, so the drag keeps going outside the slider.
+fn band_drag(
+    bounds: Rc<Cell<Bounds<Pixels>>>,
+    band: usize,
+    dragging: bool,
+    entity: WeakEntity<Settings>,
+) -> impl IntoElement {
+    canvas(
+        {
+            let bounds = bounds.clone();
+            move |area, _, _| bounds.set(area)
+        },
+        move |_, _, window, _| {
+            if !dragging {
+                return;
+            }
+            let (moving, releasing) = (entity.clone(), entity.clone());
+            let (move_bounds, release_bounds) = (bounds.clone(), bounds.clone());
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                if phase == DispatchPhase::Bubble && event.pressed_button == Some(MouseButton::Left)
+                {
+                    let at = fraction_y(move_bounds.get(), event.position.y);
+                    let _ = moving.update(cx, |view, cx| view.band_moved(band, at, cx));
+                }
+            });
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                    let at = fraction_y(release_bounds.get(), event.position.y);
+                    let _ = releasing.update(cx, |view, cx| view.band_released(band, at, cx));
+                }
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
 }
 
 fn heading(text: &'static str, palette: Palette) -> impl IntoElement {

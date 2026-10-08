@@ -171,6 +171,7 @@ impl Playback {
     ) -> anyhow::Result<Arc<Self>> {
         player.set_normalisation(config.normalisation);
         player.set_crossfade(config.crossfade_ms);
+        player.set_equalizer(prefs.equalizer.gains());
         let queue_path = paths.queue();
         let mut state = State {
             volume: 1.0,
@@ -1020,6 +1021,7 @@ impl Playback {
     /// Applies settings read again from the config files.
     pub fn set_preferences(&self, prefs: Preferences) {
         self.resolver.set_quality(prefs.quality);
+        self.player.set_equalizer(prefs.equalizer.gains());
         *self.prefs.lock() = prefs;
     }
 

@@ -61,6 +61,7 @@ pub(crate) enum Command {
     SetMuted(bool),
     SetNormalisation(bool),
     SetCrossfade(u32),
+    SetEqualizer(Option<[f32; 10]>),
     OutputError(String),
     Shutdown,
 }
@@ -241,6 +242,7 @@ pub(crate) struct Engine {
     muted: bool,
     normalise: bool,
     crossfade_ms: u32,
+    equalizer: Option<[f32; 10]>,
 }
 
 impl Engine {
@@ -279,6 +281,7 @@ impl Engine {
             muted: false,
             normalise: true,
             crossfade_ms: 0,
+            equalizer: None,
         };
         thread::Builder::new()
             .name("formalmusic-engine".into())
@@ -439,6 +442,12 @@ impl Engine {
                 }
             }
             Command::SetCrossfade(ms) => self.crossfade_ms = ms,
+            Command::SetEqualizer(gains) => {
+                self.equalizer = gains;
+                if let Some(output) = &self.output {
+                    output.set_equalizer(gains);
+                }
+            }
             Command::OutputError(message) => {
                 tracing::warn!(%message, "audio output error");
                 let track = self.current.as_ref().map(|t| t.id);
@@ -459,6 +468,7 @@ impl Engine {
             let output = Output::open(self.output_kind, self.internal.clone())?;
             output.set_volume(self.volume);
             output.set_muted(self.muted);
+            output.set_equalizer(self.equalizer);
             Ok((client, output))
         });
         match result {

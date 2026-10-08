@@ -24,6 +24,7 @@
 
 mod decode;
 mod engine;
+mod equalizer;
 mod error;
 mod fetch;
 mod gain;
@@ -214,5 +215,11 @@ impl Player {
     /// Crossfade length into a preloaded track; 0 (the default) is gapless.
     pub fn set_crossfade(&self, ms: u32) {
         self.send(Command::SetCrossfade(ms));
+    }
+
+    /// Band gains in dB for [`formalmusic_api::EQ_BANDS_HZ`]; `None` is
+    /// flat. Takes effect at the next audio callback, not after the ring.
+    pub fn set_equalizer(&self, gains: Option<[f32; 10]>) {
+        self.send(Command::SetEqualizer(gains));
     }
 }
