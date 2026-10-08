@@ -2,7 +2,7 @@
 
 # FormalMusic
 
-YouTube Music on Linux. A native Rust client (GPUI) on top of its own playback
+YouTube Music on Linux and Windows. A native Rust client (GPUI) on top of its own playback
 daemon, with synced lyrics and Apple Music motion artwork.
 
 ![Home](docs/images/home.png)
@@ -90,6 +90,23 @@ cargo build --release -p formalmusic -p formalmusicd
 
 Put both binaries on `PATH`. The app starts the daemon itself when no service
 is running.
+
+### Windows
+
+Needs Rust (MSVC) and the Visual Studio C++ build tools. From the checkout:
+
+```
+powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
+```
+
+This builds both binaries and installs them for the current user in
+`%LOCALAPPDATA%\Programs\FormalMusic`, with an embeddable Python carrying
+the yt-dlp release `flake.nix` pins, deno, a Start menu entry and an entry in
+Installed apps. ffmpeg comes from winget when it is not on `PATH`. The daemon
+shows up in the media flyout and on media keys, keeps a notification area
+icon while a track is loaded, talks over the named pipe
+`\\.\pipe\formalmusicd-%USERNAME%`, and logs to
+`%LOCALAPPDATA%\formalmusic\formalmusicd.log`.
 
 ## Signing in
 

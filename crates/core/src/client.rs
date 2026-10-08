@@ -1,4 +1,4 @@
-//! The daemon over its Unix socket. Two connections: one for requests and
+//! The daemon over its local socket. Two connections: one for requests and
 //! their answers, one subscribed to events, so a long page answer never holds
 //! up the position ticks. Both come back with backoff when the daemon goes
 //! away, and a missing socket starts `formalmusicd` once, since a dev box may
@@ -17,8 +17,7 @@ use formalmusic_api::{
 };
 use parking_lot::Mutex;
 use tokio::io::BufReader;
-use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use formalmusic_api::local::{self, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::AbortHandle;
 
@@ -41,7 +40,7 @@ const SPAWN_GAP: Duration = Duration::from_secs(30);
 const OFFLINE_AFTER: u32 = 4;
 
 struct Conn {
-    writer: tokio::sync::Mutex<OwnedWriteHalf>,
+    writer: tokio::sync::Mutex<WriteHalf>,
     pending: Mutex<HashMap<u64, oneshot::Sender<ResponseResult>>>,
 }
 
@@ -220,14 +219,14 @@ fn describe(error: &io::Error) -> String {
     }
 }
 
-type Reader = BufReader<OwnedReadHalf>;
+type Reader = BufReader<ReadHalf>;
 
 /// The subscribed connection only reads once `Subscribe` is out, but its
 /// write half stays open beside the reader: dropping it would be a half
 /// close the daemon reads as the client leaving.
 struct Subscribed {
     reader: Reader,
-    _writer: OwnedWriteHalf,
+    _writer: WriteHalf,
 }
 
 async fn connect(shared: &Shared) -> io::Result<(Arc<Conn>, Reader, Subscribed)> {
@@ -257,9 +256,9 @@ async fn connect(shared: &Shared) -> io::Result<(Arc<Conn>, Reader, Subscribed)>
 }
 
 /// Connects and checks the protocol number.
-async fn open(shared: &Shared) -> io::Result<(Reader, OwnedWriteHalf)> {
-    let stream = UnixStream::connect(&shared.socket).await?;
-    let (read, mut write) = stream.into_split();
+async fn open(shared: &Shared) -> io::Result<(Reader, WriteHalf)> {
+    let stream = local::connect(&shared.socket).await?;
+    let (read, mut write) = local::split(stream);
     let mut read = BufReader::new(read);
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     wire::write(
@@ -364,10 +363,13 @@ fn maybe_spawn(shared: &Shared) {
     }
     let beside = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("formalmusicd")))
+        .and_then(|exe| {
+            let name = format!("formalmusicd{}", std::env::consts::EXE_SUFFIX);
+            exe.parent().map(|dir| dir.join(name))
+        })
         .filter(|path| path.is_file());
     let program = beside.unwrap_or_else(|| PathBuf::from("formalmusicd"));
-    let mut command = std::process::Command::new(&program);
+    let mut command = formalmusic_api::process::command(&program);
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -425,16 +427,16 @@ fn start_unit() -> bool {
 mod tests {
     use super::*;
     use formalmusic_api::{Event, Response};
-    use tokio::net::UnixListener;
+    use formalmusic_api::local::Listener;
 
     /// A daemon that answers Hello and Toggle, and sends one event to subscribers.
-    async fn fake_daemon(listener: UnixListener) {
+    async fn fake_daemon(mut listener: Listener) {
         loop {
-            let Ok((stream, _)) = listener.accept().await else {
+            let Ok(stream) = listener.accept().await else {
                 return;
             };
             tokio::spawn(async move {
-                let (read, mut write) = stream.into_split();
+                let (read, mut write) = local::split(stream);
                 let mut read = BufReader::new(read);
                 let mut buf = String::new();
                 while let Ok(Some(request)) = wire::read::<_, Request>(&mut read, &mut buf).await {
@@ -469,7 +471,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("d.sock");
         let _ = std::fs::remove_file(&socket);
-        tokio::spawn(fake_daemon(UnixListener::bind(&socket).unwrap()));
+        tokio::spawn(fake_daemon(Listener::bind(&socket).unwrap()));
 
         let client = DaemonClient::new(socket);
         let (tx, mut rx) = mpsc::unbounded_channel();

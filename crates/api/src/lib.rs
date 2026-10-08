@@ -1,13 +1,16 @@
 //! The contract between `formalmusicd` and its clients.
 //!
-//! Wire format: one JSON object per line over a Unix socket at
-//! [`socket_path`]. A client writes [`Request`]s; the daemon writes
+//! Wire format: one JSON object per line over a Unix socket (a named pipe on
+//! Windows) at [`socket_path`]. A client writes [`Request`]s; the daemon writes
 //! [`ServerMessage`]s, which are either the [`Response`] to a request (matched
 //! by `id`) or an unsolicited [`Event`] once the client has sent
 //! [`Command::Subscribe`]. JSON lines keep the daemon scriptable from a shell
 //! (`socat - UNIX-CONNECT:...`) and from bar widgets in any language.
 
 mod model;
+#[cfg(feature = "io")]
+pub mod local;
+pub mod process;
 #[cfg(feature = "io")]
 pub mod wire;
 
@@ -22,10 +25,14 @@ use std::path::PathBuf;
 pub const PROTOCOL_VERSION: u32 = 2;
 
 /// `$XDG_RUNTIME_DIR/formalmusic/formalmusicd.sock`, or the cache dir on macOS
-/// where there is no runtime dir.
+/// where there is no runtime dir. On Windows a named pipe per user.
 pub fn socket_path() -> PathBuf {
     if let Ok(path) = std::env::var("FORMALMUSIC_SOCKET") {
         return path.into();
+    }
+    if cfg!(windows) {
+        let user = std::env::var("USERNAME").unwrap_or_default();
+        return format!(r"\\.\pipe\formalmusicd-{user}").into();
     }
     dirs::runtime_dir()
         .or_else(dirs::cache_dir)

@@ -8,7 +8,6 @@ use super::{Cookie, signed_in_header};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
@@ -72,6 +71,28 @@ fn flatpak_id(browser: Browser) -> Option<&'static str> {
     }
 }
 
+/// Chromium keeps its `User Data` under `%LOCALAPPDATA%`, Firefox and its
+/// forks their `profiles.ini` under `%APPDATA%`.
+fn windows_roots(browser: Browser) -> Vec<PathBuf> {
+    let (base, dirs): (_, &[&str]) = match browser {
+        Browser::Helium => (dirs::data_local_dir(), &[r"imput\Helium\User Data"]),
+        Browser::Chrome => (dirs::data_local_dir(), &[r"Google\Chrome\User Data"]),
+        Browser::Chromium => (dirs::data_local_dir(), &[r"Chromium\User Data"]),
+        Browser::Brave => (
+            dirs::data_local_dir(),
+            &[r"BraveSoftware\Brave-Browser\User Data"],
+        ),
+        Browser::Vivaldi => (dirs::data_local_dir(), &[r"Vivaldi\User Data"]),
+        Browser::Edge => (dirs::data_local_dir(), &[r"Microsoft\Edge\User Data"]),
+        Browser::Firefox => (dirs::data_dir(), &[r"Mozilla\Firefox"]),
+        Browser::LibreWolf => (dirs::data_dir(), &["librewolf"]),
+        Browser::Zen => (dirs::data_dir(), &["zen"]),
+        Browser::Floorp => (dirs::data_dir(), &["Floorp"]),
+    };
+    base.map(|base| dirs.iter().map(|d| base.join(d)).collect())
+        .unwrap_or_default()
+}
+
 /// Every place `browser` may keep its profiles, existing or not.
 /// `config` is the XDG config directory, `None` on macOS.
 fn roots(browser: Browser, home: &Path, config: Option<&Path>) -> Vec<PathBuf> {
@@ -104,10 +125,17 @@ pub fn list() -> Vec<Profile> {
     } else {
         dirs::config_dir()
     };
+    let roots_of = |browser| {
+        if cfg!(windows) {
+            windows_roots(browser)
+        } else {
+            roots(browser, &home, config.as_deref())
+        }
+    };
     Browser::ALL
         .into_iter()
         .flat_map(|browser| {
-            roots(browser, &home, config.as_deref())
+            roots_of(browser)
                 .into_iter()
                 .flat_map(move |root| match browser.engine() {
                     Engine::Chromium => chromium_profiles(browser, &root),
@@ -236,7 +264,7 @@ fn ytdlp_browser(browser: Browser) -> &'static str {
 /// encrypts with a fixed key yt-dlp only uses when told `basictext`, and
 /// nothing in the profile says which store it used.
 fn keyrings(browser: Browser) -> &'static [Option<&'static str>] {
-    if browser.engine() == Engine::Chromium && !cfg!(target_os = "macos") {
+    if browser.engine() == Engine::Chromium && cfg!(target_os = "linux") {
         &[None, Some("basictext")]
     } else {
         &[None]
@@ -291,7 +319,6 @@ pub async fn read<T>(
     pick: impl Fn(&[Cookie]) -> Option<T>,
 ) -> Result<Option<T>, String> {
     crate::config::create_private_dir(scratch).map_err(|e| e.to_string())?;
-    let program = crate::streams::ytdlp_program();
     for keyring in keyrings(profile.browser) {
         let spec = match keyring {
             Some(keyring) => format!(
@@ -308,7 +335,7 @@ pub async fn read<T>(
         let file = CookieFile::create(scratch).map_err(|e| e.to_string())?;
         // yt-dlp saves the cookies it read before it complains that there is
         // no URL to download, so its exit status says nothing here.
-        let output = Command::new(&program)
+        let output = crate::streams::ytdlp_command()
             .arg("--ignore-config")
             .arg("--cookies-from-browser")
             .arg(&spec)
@@ -355,13 +382,12 @@ struct CookieFile {
 
 impl CookieFile {
     fn create(dir: &Path) -> std::io::Result<Self> {
-        use std::os::unix::fs::OpenOptionsExt;
         let path = dir.join(format!("import-{}.txt", fastrand::u64(..)));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&path)?;
         file.write_all(b"# Netscape HTTP Cookie File\n")?;
         Ok(Self { path })
     }
@@ -468,6 +494,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn cookie_files_are_private_and_removed() {
         use std::os::unix::fs::PermissionsExt;

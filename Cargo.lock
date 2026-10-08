@@ -986,6 +986,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "cocoa"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2118,6 +2127,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "windows-sys 0.61.2",
+ "winresource",
 ]
 
 [[package]]
@@ -2148,6 +2159,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2221,6 +2233,9 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
+ "winresource",
 ]
 
 [[package]]
@@ -5209,6 +5224,9 @@ name = "opusic-sys"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9d1ecdf206421bc74343ab3bb2f30ad2abbfee41fa341f7181fecbaf957769a"
+dependencies = [
+ "cmake",
+]
 
 [[package]]
 name = "ordered-float"
@@ -9383,6 +9401,16 @@ checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
 dependencies = [
  "cfg-if",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0986a8b1d586b7d3e4fe3d9ea39fb451ae22869dcea4aa109d287a374d866087"
+dependencies = [
+ "toml 1.1.6+spec-1.1.0",
+ "version_check",
 ]
 
 [[package]]

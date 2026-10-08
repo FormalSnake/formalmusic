@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{Child, ChildStdin};
 use tokio::sync::oneshot;
 
 const SCRIPT: &str = include_str!("ytdlp_worker.py");
@@ -42,11 +42,12 @@ struct Process {
 
 /// `$FORMALMUSIC_YTDLP_PYTHON`, an interpreter that can import `yt_dlp`
 /// (the Nix package points it at one built with the pinned yt-dlp), else
-/// `python3` from `PATH`.
+/// `python3` from `PATH`, or on Windows `python`, which the install's
+/// runtime puts first (`formalmusic_api::process`).
 pub fn python() -> PathBuf {
     std::env::var_os("FORMALMUSIC_YTDLP_PYTHON")
         .map(PathBuf::from)
-        .unwrap_or_else(|| "python3".into())
+        .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into())
 }
 
 impl Worker {
@@ -117,7 +118,7 @@ impl Worker {
     }
 
     fn spawn(&self) -> Result<Process, String> {
-        let mut child = Command::new(&self.python)
+        let mut child = formalmusic_api::process::async_command(&self.python)
             .arg("-c")
             .arg(SCRIPT)
             .arg(&self.cache_dir)

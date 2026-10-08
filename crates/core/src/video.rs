@@ -38,7 +38,7 @@ pub struct VideoFrame {
 /// Frame rate and duration of the first video stream, or `None` when
 /// ffprobe is missing or the file has no picture.
 pub async fn probe(path: &Path) -> Option<VideoInfo> {
-    let output = tokio::process::Command::new("ffprobe")
+    let output = formalmusic_api::process::async_command("ffprobe")
         .args([
             "-v",
             "error",
@@ -184,7 +184,7 @@ async fn loop_from(
     // One decoder thread and one filter thread: a 768 px H.264 stream needs
     // a fraction of one core, and ffmpeg would otherwise start a thread per
     // core for it.
-    let mut command = tokio::process::Command::new("ffmpeg");
+    let mut command = formalmusic_api::process::async_command("ffmpeg");
     command.args(["-v", "error", "-nostdin", "-threads", "1"]);
     // As for music videos, the picture comes down from VA-API as NV12 at the
     // drawn size: a third of the CPU of decoding a 768 px cover in software.
@@ -399,8 +399,29 @@ impl Control {
                 libc::kill(pid as libc::pid_t, signal);
             }
         }
-        #[cfg(not(unix))]
-        let _ = signal;
+        // Windows has no SIGSTOP; ntdll suspends every thread of the process.
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+            use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SUSPEND_RESUME};
+            #[link(name = "ntdll")]
+            unsafe extern "system" {
+                fn NtSuspendProcess(process: HANDLE) -> i32;
+                fn NtResumeProcess(process: HANDLE) -> i32;
+            }
+            // SAFETY: `pid` is a child whose handle `Child` still holds, so
+            // the id is not reused; the opened handle is closed here.
+            unsafe {
+                let process = OpenProcess(PROCESS_SUSPEND_RESUME, 0, pid);
+                if !process.is_null() {
+                    match signal {
+                        Signal::Stop => NtSuspendProcess(process),
+                        Signal::Continue => NtResumeProcess(process),
+                    };
+                    CloseHandle(process);
+                }
+            }
+        }
     }
 }
 
@@ -492,7 +513,7 @@ async fn decode_from(run: &Run, rate: f64, hardware: bool) -> Ended {
         return Ended::Done;
     };
     let start = now + lead;
-    let mut command = tokio::process::Command::new("ffmpeg");
+    let mut command = formalmusic_api::process::async_command("ffmpeg");
     command.args(["-v", "error", "-nostdin"]);
     // One decoder thread keeps 480p H.264 well under real time; taller
     // streams get a second so a slow core does not fall behind the audio.
@@ -621,7 +642,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok()?;
         let path = dir.join("pattern.mp4");
         if !path.exists() {
-            let status = std::process::Command::new("ffmpeg")
+            let status = formalmusic_api::process::command("ffmpeg")
                 .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi"])
                 .args(["-i", "testsrc2=size=160x120:rate=30:duration=2"])
                 .args(["-c:v", "mpeg4", "-f", "mp4"])
@@ -674,7 +695,7 @@ mod tests {
         let path = dir.join("long.mp4");
         if !path.exists() {
             let made = std::fs::create_dir_all(&dir).is_ok()
-                && std::process::Command::new("ffmpeg")
+                && formalmusic_api::process::command("ffmpeg")
                     .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi"])
                     .args(["-i", "testsrc2=size=160x90:rate=30:duration=8"])
                     .args(["-c:v", "mpeg4", "-f", "mp4"])

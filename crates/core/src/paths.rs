@@ -13,10 +13,16 @@ pub fn art_dir() -> PathBuf {
     cache_dir().join("art")
 }
 
-/// `$XDG_CONFIG_HOME/formalmusic`, falling back to `~/.config` on every
-/// platform, since matugen writes `theme.json` there on Linux and the same
-/// path keeps a Mac dev run themable.
+/// `$XDG_CONFIG_HOME/formalmusic`, falling back to `~/.config` on Linux and
+/// macOS, since matugen writes `theme.json` there on Linux and the same path
+/// keeps a Mac dev run themable. `%APPDATA%\formalmusic` on Windows, where the
+/// daemon reads `config.json` too.
 pub fn config_dir() -> PathBuf {
+    if cfg!(windows)
+        && let Some(dir) = dirs::config_dir()
+    {
+        return dir.join("formalmusic");
+    }
     let config_home = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)

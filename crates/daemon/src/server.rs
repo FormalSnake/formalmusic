@@ -1,4 +1,4 @@
-//! The Unix socket: one task per connection, one task per request, so a slow
+//! The local socket: one task per connection, one task per request, so a slow
 //! browse never holds up a Toggle behind it.
 
 use crate::daemon::Daemon;
@@ -10,14 +10,15 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::BufReader;
-use tokio::net::{UnixListener, UnixStream};
+use formalmusic_api::local::{self, Listener, Stream};
 use tokio::sync::{broadcast, mpsc};
 
 /// Messages queued for one slow client before its events start being dropped.
 const OUTBOX: usize = 1024;
 
 /// Binds the socket, replacing a stale one only when no daemon answers on it.
-pub async fn bind(path: &Path) -> anyhow::Result<UnixListener> {
+#[cfg(unix)]
+pub async fn bind(path: &Path) -> anyhow::Result<Listener> {
     if let Some(dir) = path.parent() {
         crate::config::create_private_dir(dir)?;
     }
@@ -28,13 +29,25 @@ pub async fn bind(path: &Path) -> anyhow::Result<UnixListener> {
         tracing::info!(path = %path.display(), "removing stale socket");
         std::fs::remove_file(path)?;
     }
-    Ok(UnixListener::bind(path)?)
+    Ok(Listener::bind(path)?)
+}
+
+/// A named pipe leaves nothing behind to go stale, and the first instance
+/// owns the name until it exits.
+#[cfg(windows)]
+pub async fn bind(path: &Path) -> anyhow::Result<Listener> {
+    match Listener::bind(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied || answers_hello(path).await => {
+            anyhow::bail!("formalmusicd is already running on {}", path.display())
+        }
+        result => Ok(result?),
+    }
 }
 
 async fn answers_hello(path: &Path) -> bool {
     let probe = async {
-        let stream = UnixStream::connect(path).await.ok()?;
-        let (read, mut write) = stream.into_split();
+        let stream = local::connect(path).await.ok()?;
+        let (read, mut write) = local::split(stream);
         let hello = Request {
             id: 0,
             command: Command::Hello {
@@ -54,10 +67,10 @@ async fn answers_hello(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub async fn serve(listener: UnixListener, daemon: Arc<Daemon>) {
+pub async fn serve(mut listener: Listener, daemon: Arc<Daemon>) {
     loop {
         match listener.accept().await {
-            Ok((stream, _)) => {
+            Ok(stream) => {
                 tokio::spawn(connection(stream, daemon.clone()));
             }
             Err(e) => {
@@ -68,8 +81,8 @@ pub async fn serve(listener: UnixListener, daemon: Arc<Daemon>) {
     }
 }
 
-async fn connection(stream: UnixStream, daemon: Arc<Daemon>) {
-    let (read, mut write) = stream.into_split();
+async fn connection(stream: Stream, daemon: Arc<Daemon>) {
+    let (read, mut write) = local::split(stream);
     let (outbox, mut messages) = mpsc::channel::<ServerMessage>(OUTBOX);
     let writer = tokio::spawn(async move {
         while let Some(message) = messages.recv().await {
@@ -175,19 +188,19 @@ mod tests {
     use crate::config::{Config, Paths};
     use formalmusic_api::{PlaySource, Repeat, Status};
     use formalmusic_player::{OutputKind, Player};
+    use formalmusic_api::local::{ReadHalf, WriteHalf};
     use tokio::io::BufReader;
-    use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
     struct Conn {
-        read: BufReader<OwnedReadHalf>,
-        write: OwnedWriteHalf,
+        read: BufReader<ReadHalf>,
+        write: WriteHalf,
         buf: String,
         next_id: u64,
     }
 
     impl Conn {
         async fn open(path: &Path) -> Self {
-            let (read, write) = UnixStream::connect(path).await.unwrap().into_split();
+            let (read, write) = local::split(local::connect(path).await.unwrap());
             Self {
                 read: BufReader::new(read),
                 write,
@@ -394,7 +407,11 @@ mod tests {
         let (_dir, socket) = start().await;
         let err = bind(&socket).await.unwrap_err();
         assert!(err.to_string().contains("already running"), "{err}");
+    }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replaces_a_stale_socket() {
         let dir = tempfile::tempdir().unwrap();
         let stale = dir.path().join("stale.sock");
         drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());

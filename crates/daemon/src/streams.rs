@@ -70,11 +70,18 @@ struct Inner {
     fast_path_off_until: Mutex<Option<std::time::Instant>>,
 }
 
-/// `$FORMALMUSIC_YTDLP`, else `yt-dlp` from `PATH`.
-pub fn ytdlp_program() -> PathBuf {
-    std::env::var_os("FORMALMUSIC_YTDLP")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| "yt-dlp".into())
+/// `$FORMALMUSIC_YTDLP`, else `yt-dlp` from `PATH`. Windows has the yt-dlp
+/// the worker imports, run as a module, since the install ships no CLI.
+pub fn ytdlp_command() -> tokio::process::Command {
+    if let Some(program) = std::env::var_os("FORMALMUSIC_YTDLP") {
+        return formalmusic_api::process::async_command(program);
+    }
+    if cfg!(windows) {
+        let mut command = formalmusic_api::process::async_command(worker::python());
+        command.args(["-m", "yt_dlp"]);
+        return command;
+    }
+    formalmusic_api::process::async_command("yt-dlp")
 }
 
 impl Resolver {

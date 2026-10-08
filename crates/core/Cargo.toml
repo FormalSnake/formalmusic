@@ -19,6 +19,9 @@ libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 formalmusic-innertube = { workspace = true, optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [features]
 default = []
 # The demo serves innertube's recorded responses where it has one, read from

@@ -6,7 +6,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 pub enum Launch {
     /// Run the app. The receiver yields once per later launch; there is none
-    /// when single instance is off (demo data, screenshots, Windows).
+    /// when single instance is off (demo data, screenshots).
     First(Option<UnboundedReceiver<()>>),
     /// Another instance has been asked to come forward.
     Handed,
@@ -86,7 +86,69 @@ pub fn claim() -> Launch {
         .map_or(Launch::First(None), |_| Launch::First(Some(receiver)))
 }
 
-#[cfg(not(unix))]
+/// The first launch serves a named pipe beside the daemon's; creating the
+/// pipe's first instance is the lock.
+#[cfg(windows)]
+pub fn claim() -> Launch {
+    use formalmusic_api::local;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let off = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    if std::env::var("FORMALMUSIC_DEMO").as_deref() == Ok("1") || off("FORMALMUSIC_SCREENSHOT") {
+        return Launch::First(None);
+    }
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return Launch::First(None);
+    };
+    let pipe = std::path::PathBuf::from(format!(
+        "{}-instance",
+        formalmusic_api::socket_path().display()
+    ));
+    let listener = runtime.block_on(async { local::Listener::bind(&pipe) });
+    let mut listener = match listener {
+        Ok(listener) => listener,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            // Windows only lets the process the user is acting on take the
+            // foreground, so this one hands its right to the first instance.
+            // SAFETY: no pointers involved.
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+                    windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+                );
+            }
+            runtime.block_on(async {
+                let raise = async {
+                    let mut stream = local::connect(&pipe).await?;
+                    stream.write_all(b"activate\n").await?;
+                    stream.flush().await
+                };
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(3), raise).await;
+            });
+            return Launch::Handed;
+        }
+        Err(_) => return Launch::First(None),
+    };
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::Builder::new()
+        .name("formalmusic-instance".into())
+        .spawn(move || {
+            runtime.block_on(async move {
+                while let Ok(stream) = listener.accept().await {
+                    let mut line = String::new();
+                    let _ = BufReader::new(stream).read_line(&mut line).await;
+                    if line.trim() == "activate" && sender.send(()).is_err() {
+                        break;
+                    }
+                }
+            })
+        })
+        .map_or(Launch::First(None), |_| Launch::First(Some(receiver)))
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn claim() -> Launch {
     Launch::First(None)
 }

@@ -13,14 +13,16 @@ use gpui_kit::{App, FontFeatures, Global, Hsla, Pixels, SharedString, px, rgb};
 // ---------------------------------------------------------------------------
 
 /// `FORMALMUSIC_FONT` overrides the body font on any platform; otherwise SF Pro
-/// Text on macOS, the bundled static Noto Sans on Linux (`fonts.rs`), and
-/// the system Noto Sans on Windows or when the bundled faces failed to load.
+/// Text on macOS, Segoe UI on Windows, the bundled static Noto Sans on Linux
+/// (`fonts.rs`), and the system Noto Sans when those failed to load.
 pub fn font_sans() -> SharedString {
     if let Ok(font) = std::env::var("FORMALMUSIC_FONT") {
         return font.into();
     }
     if cfg!(target_os = "macos") {
         "SF Pro Text".into()
+    } else if cfg!(windows) {
+        "Segoe UI".into()
     } else if crate::fonts::loaded() {
         crate::fonts::FAMILY.into()
     } else {

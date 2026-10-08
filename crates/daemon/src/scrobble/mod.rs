@@ -756,12 +756,16 @@ fn unix_now() -> u64 {
 }
 
 fn open_in_browser(url: &str) {
-    let program = if cfg!(target_os = "macos") {
-        "open"
+    // `cmd /c start` would read the `&` in a query string as a separator.
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else if cfg!(windows) {
+        ("rundll32", &["url.dll,FileProtocolHandler"])
     } else {
-        "xdg-open"
+        ("xdg-open", &[])
     };
-    if let Err(e) = std::process::Command::new(program)
+    if let Err(e) = formalmusic_api::process::command(program)
+        .args(args)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

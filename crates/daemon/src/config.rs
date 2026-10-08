@@ -167,26 +167,33 @@ impl Paths {
 }
 
 /// Writes `contents` through a temporary file and a rename, so a crash never
-/// leaves half a file, with `mode` set before any byte lands.
+/// leaves half a file, with `mode` set before any byte lands. Windows has no
+/// modes; the profile directories these live in are the user's alone.
 pub fn write_private(path: &Path, contents: &[u8], mode: u32) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
     if let Some(dir) = path.parent() {
         create_private_dir(dir)?;
     }
     let tmp = path.with_extension("tmp");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(mode)
-        .open(&tmp)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
+    #[cfg(not(unix))]
+    let _ = mode;
+    let mut file = options.open(&tmp)?;
     file.write_all(contents)?;
     file.sync_all()?;
     std::fs::rename(&tmp, path)
 }
 
+#[cfg(not(unix))]
+pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
+#[cfg(unix)]
 pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
@@ -247,6 +254,7 @@ mod tests {
         assert_eq!(Config::load(&broken), Config::default());
     }
 
+    #[cfg(unix)]
     #[test]
     fn private_files_are_0600() {
         use std::os::unix::fs::PermissionsExt;

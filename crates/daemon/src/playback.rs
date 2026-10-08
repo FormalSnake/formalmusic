@@ -1425,9 +1425,10 @@ impl Playback {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 impl Playback {
     /// The current entry's uid, which MPRIS uses as the track id.
+    #[cfg(target_os = "linux")]
     pub fn current_uid(&self) -> Option<u64> {
         self.state.lock().queue.current().map(|e| e.uid)
     }
@@ -1445,6 +1446,18 @@ impl Playback {
     /// since clients only get an event a second.
     pub fn live_position(&self) -> u64 {
         live_position(&self.state.lock())
+    }
+}
+
+/// Queue rows carry 60 to 120 px art; googleusercontent serves any size from
+/// the same URL with a different `=w..-h..` suffix.
+#[cfg(any(target_os = "linux", windows))]
+pub fn large_art(url: &str) -> String {
+    match url.rfind("=w") {
+        Some(at) if url.contains("googleusercontent.com") => {
+            format!("{}=w544-h544-l90-rj", &url[..at])
+        }
+        _ => url.to_owned(),
     }
 }
 

@@ -203,8 +203,9 @@ impl Settings {
                             });
                         },
                     ))
-                    // The daemon draws the tray, over StatusNotifierItem.
-                    .when(cfg!(target_os = "linux"), |el| {
+                    // The daemon draws the tray, over StatusNotifierItem on
+                    // Linux and in the notification area on Windows.
+                    .when(cfg!(any(target_os = "linux", windows)), |el| {
                         el.child(switch(
                             "show-in-tray".into(),
                             "Show in the system tray",

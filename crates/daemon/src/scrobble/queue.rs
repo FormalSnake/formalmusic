@@ -169,9 +169,12 @@ mod tests {
         assert_eq!(q.len(), 2);
         let back = Queue::load(path.clone());
         assert_eq!(back.items, q.items);
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
 
     #[test]

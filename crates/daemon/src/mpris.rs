@@ -1,7 +1,7 @@
 //! MPRIS on the session bus as `org.mpris.MediaPlayer2.formalmusic`, so media
 //! keys, the desktop's media widget and `playerctl` work without the app.
 
-use crate::playback::Playback;
+use crate::playback::{Playback, large_art};
 use formalmusic_api::{Event, PlayerState, Repeat, Status};
 use mpris_server::zbus::{Result, fdo};
 use mpris_server::{
@@ -113,17 +113,6 @@ fn metadata(state: &PlayerState, uid: Option<u64>) -> Metadata {
         track.video_id
     )));
     m
-}
-
-/// Queue rows carry 60 to 120 px art; googleusercontent serves any size from
-/// the same URL with a different `=w..-h..` suffix.
-fn large_art(url: &str) -> String {
-    match url.rfind("=w") {
-        Some(at) if url.contains("googleusercontent.com") => {
-            format!("{}=w544-h544-l90-rj", &url[..at])
-        }
-        _ => url.to_owned(),
-    }
 }
 
 impl RootInterface for Mpris {

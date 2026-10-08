@@ -18,6 +18,10 @@ thiserror.workspace = true
 tokio = { workspace = true }
 tracing.workspace = true
 
+# Windows has no system libopus to link, so it gets built from source there.
+[target.'cfg(windows)'.dependencies]
+symphonia-adapter-libopus = { version = "0.3", default-features = false, features = ["bundled"] }
+
 [dev-dependencies]
 anyhow.workspace = true
 tracing-subscriber.workspace = true

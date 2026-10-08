@@ -1461,7 +1461,7 @@ async fn demo_cover() -> Option<String> {
             if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
                 tokio::fs::create_dir_all(path.parent()?).await.ok()?;
                 let partial = path.with_extension("part.mp4");
-                let status = tokio::process::Command::new("ffmpeg")
+                let status = formalmusic_api::process::async_command("ffmpeg")
                     .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i"])
                     .arg("gradients=s=768x768:r=24:d=12:speed=0.02:n=4,noise=alls=10:allf=t")
                     .args(["-c:v", "libx264", "-b:v", "2M", "-pix_fmt", "yuv420p"])
@@ -1491,7 +1491,7 @@ fn demo_video_file() -> Option<String> {
 
 async fn demo_video() -> Option<VideoStream> {
     let path = demo_video_file()?;
-    let output = tokio::process::Command::new("ffprobe")
+    let output = formalmusic_api::process::async_command("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0"])
         .args(["-show_entries", "stream=width,height,avg_frame_rate"])
         .args(["-of", "csv=p=0"])

@@ -112,9 +112,23 @@ impl Browser {
         }
     }
 
-    /// Executables inside the app bundle, relative to an Applications folder.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn mac_apps(self) -> &'static [&'static str] {
+    /// Executables relative to an applications folder: inside the app bundle
+    /// on macOS, under Program Files or `%LOCALAPPDATA%` on Windows.
+    fn apps(self) -> &'static [&'static str] {
+        if cfg!(windows) {
+            return match self {
+                Browser::Helium => &[r"imput\Helium\Application\chrome.exe"],
+                Browser::Chrome => &[r"Google\Chrome\Application\chrome.exe"],
+                Browser::Chromium => &[r"Chromium\Application\chrome.exe"],
+                Browser::Brave => &[r"BraveSoftware\Brave-Browser\Application\brave.exe"],
+                Browser::Vivaldi => &[r"Vivaldi\Application\vivaldi.exe"],
+                Browser::Edge => &[r"Microsoft\Edge\Application\msedge.exe"],
+                Browser::Firefox => &[r"Mozilla Firefox\firefox.exe"],
+                Browser::LibreWolf => &[r"LibreWolf\librewolf.exe"],
+                Browser::Zen => &[r"Zen Browser\zen.exe"],
+                Browser::Floorp => &[r"Ablaze Floorp\floorp.exe"],
+            };
+        }
         match self {
             Browser::Helium => &["Helium.app/Contents/MacOS/Helium"],
             Browser::Chrome => &["Google Chrome.app/Contents/MacOS/Google Chrome"],
@@ -185,7 +199,17 @@ fn flatpak_export_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn mac_app_dirs() -> Vec<PathBuf> {
+fn app_dirs() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        return ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .map(PathBuf::from)
+            .collect();
+    }
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
     let mut dirs = vec![PathBuf::from("/Applications")];
     if let Some(home) = dirs::home_dir() {
         dirs.push(home.join("Applications"));
@@ -193,10 +217,16 @@ fn mac_app_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 pub fn find(browser: Browser) -> Option<Launcher> {
@@ -204,12 +234,7 @@ pub fn find(browser: Browser) -> Option<Launcher> {
         browser,
         &search_dirs(),
         &flatpak_export_dirs(),
-        if cfg!(target_os = "macos") {
-            mac_app_dirs()
-        } else {
-            Vec::new()
-        }
-        .as_slice(),
+        &app_dirs(),
     )
 }
 
@@ -225,7 +250,7 @@ fn find_in(
         .flat_map(|name| bin_dirs.iter().map(move |dir| dir.join(name)))
         .chain(
             browser
-                .mac_apps()
+                .apps()
                 .iter()
                 .flat_map(|app| app_dirs.iter().map(move |dir| dir.join(app))),
         )
@@ -275,7 +300,7 @@ fn from_handler(handler: &str) -> Option<Browser> {
 
 /// The `x-scheme-handler/https` entry of the first `mimeapps.list` that has
 /// one, for when `xdg-settings` is missing.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
 fn handler_from_mimeapps(files: &[PathBuf]) -> Option<String> {
     files.iter().find_map(|file| {
         let text = std::fs::read_to_string(file).ok()?;
@@ -295,7 +320,7 @@ fn handler_from_mimeapps(files: &[PathBuf]) -> Option<String> {
 }
 
 async fn stdout(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program)
+    let output = formalmusic_api::process::async_command(program)
         .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -309,7 +334,28 @@ async fn stdout(program: &str, args: &[&str]) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-#[cfg(not(target_os = "macos"))]
+/// The ProgId of the https handler the user chose, `HeliumHTM` or
+/// `ChromeHTML`, which names its browser.
+#[cfg(windows)]
+async fn default_handler() -> Option<String> {
+    let output = stdout(
+        "reg",
+        &[
+            "query",
+            r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+            "/v",
+            "ProgId",
+        ],
+    )
+    .await?;
+    output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("ProgId"))
+        .and_then(|rest| rest.split_whitespace().last())
+        .map(str::to_owned)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 async fn default_handler() -> Option<String> {
     if let Some(handler) = stdout("xdg-settings", &["get", "default-web-browser"]).await {
         return Some(handler);
