@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "kopuz": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791482552,
+        "narHash": "sha256-XlYY4XAy45p+/w55akrw6UNKMVpaAjdLMb5dDeNQJMs=",
+        "owner": "FormalSnake",
+        "repo": "kopuz",
+        "rev": "7d638a98575c5f7e5eb8a11571bba108f0fbbf13",
+        "type": "github"
+      },
+      "original": {
+        "owner": "FormalSnake",
+        "repo": "kopuz",
+        "rev": "7d638a98575c5f7e5eb8a11571bba108f0fbbf13",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1791260994,
@@ -18,25 +35,8 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs",
-        "yt-dlp": "yt-dlp"
-      }
-    },
-    "yt-dlp": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1787182285,
-        "narHash": "sha256-BM5ZeGTmHq+1xH6G/zsuCtjLgYgfRA11ya0zIHK5p4g=",
-        "owner": "yt-dlp",
-        "repo": "yt-dlp",
-        "rev": "3a08beaf031ab68f966401ead017ac81fe8486cf",
-        "type": "github"
-      },
-      "original": {
-        "owner": "yt-dlp",
-        "ref": "2026.08.19",
-        "repo": "yt-dlp",
-        "type": "github"
+        "kopuz": "kopuz",
+        "nixpkgs": "nixpkgs"
       }
     }
   },

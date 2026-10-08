@@ -1,26 +1,23 @@
 {
-  description = "FormalMusic: a YouTube Music client for Linux";
+  description = "FormalMusic: a YouTube Music client for Linux, on kopuzd";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # Pinned to a yt-dlp release instead of nixpkgs' copy, which trails
-    # releases by days. YouTube breaks extraction often enough that the weekly
-    # maintenance run bumps this input on its own.
-    yt-dlp = {
-      url = "github:yt-dlp/yt-dlp/2026.08.19";
+    # The daemon FormalMusic plays through, at the rev Cargo.toml pins
+    # kopuz-client to; the two move together. Its own flake packages the
+    # Dioxus app and not kopuzd, so kopuzd is built from source here.
+    kopuz = {
+      url = "github:FormalSnake/kopuz/7d638a98575c5f7e5eb8a11571bba108f0fbbf13";
       flake = false;
     };
   };
 
-  outputs = { self, nixpkgs, yt-dlp }:
+  outputs = { self, nixpkgs, kopuz }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
       overlay = final: prev: {
-        yt-dlp = prev.yt-dlp.overrideAttrs {
-          version = "${yt-dlp.lastModifiedDate}-${yt-dlp.shortRev}";
-          src = yt-dlp;
-        };
+        kopuzd = final.callPackage ./nix/kopuzd.nix { inherit kopuz; };
         formalmusic = final.callPackage ./nix/package.nix { };
       };
       pkgsFor = system: import nixpkgs { inherit system; overlays = [ overlay ]; };
@@ -28,7 +25,7 @@
     in
     {
       packages = nixpkgs.lib.genAttrs linuxSystems (system: rec {
-        inherit (pkgsFor system) formalmusic yt-dlp;
+        inherit (pkgsFor system) formalmusic kopuzd;
         default = formalmusic;
       });
 
@@ -40,7 +37,7 @@
       devShells = forAll (pkgs:
         let
           # gpui-pre links libxkbcommon and freetype at build time and dlopens
-          # wayland, vulkan, fontconfig and X11 at runtime; cpal needs alsa-lib.
+          # wayland, vulkan, fontconfig and X11 at runtime.
           linuxLibs = with pkgs; [
             libxkbcommon
             wayland
@@ -54,16 +51,12 @@
             libxi
             libxrandr
             libglvnd
-            alsa-lib
-            libopus
           ];
         in
         {
           default = pkgs.mkShell {
-            FORMALMUSIC_YTDLP_PYTHON = "${pkgs.formalmusic.ytdlpPython}/bin/formalmusic-ytdlp-python";
-            # symphonia-adapter-libopus links the system libopus through pkg-config
-            # on every platform, macOS included.
-            packages = [ pkgs.yt-dlp pkgs.socat pkgs.pkg-config pkgs.libopus pkgs.ffmpeg-headless ]
+            packages = [ pkgs.pkg-config pkgs.ffmpeg-headless ]
+              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.kopuzd ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.fontconfig pkgs.fontconfig.dev pkgs.grim ] ++ linuxLibs);
             # The binary is built outside the Nix sandbox, so the dlopened
             # libraries go on LD_LIBRARY_PATH for both linking and running.

@@ -25,9 +25,9 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Run `formalmusicd` as a systemd user service, so playback, media keys
-        and MPRIS keep working with the window closed. Without it the app
-        starts the daemon itself and it exits with the session.
+        Run `kopuzd` as a systemd user service, so playback, media keys and
+        MPRIS keep working with the window closed. Without it the app starts
+        the daemon itself and it exits with the session.
       '';
     };
 
@@ -53,8 +53,8 @@ in
         example = "/run/agenix/lastfm-api-key";
         description = ''
           File holding the API key of your Last.fm API account
-          (last.fm/api/account/create), read by `formalmusicd` at start. A
-          path string rather than a Nix path, so the secret stays out of the
+          (last.fm/api/account/create), read by `kopuzd` at start. A path
+          string rather than a Nix path, so the secret stays out of the
           store. Set it with `sharedSecretFile`; without both, Settings asks
           for the pair.
         '';
@@ -69,30 +69,42 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf cfg.enable (
+    let
+      kopuzd = cfg.package.kopuzd;
+      # kopuzd takes any config key from KOPUZ_CONFIG_<KEY>, read once at
+      # start, so the secrets are read from their files only then.
+      start = pkgs.writeShellScript "kopuzd-start" (
+        lib.optionalString (cfg.lastfm.apiKeyFile != null) ''
+          KOPUZ_CONFIG_LASTFM_API_KEY=$(cat ${lib.escapeShellArg cfg.lastfm.apiKeyFile})
+          export KOPUZ_CONFIG_LASTFM_API_KEY
+        ''
+        + lib.optionalString (cfg.lastfm.sharedSecretFile != null) ''
+          KOPUZ_CONFIG_LASTFM_API_SECRET=$(cat ${lib.escapeShellArg cfg.lastfm.sharedSecretFile})
+          export KOPUZ_CONFIG_LASTFM_API_SECRET
+        ''
+        + ''
+          exec ${lib.getExe kopuzd}
+        ''
+      );
+    in
+    {
     home.packages = [ cfg.package ];
 
     xdg.configFile."formalmusic/theme.json" = lib.mkIf (cfg.theme != { }) {
       source = json.generate "formalmusic-theme.json" cfg.theme;
     };
 
-    systemd.user.services.formalmusicd = lib.mkIf cfg.daemon {
+    systemd.user.services.kopuzd = lib.mkIf cfg.daemon {
       Unit = {
-        Description = "FormalMusic playback daemon";
+        Description = "Kopuz playback daemon, for FormalMusic";
         After = [ "pipewire.service" ];
       };
       Service = {
-        ExecStart = lib.getExe' cfg.package "formalmusicd";
+        ExecStart = start;
         Restart = "on-failure";
-        Environment =
-          lib.optional (
-            cfg.lastfm.apiKeyFile != null
-          ) "FORMALMUSIC_LASTFM_API_KEY_FILE=${cfg.lastfm.apiKeyFile}"
-          ++ lib.optional (
-            cfg.lastfm.sharedSecretFile != null
-          ) "FORMALMUSIC_LASTFM_SECRET_FILE=${cfg.lastfm.sharedSecretFile}";
       };
       Install.WantedBy = [ "default.target" ];
     };
-  };
+  });
 }
