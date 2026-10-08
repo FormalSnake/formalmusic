@@ -7,9 +7,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use formalmusic_api::{Repeat, Status};
 use formalmusic_core::MusicStore;
 use formalmusic_core::format::duration;
+use formalmusic_core::model::{Repeat, Status};
 use formalmusic_core::settings::Settings;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -490,7 +490,7 @@ impl Render for PlayerBar {
                 .child(match &self.cover {
                     Some(cover) => cover.clone().into_any_element(),
                     None => art::cover(
-                        &track.thumbnails,
+                        track.art.as_ref(),
                         COVER_SIZE,
                         radius::ART_SMALL,
                         false,

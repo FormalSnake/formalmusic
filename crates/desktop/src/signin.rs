@@ -3,8 +3,8 @@
 //! browser window the daemon opens, or paste the Cookie header of a signed-in
 //! music.youtube.com tab.
 
-use formalmusic_api::{Browsers, ProfileBrowser};
 use formalmusic_core::MusicStore;
+use formalmusic_core::model::{Browsers, ProfileBrowser};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -35,6 +35,8 @@ pub struct SignIn {
     /// The browser the user is signing in with, while the daemon waits.
     waiting: Option<SharedString>,
     cancelling: bool,
+    /// The browser sign-in's call to kopuzd, dropped to cancel it.
+    signing_in: Option<tokio::task::AbortHandle>,
     on_close: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     _subscription: Subscription,
 }
@@ -87,6 +89,7 @@ impl SignIn {
             importing: None,
             waiting: None,
             cancelling: false,
+            signing_in: None,
             on_close: std::rc::Rc::new(on_close),
             _subscription: subscription,
         }
@@ -118,13 +121,7 @@ impl SignIn {
         (self.on_close)(window, cx);
     }
 
-    fn import(
-        &mut self,
-        browser: String,
-        profile: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn import(&mut self, profile: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.importing.is_some() || self.waiting.is_some() {
             return;
         }
@@ -133,7 +130,7 @@ impl SignIn {
         cx.notify();
         let task = self.store.runtime().spawn({
             let store = self.store.clone();
-            async move { store.import_cookies(browser, profile).await }
+            async move { store.import_cookies(profile).await }
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task
@@ -164,6 +161,7 @@ impl SignIn {
             let store = self.store.clone();
             async move { store.browser_sign_in(browser).await }
         });
+        self.signing_in = Some(task.abort_handle());
         cx.spawn_in(window, async move |this, cx| {
             let result = task
                 .await
@@ -183,10 +181,9 @@ impl SignIn {
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
         self.cancelling = true;
-        let store = self.store.clone();
-        self.store
-            .runtime()
-            .spawn(async move { store.cancel_sign_in().await });
+        if let Some(task) = self.signing_in.take() {
+            task.abort();
+        }
         cx.notify();
     }
 
@@ -260,7 +257,7 @@ impl SignIn {
                             Some(email) => format!("{} \u{b7} {email}", group.browser.name),
                             None => group.browser.name.clone(),
                         };
-                        let (browser, path) = (group.browser.id.clone(), profile.path.clone());
+                        let path = profile.path.clone();
                         div()
                             .id(SharedString::from(format!(
                                 "profile-{}-{}",
@@ -279,7 +276,7 @@ impl SignIn {
                                 el.cursor_pointer()
                                     .hover(move |style| style.bg(palette.raised_hover))
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.import(browser.clone(), path.clone(), window, cx)
+                                        this.import(path.clone(), window, cx)
                                     }))
                             })
                             .child(
@@ -431,11 +428,8 @@ impl SignIn {
 impl Drop for SignIn {
     /// Closing the screen closes the sign-in browser with it.
     fn drop(&mut self) {
-        if self.waiting.is_some() && !self.cancelling {
-            let store = self.store.clone();
-            self.store
-                .runtime()
-                .spawn(async move { store.cancel_sign_in().await });
+        if let Some(task) = self.signing_in.take() {
+            task.abort();
         }
     }
 }

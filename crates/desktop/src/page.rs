@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use formalmusic_api::{
+use formalmusic_core::model::{
     BrowseTarget, Chip, Header, Item, LibraryTab, Link, Page, PlaySource, SearchFilter, Section,
     SectionLayout,
 };
@@ -36,7 +36,7 @@ const HERO_SONGS: usize = 4;
 #[derive(Clone)]
 enum Content {
     Page(Arc<Page>),
-    Search(Arc<formalmusic_api::SearchResults>),
+    Search(Arc<formalmusic_core::model::SearchResults>),
 }
 
 impl Content {
@@ -108,7 +108,7 @@ pub struct PageView {
 }
 
 /// The web app's filter chips, then its Library tab, which searches only
-/// what you saved.
+/// what you saved. Only the ones the source takes are shown.
 const SEARCH_FILTERS: [(&str, Option<SearchFilter>); 11] = [
     ("All", None),
     ("Songs", Some(SearchFilter::Songs)),
@@ -125,6 +125,14 @@ const SEARCH_FILTERS: [(&str, Option<SearchFilter>); 11] = [
     ("Profiles", Some(SearchFilter::Profiles)),
     ("Library", Some(SearchFilter::Library)),
 ];
+
+fn search_filters(store: &MusicStore) -> Vec<(&'static str, Option<SearchFilter>)> {
+    let offered = store.search_filters();
+    SEARCH_FILTERS
+        .into_iter()
+        .filter(|(_, filter)| filter.is_none_or(|filter| offered.contains(&filter)))
+        .collect()
+}
 
 impl PageView {
     pub fn new(route: Route, store: MusicStore, cx: &mut Context<Self>) -> Self {
@@ -290,8 +298,8 @@ impl PageView {
             let state = self.store.state();
             state.player.track.as_ref().map(|track| {
                 (
-                    track.video_id.clone(),
-                    state.player.status == formalmusic_api::Status::Playing,
+                    track.key.clone(),
+                    state.player.status == formalmusic_core::model::Status::Playing,
                 )
             })
         };
@@ -306,7 +314,10 @@ impl PageView {
             palette: Theme::get(cx),
             store: self.store.clone(),
             playing,
-            menu: MenuContext { editable_playlist },
+            menu: MenuContext {
+                editable_playlist,
+                row: None,
+            },
         };
         let mut shared = self.shared.borrow_mut();
         shared.env = Some(env);
@@ -414,7 +425,11 @@ impl PageView {
                         });
                     }),
                 };
+                let Route::Browse(target) = route else {
+                    return div().into_any_element();
+                };
                 crate::header::header(
+                    target,
                     content.header().expect("header row"),
                     &env.store,
                     palette,
@@ -452,12 +467,12 @@ impl PageView {
                 };
                 let chips = match (&content, route) {
                     (Content::Page(page), _) => page.chips.clone(),
-                    (Content::Search(_), Route::Search(key)) => SEARCH_FILTERS
-                        .iter()
+                    (Content::Search(_), Route::Search(key)) => search_filters(&env.store)
+                        .into_iter()
                         .map(|(title, filter)| Chip {
-                            title: (*title).into(),
-                            params: String::new(),
-                            selected: *filter == key.filter,
+                            title: title.into(),
+                            id: String::new(),
+                            selected: filter == key.filter,
                         })
                         .collect(),
                     _ => Vec::new(),
@@ -515,10 +530,13 @@ impl PageView {
                 shelves::tiles(width, QUICK_PICK_WIDTH).1,
             ),
             Row::Hero(section) => {
-                let tracks = |shelf: &Section| -> Vec<formalmusic_api::Track> {
+                // The hero's own shelf holds the card first and its songs after.
+                let tracks = |shelf: &Section| -> Vec<formalmusic_core::model::Track> {
+                    let skip = usize::from(std::ptr::eq(shelf, &sections[section]));
                     shelf
                         .items
                         .iter()
+                        .skip(skip)
                         .filter_map(|item| match item {
                             Item::Track(track) => Some(track.clone()),
                             _ => None,
@@ -543,7 +561,7 @@ impl PageView {
                     Item::Track(track) => {
                         let album = matches!(route, Route::Browse(BrowseTarget::Album(_)));
                         let playlist = matches!(route, Route::Browse(BrowseTarget::Playlist(_)));
-                        let any = |has: fn(&formalmusic_api::Track) -> bool| {
+                        let any = |has: fn(&formalmusic_core::model::Track) -> bool| {
                             shelf
                                 .items
                                 .iter()
@@ -560,7 +578,7 @@ impl PageView {
                         let on_play = play_from(&content, route, section, item, &env.store);
                         let reorder = (section == 0
                             && env.menu.editable_playlist.is_some()
-                            && track.set_video_id.is_some())
+                            && env.store.playlists_reorder())
                         .then_some(item);
                         shelves::track_row(
                             track,
@@ -683,9 +701,7 @@ fn chip_target(current: &BrowseTarget, chip: &Chip) -> BrowseTarget {
             _ => LibraryTab::Playlists,
         }),
         _ if chip.selected => BrowseTarget::Home,
-        _ => BrowseTarget::HomeChip {
-            params: chip.params.clone(),
-        },
+        _ => BrowseTarget::HomeChip(chip.id.clone()),
     }
 }
 
@@ -700,15 +716,13 @@ fn play_from(
     store: &MusicStore,
 ) -> Rc<dyn Fn(&mut App)> {
     let store = store.clone();
-    // The daemon reads the first list as the album or playlist itself.
-    let playlist = match (route, content.header()) {
-        (
-            Route::Browse(BrowseTarget::Album(_) | BrowseTarget::Playlist(_)),
-            Some(Header::Detail {
-                playlist_id: Some(id),
-                ..
-            }),
-        ) if section == 0 => Some(id.clone()),
+    // The first list of an album or a playlist is the album or playlist itself.
+    let whole = match route {
+        Route::Browse(target @ (BrowseTarget::Album(_) | BrowseTarget::Playlist(_)))
+            if section == 0 =>
+        {
+            Some(target.clone())
+        }
         _ => None,
     };
     let content = content.clone();
@@ -729,14 +743,14 @@ fn play_from(
             .iter()
             .filter(|item| matches!(item, Item::Track(_)))
             .count();
-        let source = match &playlist {
-            Some(playlist_id) => PlaySource::Playlist {
-                playlist_id: playlist_id.clone(),
+        let source = match &whole {
+            Some(target) => PlaySource::Page {
+                target: target.clone(),
                 tracks,
             },
             None => PlaySource::Tracks { tracks },
         };
-        store.play(source, start, false, false);
+        store.play(source, start, false);
     })
 }
 

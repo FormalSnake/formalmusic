@@ -29,7 +29,7 @@ pub fn claim() -> Launch {
 
     // Beside the daemon socket, so a window talking to another daemon
     // (FORMALMUSIC_SOCKET, as test runs set it) never takes over this one.
-    let dir = formalmusic_api::socket_path()
+    let dir = formalmusic_core::kopuz::socket_path()
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(formalmusic_core::paths::cache_dir);
@@ -90,7 +90,7 @@ pub fn claim() -> Launch {
 /// pipe's first instance is the lock.
 #[cfg(windows)]
 pub fn claim() -> Launch {
-    use formalmusic_api::local;
+    use formalmusic_core::model::local;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let off = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
@@ -105,7 +105,7 @@ pub fn claim() -> Launch {
     };
     let pipe = std::path::PathBuf::from(format!(
         "{}-instance",
-        formalmusic_api::socket_path().display()
+        formalmusic_core::kopuz::socket_path().display()
     ));
     let listener = runtime.block_on(async { local::Listener::bind(&pipe) });
     let mut listener = match listener {

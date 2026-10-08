@@ -4,8 +4,8 @@
 use std::ops::Range;
 use std::rc::Rc;
 
-use formalmusic_api::{BrowseTarget, Header, Link, PlaySource, Rating};
 use formalmusic_core::MusicStore;
+use formalmusic_core::model::{BrowseTarget, Header, Link, Rating};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -28,6 +28,7 @@ pub struct Description {
 }
 
 pub fn header(
+    target: &BrowseTarget,
     header: &Header,
     store: &MusicStore,
     palette: Palette,
@@ -41,17 +42,20 @@ pub fn header(
             subtitle,
             second_subtitle,
             description,
-            thumbnails,
-            playlist_id,
+            art: picture,
+            play,
             editable,
-            saved,
             privacy,
-            ..
+            actions,
         } => {
+            let playlist = match target {
+                BrowseTarget::Playlist(id) => Some(id.clone()),
+                _ => None,
+            };
             let editing = editable
                 .then(|| {
                     Some(crate::edit_playlist::Current {
-                        playlist_id: playlist_id.clone()?,
+                        playlist_id: playlist.clone()?,
                         title: title.clone(),
                         description: description.clone().unwrap_or_default(),
                         privacy: (*privacy)?,
@@ -65,26 +69,16 @@ pub fn header(
                 .items_center()
                 .gap(spacing::X2)
                 .pt(spacing::X4)
-                .when_some(playlist_id.clone(), |el, playlist_id| {
+                .when_some(play.clone(), |el, source| {
                     let (play, shuffle) = (store.clone(), store.clone());
-                    let shuffle_id = playlist_id.clone();
+                    let shuffled = source.clone();
                     el.child(pill_button(
                         "header-play",
                         IconName::Play,
                         "Play",
                         true,
                         palette,
-                        move |_, _, _| {
-                            play.play(
-                                PlaySource::Playlist {
-                                    playlist_id: playlist_id.clone(),
-                                    tracks: Vec::new(),
-                                },
-                                0,
-                                false,
-                                false,
-                            )
-                        },
+                        move |_, _, _| play.play(source.clone(), 0, false),
                     ))
                     .child(pill_button(
                         "header-shuffle",
@@ -92,22 +86,12 @@ pub fn header(
                         "Shuffle",
                         false,
                         palette,
-                        move |_, _, _| {
-                            shuffle.play(
-                                PlaySource::Playlist {
-                                    playlist_id: shuffle_id.clone(),
-                                    tracks: Vec::new(),
-                                },
-                                0,
-                                true,
-                                false,
-                            )
-                        },
+                        move |_, _, _| shuffle.play(shuffled.clone(), 0, true),
                     ))
                 })
                 .when_some(
-                    saved.zip(header_playlist(header)),
-                    |el, (saved, playlist_id)| {
+                    actions.saved.zip(actions.save_ref.clone()),
+                    |el, (saved, save_ref)| {
                         let store = store.clone();
                         el.child(
                             IconButton::new(
@@ -128,7 +112,7 @@ pub fn header(
                                 palette.secondary
                             })
                             .on_click(move |_, _, _| {
-                                store.set_in_library(playlist_id.clone(), !saved)
+                                store.set_in_library(save_ref.clone(), !saved)
                             }),
                         )
                     },
@@ -152,7 +136,7 @@ pub fn header(
                 .pt(spacing::X8)
                 .pb(spacing::X6)
                 .child(art::cover(
-                    thumbnails,
+                    picture.as_ref(),
                     DETAIL_ART,
                     radius::ART,
                     false,
@@ -188,15 +172,14 @@ pub fn header(
         Header::Artist {
             name,
             description,
-            thumbnails,
-            channel_id,
-            subscribed,
+            art: picture,
             subscribers,
-            shuffle_playlist_id,
-            radio_playlist_id,
             monthly_listeners,
+            shuffle,
+            radio,
+            actions,
         } => {
-            let banner = art::source(thumbnails, width.max(px(600.)));
+            let banner = art::source(picture.as_ref(), width.max(px(600.)));
             let fade = linear_gradient(
                 180.,
                 linear_color_stop(hsla(0., 0., 0., 0.), 0.35),
@@ -208,7 +191,7 @@ pub fn header(
                 .items_center()
                 .gap(spacing::X2)
                 .pt(spacing::X3)
-                .when_some(shuffle_playlist_id.clone(), |el, playlist_id| {
+                .when_some(shuffle.clone(), |el, source| {
                     let store = store.clone();
                     el.child(pill_button(
                         "artist-shuffle",
@@ -216,20 +199,10 @@ pub fn header(
                         "Shuffle",
                         true,
                         palette,
-                        move |_, _, _| {
-                            store.play(
-                                PlaySource::Playlist {
-                                    playlist_id: playlist_id.clone(),
-                                    tracks: Vec::new(),
-                                },
-                                0,
-                                true,
-                                false,
-                            )
-                        },
+                        move |_, _, _| store.play(source.clone(), 0, true),
                     ))
                 })
-                .when_some(radio_playlist_id.clone(), |el, playlist_id| {
+                .when_some(radio.clone(), |el, source| {
                     let store = store.clone();
                     el.child(pill_button(
                         "artist-radio",
@@ -237,22 +210,12 @@ pub fn header(
                         "Radio",
                         false,
                         palette,
-                        move |_, _, _| {
-                            store.play(
-                                PlaySource::Playlist {
-                                    playlist_id: playlist_id.clone(),
-                                    tracks: Vec::new(),
-                                },
-                                0,
-                                false,
-                                true,
-                            )
-                        },
+                        move |_, _, _| store.play(source.clone(), 0, false),
                     ))
                 })
                 .when_some(
-                    channel_id.clone().zip(*subscribed),
-                    |el, (channel_id, subscribed)| {
+                    actions.follow_ref.clone().zip(actions.followed),
+                    |el, (follow_ref, subscribed)| {
                         let store = store.clone();
                         let label = match (subscribed, subscribers) {
                             (true, Some(count)) => format!("Subscribed \u{2022} {count}"),
@@ -269,7 +232,7 @@ pub fn header(
                                     ButtonKind::Primary
                                 })
                                 .on_click(move |_, _, _| {
-                                    store.set_subscribed(channel_id.clone(), !subscribed)
+                                    store.set_subscribed(follow_ref.clone(), !subscribed)
                                 }),
                         )
                     },
@@ -343,13 +306,6 @@ pub fn header(
             .text_color(palette.text)
             .child(title.clone())
             .into_any_element(),
-    }
-}
-
-fn header_playlist(header: &Header) -> Option<String> {
-    match header {
-        Header::Detail { playlist_id, .. } => playlist_id.clone(),
-        _ => None,
     }
 }
 

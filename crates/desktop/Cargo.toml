@@ -10,11 +10,8 @@ winresource = "0.1"
 [features]
 frame-overlay = ["gpui-kit/profiler"]
 screenshot = ["gpui-kit/test-support"]
-# Demo pages from innertube's recorded responses; dev builds only.
-demo-fixtures = ["formalmusic-core/demo-fixtures"]
 
 [dependencies]
-formalmusic-api.workspace = true
 formalmusic-core.workspace = true
 gpui-kit.workspace = true
 gpui-base.workspace = true
@@ -22,11 +19,20 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-reqwest.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

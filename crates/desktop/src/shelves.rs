@@ -5,9 +5,9 @@
 
 use std::rc::Rc;
 
-use formalmusic_api::{Chip, Item, Link, Rating, Section, Track, TrackKind};
 use formalmusic_core::MusicStore;
 use formalmusic_core::format::{byline, duration, names};
+use formalmusic_core::model::{Chip, Item, Link, Rating, Section, Track, TrackKind};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -301,7 +301,7 @@ pub fn card(item: &Item, id: ElementId, env: &Env, width: Pixels) -> AnyElement 
             )
     });
     let current = match item {
-        Item::Track(track) => env.is_current(&track.video_id).is_some(),
+        Item::Track(track) => env.is_current(&track.key).is_some(),
         _ => false,
     };
     div()
@@ -335,7 +335,13 @@ pub fn card(item: &Item, id: ElementId, env: &Env, width: Pixels) -> AnyElement 
         .child(
             div()
                 .relative()
-                .child(art::cover(&thumbnails, width, radius::ART, round, &palette))
+                .child(art::cover(
+                    thumbnails.as_ref(),
+                    width,
+                    radius::ART,
+                    round,
+                    &palette,
+                ))
                 .child(
                     div()
                         .absolute()
@@ -375,14 +381,14 @@ fn card_text(
 ) -> (
     String,
     Option<String>,
-    Vec<formalmusic_api::Thumbnail>,
+    Option<formalmusic_core::model::Art>,
     bool,
 ) {
     match item {
         Item::Track(track) => (
             track.title.clone(),
             Some(names(&track.artists)),
-            track.thumbnails.clone(),
+            track.art.clone(),
             false,
         ),
         Item::Album {
@@ -390,7 +396,7 @@ fn card_text(
             album_type,
             artists,
             year,
-            thumbnails,
+            art: thumbnails,
             ..
         } => {
             let parts: Vec<String> = album_type
@@ -409,23 +415,23 @@ fn card_text(
         Item::Artist {
             name,
             subtitle,
-            thumbnails,
+            art: thumbnails,
             ..
         } => (name.clone(), subtitle.clone(), thumbnails.clone(), true),
         Item::Playlist {
             title,
             subtitle,
-            thumbnails,
+            art: thumbnails,
             ..
         } => (title.clone(), subtitle.clone(), thumbnails.clone(), false),
         Item::Podcast {
             title,
             subtitle,
-            thumbnails,
+            art: thumbnails,
             ..
         } => (title.clone(), subtitle.clone(), thumbnails.clone(), false),
         Item::Mood { title, .. } | Item::Shortcut { title, .. } => {
-            (title.clone(), None, Vec::new(), false)
+            (title.clone(), None, None, false)
         }
     }
 }
@@ -532,19 +538,16 @@ pub fn track_grid(
                         env,
                     );
                 };
-                let (store, video_id) = (env.store.clone(), track.video_id.clone());
+                let (store, key) = (env.store.clone(), track.key.clone());
                 compact_track(
                     track,
                     ElementId::NamedInteger(format!("grid-{id}").into(), (column * 4 + row) as u64),
                     env,
                     Rc::new(move |_| {
                         store.play(
-                            formalmusic_api::PlaySource::Radio {
-                                video_id: video_id.clone(),
-                            },
+                            formalmusic_core::model::PlaySource::Radio { key: key.clone() },
                             0,
                             false,
-                            true,
                         )
                     }),
                 )
@@ -577,7 +580,7 @@ pub fn compact_track(
     on_play: Rc<dyn Fn(&mut App)>,
 ) -> AnyElement {
     let palette = env.palette;
-    let current = env.is_current(&track.video_id);
+    let current = env.is_current(&track.key);
     let group: SharedString = format!("{id}").into();
     let (menu_track, menu_store, menu_context) =
         (track.clone(), env.store.clone(), env.menu.clone());
@@ -642,7 +645,7 @@ fn row_art(
         .relative()
         .flex_shrink_0()
         .child(art::cover(
-            &track.thumbnails,
+            track.art.as_ref(),
             ROW_ART,
             radius::ART_SMALL,
             false,
@@ -718,7 +721,7 @@ pub fn track_row(
 ) -> AnyElement {
     let palette = env.palette;
     let drag = reorder.zip(env.menu.editable_playlist.clone());
-    let current = env.is_current(&track.video_id);
+    let current = env.is_current(&track.key);
     let rating = env.store.state().rating(track);
     let group: SharedString = format!("{id}").into();
     let (menu_track, menu_store, menu_context) =
@@ -998,7 +1001,7 @@ pub fn compact_item(item: &Item, id: ElementId, env: &Env) -> AnyElement {
             );
         })
         .child(art::cover(
-            &thumbnails,
+            thumbnails.as_ref(),
             ROW_ART,
             radius::ART_SMALL,
             round,
@@ -1057,18 +1060,10 @@ pub fn hero(section: &Section, songs: &[Track], env: &Env, side_by_side: bool) -
         (_, None) => kind.to_owned(),
     };
     let playable = actions::playable(item);
-    let play_playlist = |playlist_id: String, shuffle: bool, radio: bool, store: MusicStore| {
+    let start = |source: formalmusic_core::model::PlaySource, shuffle: bool, store: MusicStore| {
         move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
             cx.stop_propagation();
-            store.play(
-                formalmusic_api::PlaySource::Playlist {
-                    playlist_id: playlist_id.clone(),
-                    tracks: Vec::new(),
-                },
-                0,
-                shuffle,
-                radio,
-            )
+            store.play(source.clone(), 0, shuffle)
         }
     };
     let (play_item, play_store) = (item.clone(), env.store.clone());
@@ -1091,24 +1086,24 @@ pub fn hero(section: &Section, songs: &[Track], env: &Env, side_by_side: bool) -
                 },
             ))
         })
-        .when_some(section.shuffle_playlist_id.clone(), |el, playlist_id| {
+        .when_some(section.shuffle.clone(), |el, source| {
             el.child(pill_button(
                 "top-result-shuffle",
                 IconName::Shuffle,
                 "Shuffle",
                 !playable,
                 palette,
-                play_playlist(playlist_id, true, false, env.store.clone()),
+                start(source, true, env.store.clone()),
             ))
         })
-        .when_some(section.radio_playlist_id.clone(), |el, playlist_id| {
+        .when_some(section.radio.clone(), |el, source| {
             el.child(pill_button(
                 "top-result-radio",
                 IconName::Radio,
                 "Radio",
                 false,
                 palette,
-                play_playlist(playlist_id, false, true, env.store.clone()),
+                start(source, false, env.store.clone()),
             ))
         });
     let card = div()
@@ -1128,7 +1123,7 @@ pub fn hero(section: &Section, songs: &[Track], env: &Env, side_by_side: bool) -
             el.on_click(move |_, _, cx| actions::open(target.clone(), cx))
         })
         .child(art::cover(
-            &thumbnails,
+            thumbnails.as_ref(),
             HERO_ART,
             radius::ART,
             round,
@@ -1173,11 +1168,10 @@ pub fn hero(section: &Section, songs: &[Track], env: &Env, side_by_side: bool) -
                     env,
                     Rc::new(move |_| {
                         store.play(
-                            formalmusic_api::PlaySource::Tracks {
+                            formalmusic_core::model::PlaySource::Tracks {
                                 tracks: tracks.clone(),
                             },
                             n,
-                            false,
                             false,
                         )
                     }),

@@ -6,13 +6,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use formalmusic_api::{BrowseTarget, Page, PlayerState, QueueState, SessionInfo};
+use crate::model::{BrowseTarget, Page, PlayerState, QueueState, SessionInfo};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio::task::AbortHandle;
 
 const SAVE_DELAY: Duration = Duration::from_millis(2000);
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CachedState {
@@ -200,7 +200,7 @@ mod tests {
         assert!(cache.load().await.is_none());
         std::fs::write(cache.file(), b"{ not json").unwrap();
         assert!(cache.load().await.is_none());
-        std::fs::write(cache.file(), br#"{"version":2}"#).unwrap();
+        std::fs::write(cache.file(), br#"{"version":1}"#).unwrap();
         assert!(cache.load().await.is_none());
         std::fs::remove_dir_all(&dir).ok();
     }

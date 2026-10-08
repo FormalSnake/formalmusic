@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/api", "crates/innertube", "crates/player", "crates/daemon", "crates/core", "crates/desktop", "crates/extras"]
+members = ["crates/core", "crates/desktop", "crates/extras"]
 
 [workspace.package]
 edition = "2024"
@@ -8,11 +8,14 @@ license = "MIT"
 version = "0.1.0"
 
 [workspace.dependencies]
-formalmusic-api = { path = "crates/api" }
-formalmusic-innertube = { path = "crates/innertube" }
-formalmusic-player = { path = "crates/player" }
 formalmusic-core = { path = "crates/core" }
 formalmusic-extras = { path = "crates/extras" }
+# Pinned to a rev of FormalSnake/kopuz `ytm/integration`, where the daemon
+# work FormalMusic needs is merged ahead of upstream.
+kopuz-api = { git = "https://github.com/FormalSnake/kopuz.git", rev = "7d638a98575c5f7e5eb8a11571bba108f0fbbf13" }
+kopuz-client = { git = "https://github.com/FormalSnake/kopuz.git", rev = "7d638a98575c5f7e5eb8a11571bba108f0fbbf13" }
+kopuz-config = { git = "https://github.com/FormalSnake/kopuz.git", rev = "7d638a98575c5f7e5eb8a11571bba108f0fbbf13" }
+kopuz-proto = { git = "https://github.com/FormalSnake/kopuz.git", rev = "7d638a98575c5f7e5eb8a11571bba108f0fbbf13" }
 gpui-kit = "0.6.6"
 gpui-base = "0.6.6"
 anyhow = "1"
@@ -22,7 +25,6 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "gzip", "cookies", "http2"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot = "0.12"
 dirs = "7"
 

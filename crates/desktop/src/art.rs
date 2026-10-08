@@ -1,6 +1,6 @@
 //! Artwork decoded at the size it is shown. GPUI samples a texture without
 //! mipmaps, so a 544 px cover drawn into a 40 px row aliases and keeps a full
-//! size texture alive for a thumbnail. Here each (URL, device size) pair is
+//! size texture alive for a thumbnail. Here each (picture, device size) pair is
 //! fetched to disk by core's `ArtCache`, decoded once off the foreground
 //! thread, box-filtered down to the box, and kept in a byte-capped cache
 //! every view shares. The same path in the messages app is `stills.rs`.
@@ -10,7 +10,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use formalmusic_api::Thumbnail;
+use formalmusic_core::model::Art as Picture;
 use gpui_kit::*;
 use image::imageops::FilterType;
 use image::{DynamicImage, Frame, ImageReader, RgbaImage};
@@ -28,7 +28,7 @@ const BACKDROP_PX: u32 = 24;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
-    url: Arc<str>,
+    art: Arc<Picture>,
     px: u32,
 }
 
@@ -80,17 +80,13 @@ fn art(cx: &mut App) -> &mut Art {
 const RETRY_AFTER: Duration = Duration::from_secs(20);
 
 /// `img()` source for square artwork shown `size` wide.
-pub fn source(thumbnails: &[Thumbnail], size: Pixels) -> Option<ImageSource> {
-    let thumbnails: Arc<[Thumbnail]> = thumbnails.into();
-    if thumbnails.is_empty() {
-        return None;
-    }
+pub fn source(art: Option<&Picture>, size: Pixels) -> Option<ImageSource> {
+    let art = Arc::new(art?.clone());
     Some(ImageSource::Custom(Arc::new(move |window, cx| {
         let px = (f32::from(size) * window.scale_factor()).round().max(1.) as u32;
-        let url = formalmusic_core::art::url_for(&thumbnails, px)?;
         load(
             Key {
-                url: url.into(),
+                art: art.clone(),
                 px,
             },
             window,
@@ -100,12 +96,12 @@ pub fn source(thumbnails: &[Thumbnail], size: Pixels) -> Option<ImageSource> {
 }
 
 /// The cover at `BACKDROP_PX`, for a backdrop drawn far larger than that.
-pub fn backdrop(thumbnails: &[Thumbnail]) -> Option<ImageSource> {
-    let url: Arc<str> = formalmusic_core::art::url_for(thumbnails, 60)?.into();
+pub fn backdrop(art: Option<&Picture>) -> Option<ImageSource> {
+    let art = Arc::new(art?.clone());
     Some(ImageSource::Custom(Arc::new(move |window, cx| {
         load(
             Key {
-                url: url.clone(),
+                art: art.clone(),
                 px: BACKDROP_PX,
             },
             window,
@@ -126,7 +122,7 @@ pub fn outline(palette: &Palette) -> Hsla {
 /// A square cover with a placeholder fill until it decodes. `round` makes it
 /// a circle, as artists are drawn.
 pub fn cover(
-    thumbnails: &[Thumbnail],
+    art: Option<&Picture>,
     size: Pixels,
     radius: Pixels,
     round: bool,
@@ -140,7 +136,7 @@ pub fn cover(
         .overflow_hidden()
         .bg(palette.raised)
         .relative();
-    if let Some(source) = source(thumbnails, size) {
+    if let Some(source) = source(art, size) {
         frame = frame.child(
             img(source)
                 .size(size)
@@ -238,11 +234,11 @@ fn start_decode(key: Key, cx: &mut App) {
         art(cx).running -= 1;
         return;
     };
-    let cache = store.art().clone();
-    let url = key.url.clone();
+    let picture = key.art.clone();
     let px = key.px;
+    let fetching = store.clone();
     let task = store.runtime().spawn(async move {
-        let path = cache.fetch(&url).await?;
+        let path = fetching.art_file(&picture, px).await?;
         let _permit = decodes().acquire_owned().await.ok()?;
         tokio::task::spawn_blocking(move || decode(&path, px))
             .await

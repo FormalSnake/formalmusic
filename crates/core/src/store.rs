@@ -16,20 +16,20 @@ use std::future::Future;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use formalmusic_api::{
-    Account, BrowseTarget, Browsers, Command, Continuation, EnqueuePosition, Event, Header, Item,
-    LastFmApp, LibraryScope, LibraryTab, ListenBrainzSource, Lyrics, Page, PlaySource,
-    PlaybackMode, PlayerState, PlaylistEdit, Privacy, ProfileBrowser, QueueState, RateTarget,
-    Rating, Repeat, Reply, ScrobbleService, ScrobbleStatus, SearchFilter, SearchResults,
-    SectionLayout, SessionInfo, Status, Suggestion, Track, VideoStream,
-};
+use formalmusic_extras::AnimatedCovers;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::AbortHandle;
 
 use crate::art::ArtCache;
+use crate::backend::{Backend, BackendKind, ClientError, ConnectionStatus, Control, Event};
 use crate::cache::{CachedState, StateCache};
-use crate::transport::{ClientError, ConnectionStatus, Transport, TransportEvent, TransportKind};
+use crate::model::{
+    Account, BrowseTarget, Browsers, ContinuationPage, EnqueuePosition, Header, Item, LastFmApp,
+    LibraryScope, LibraryTab, Lyrics, Page, PlaySource, PlayerState, PlaylistDetails,
+    ProfileBrowser, QueueState, Rating, Repeat, ScrobbleService, ScrobbleStatus, SearchFilter,
+    SearchResults, SectionLayout, SessionInfo, Status, Suggestion, Track,
+};
 
 /// A page older than this is shown and fetched again behind it.
 const STALE_AFTER: Duration = Duration::from_secs(5 * 60);
@@ -137,9 +137,9 @@ pub struct AppState {
     /// Index into the current track's synced lyrics.
     pub lyric_line: Option<usize>,
     pub animated_covers: HashMap<(String, String), CoverEntry>,
-    /// The player's "Related" tab, keyed by its browse id.
+    /// The player's "Related" tab, keyed by the track's key.
     pub related: HashMap<String, PageEntry>,
-    /// Every rating known, by video id: from each page, search, queue and
+    /// Every rating known, by track key: from each page, search, queue and
     /// player state as it arrives, and from a like made here ahead of
     /// YouTube's answer. Rows, the player bar and menus all read it through
     /// [`AppState::rating`], so they cannot disagree.
@@ -147,7 +147,7 @@ pub struct AppState {
     /// Likes sent and not answered yet: the sequence of the latest and the
     /// rating to go back to if it fails. Responses that cross one keep out.
     rating_sent: HashMap<String, (u64, Option<Rating>)>,
-    /// Songs saved to or removed from the library here, by video id, over
+    /// Songs saved to or removed from the library here, by track key, over
     /// what their pages said.
     pub saved_songs: HashMap<String, bool>,
     /// A failure or a confirmation worth a toast.
@@ -173,18 +173,21 @@ impl AppState {
 
     pub fn rating(&self, track: &Track) -> Rating {
         self.ratings
-            .get(&track.video_id)
+            .get(&track.key)
             .copied()
-            .or(track.like)
+            .or(track.actions.rating)
             .unwrap_or_default()
     }
 
-    /// Whether the song is in the library, if its page said.
+    /// Whether the song is in the library, if its page said and offered to
+    /// change it.
     pub fn in_library(&self, track: &Track) -> Option<bool> {
+        track.actions.save_ref.as_ref()?;
         self.saved_songs
-            .get(&track.video_id)
+            .get(&track.key)
             .copied()
-            .or(track.library.as_ref().map(|library| library.saved))
+            .or(track.actions.saved)
+            .or(Some(false))
     }
 
     /// Records the ratings `tracks` carry, except for likes still in flight.
@@ -195,11 +198,13 @@ impl AppState {
     ) {
         let mut changed = false;
         for track in tracks {
-            let Some(like) = track.like else { continue };
-            if self.rating_sent.contains_key(&track.video_id) {
+            let Some(like) = track.actions.rating else {
+                continue;
+            };
+            if self.rating_sent.contains_key(&track.key) {
                 continue;
             }
-            if self.ratings.insert(track.video_id.clone(), like) != Some(like) {
+            if self.ratings.insert(track.key.clone(), like) != Some(like) {
                 changed = true;
             }
         }
@@ -214,12 +219,9 @@ impl AppState {
             .is_some_and(|session| session.signed_in)
     }
 
-    /// The video id of the track playing or paused.
-    pub fn current_video(&self) -> Option<&str> {
-        self.player
-            .track
-            .as_ref()
-            .map(|track| track.video_id.as_str())
+    /// The key of the track playing or paused.
+    pub fn current_key(&self) -> Option<&str> {
+        self.player.track.as_ref().map(|track| track.key.as_str())
     }
 
     /// The user's playlists for the sidebar, from the library page.
@@ -262,8 +264,6 @@ pub enum StoreEvent {
     Ratings,
     Notice,
     Scrobbling,
-    /// The daemon quit at the user's request; the app exits with it.
-    Quit,
 }
 
 impl StoreEvent {
@@ -283,10 +283,17 @@ fn cacheable_target(target: &BrowseTarget) -> bool {
     )
 }
 
-fn section_tracks(sections: &[formalmusic_api::Section]) -> impl Iterator<Item = &Track> {
+fn section_tracks(sections: &[crate::model::Section]) -> impl Iterator<Item = &Track> {
     sections
         .iter()
         .flat_map(|section| item_tracks(&section.items))
+}
+
+fn learn_more(state: &mut AppState, more: &ContinuationPage, events: &mut Vec<StoreEvent>) {
+    state.learn_ratings(
+        section_tracks(&more.sections).chain(item_tracks(&more.items)),
+        events,
+    );
 }
 
 fn item_tracks(items: &[Item]) -> impl Iterator<Item = &Track> {
@@ -324,11 +331,11 @@ fn mix_may_refresh(target: &BrowseTarget, entry: &PageEntry, playing_from: Optio
             .is_some_and(|at| at.elapsed() >= MIX_STALE_AFTER)
 }
 
-/// A row's identity in a list: the playlist entry when there is one, since
-/// a playlist can hold a video twice.
+/// A row's identity in a list. A playlist can hold a track twice; the
+/// rows that share a key keep their order among themselves.
 fn row_key(item: &Item) -> Option<&str> {
     match item {
-        Item::Track(track) => Some(track.set_video_id.as_deref().unwrap_or(&track.video_id)),
+        Item::Track(track) => Some(&track.key),
         _ => None,
     }
 }
@@ -395,23 +402,6 @@ fn keep_rows(old: &Page, mut new: Page) -> Page {
     new
 }
 
-/// The edit that moves the row at `from` to `to`, given each row's
-/// `setVideoId`: YouTube places a row before another, or last.
-fn playlist_move(keys: &[&str], from: usize, to: usize) -> Option<PlaylistEdit> {
-    if from == to || from >= keys.len() || to >= keys.len() {
-        return None;
-    }
-    let before = if from < to {
-        keys.get(to + 1)
-    } else {
-        keys.get(to)
-    };
-    Some(PlaylistEdit::Move {
-        set_video_id: keys[from].to_owned(),
-        before_set_video_id: before.map(|key| (*key).to_owned()),
-    })
-}
-
 /// The library pages a `LibraryChanged` scope makes stale.
 fn scope_covers(scope: LibraryScope, target: &BrowseTarget) -> bool {
     match scope {
@@ -457,12 +447,13 @@ pub struct MusicStore {
 }
 
 struct Inner {
-    transport: Arc<dyn Transport>,
+    backend: Arc<dyn Backend>,
     runtime: tokio::runtime::Handle,
     state: RwLock<AppState>,
     events: broadcast::Sender<StoreEvent>,
     cache: Option<Arc<StateCache>>,
     art: Arc<ArtCache>,
+    covers: AnimatedCovers,
     private: Mutex<Private>,
     me: Weak<Inner>,
 }
@@ -480,18 +471,12 @@ struct Private {
 }
 
 fn message(error: &ClientError) -> String {
-    use formalmusic_api::ApiError;
     match error {
-        ClientError::Api(ApiError::SignedOut) => "Sign in to see this.".into(),
-        ClientError::Api(ApiError::NotFound(_)) => "YouTube Music could not find that.".into(),
-        ClientError::Api(ApiError::Network(_)) => {
-            "YouTube Music is not answering. Check your connection.".into()
-        }
-        ClientError::Api(ApiError::Parse(_)) => {
-            "YouTube Music sent something this version cannot read.".into()
-        }
-        ClientError::Api(ApiError::Playback(text)) => format!("Could not play that: {text}"),
-        ClientError::Api(ApiError::BadRequest(text)) => text.clone(),
+        ClientError::SignedOut => "Sign in to see this.".into(),
+        ClientError::NotFound(_) => "YouTube Music could not find that.".into(),
+        ClientError::Network(_) => "YouTube Music is not answering. Check your connection.".into(),
+        ClientError::Unsupported(_) => "The music daemon cannot do that yet.".into(),
+        ClientError::BadRequest(text) | ClientError::Failed(text) => text.clone(),
         other => other.to_string(),
     }
 }
@@ -510,13 +495,16 @@ pub fn line_at(lyrics: &Lyrics, position_ms: u64) -> Option<usize> {
 impl MusicStore {
     /// Builds the store; nothing runs until `start`.
     pub fn new(
-        transport: Arc<dyn Transport>,
+        backend: Arc<dyn Backend>,
         options: StoreOptions,
         runtime: tokio::runtime::Handle,
     ) -> Self {
         let (events, _) = broadcast::channel(1024);
+        let covers = AnimatedCovers::with_cache_dir(crate::paths::cache_dir().join("animated"))
+            .expect("an animated cover cache needs no I/O to build");
         let inner = Arc::new_cyclic(|me| Inner {
-            transport,
+            backend,
+            covers,
             runtime,
             state: RwLock::new(AppState::default()),
             events,
@@ -547,8 +535,17 @@ impl MusicStore {
         &self.inner.art
     }
 
-    pub fn kind(&self) -> TransportKind {
-        self.inner.transport.kind()
+    /// The file of `art` for a box `px` device pixels wide, fetched first
+    /// when it is not on disk.
+    pub async fn art_file(&self, art: &crate::model::Art, px: u32) -> Option<std::path::PathBuf> {
+        self.inner
+            .art
+            .fetch(art, px > crate::art::HQ_ABOVE, &*self.inner.backend)
+            .await
+    }
+
+    pub fn kind(&self) -> BackendKind {
+        self.inner.backend.kind()
     }
 
     pub fn runtime(&self) -> &tokio::runtime::Handle {
@@ -580,11 +577,11 @@ impl MusicStore {
             .spawn(async move { store.event_loop(rx).await });
         self.inner.private.lock().event_loop = Some(task.abort_handle());
         let _entered = self.inner.runtime.enter();
-        self.inner.transport.start(tx);
+        self.inner.backend.start(tx);
     }
 
     pub async fn stop(&self) {
-        self.inner.transport.stop();
+        self.inner.backend.stop();
         if let Some(task) = self.inner.private.lock().event_loop.take() {
             task.abort();
         }
@@ -627,10 +624,10 @@ impl MusicStore {
         });
     }
 
-    async fn event_loop(&self, mut rx: mpsc::UnboundedReceiver<TransportEvent>) {
+    async fn event_loop(&self, mut rx: mpsc::UnboundedReceiver<Event>) {
         while let Some(event) = rx.recv().await {
             match event {
-                TransportEvent::Connection { status, error } => {
+                Event::Connection { status, error } => {
                     let came_up = self.inner.update(|state, events| {
                         let came_up = status == ConnectionStatus::Online
                             && state.connection != ConnectionStatus::Online;
@@ -646,22 +643,19 @@ impl MusicStore {
                         self.spawn(async move { store.on_online().await });
                     }
                 }
-                TransportEvent::Event(event) => self.apply(event),
+                event => self.apply(event),
             }
         }
     }
 
-    /// Applies one daemon event.
+    /// Applies one backend event.
     pub fn apply(&self, event: Event) {
         match event {
+            Event::Connection { .. } => {}
             Event::Player(player) => self.inner.update(|state, events| {
-                let changed_track = state.player.track.as_ref().map(|t| &t.video_id)
-                    != player.track.as_ref().map(|t| &t.video_id);
-                let changed_version = state.player.playing_id != player.playing_id
-                    || state.player.mode != player.mode
-                    || state.player.track.as_ref().map(|t| &t.counterpart)
-                        != player.track.as_ref().map(|t| &t.counterpart);
-                if changed_track || changed_version || state.player.status != player.status {
+                let changed_track = state.player.track.as_ref().map(|t| &t.key)
+                    != player.track.as_ref().map(|t| &t.key);
+                if changed_track || state.player.status != player.status {
                     events.push(StoreEvent::NowPlaying);
                 }
                 state.position_ms = player.position_ms;
@@ -684,6 +678,12 @@ impl MusicStore {
                     state.buffered_ms = buffered_ms;
                     events.push(StoreEvent::Position);
                     update_lyric_line(state, events);
+                }
+            }),
+            Event::Buffered { buffered_ms } => self.inner.update(|state, events| {
+                if state.buffered_ms != buffered_ms {
+                    state.buffered_ms = buffered_ms;
+                    events.push(StoreEvent::Position);
                 }
             }),
             Event::Queue(queue) => self.inner.update(|state, events| {
@@ -728,16 +728,13 @@ impl MusicStore {
                 }
             }
             Event::Notice { message } => self.notice(message),
-            Event::Quit => {
-                let _ = self.inner.events.send(StoreEvent::Quit);
-            }
         }
     }
 
     async fn on_online(&self) {
-        let session = match self.inner.transport.call(Command::Session).await {
-            Ok(Reply::Session(session)) => session,
-            _ => return,
+        self.reload_settings();
+        let Ok(session) = self.inner.backend.session().await else {
+            return;
         };
         let signed_in = session.signed_in;
         self.inner.update(|state, events| {
@@ -881,21 +878,15 @@ impl MusicStore {
     async fn fetch_page(&self, target: BrowseTarget) {
         let store = self;
         {
-            let result = store
-                .inner
-                .transport
-                .call(Command::Browse {
-                    target: target.clone(),
-                })
-                .await;
+            let result = store.inner.backend.browse(&target).await;
             store.inner.update(|state, events| {
-                if let Ok(Reply::Page(page)) = &result {
+                if let Ok(page) = &result {
                     state.learn_ratings(section_tracks(&page.sections), events);
                 }
                 let entry = state.pages.entry(target.clone()).or_default();
                 entry.loading = false;
                 match result {
-                    Ok(Reply::Page(page)) => {
+                    Ok(page) => {
                         let page = match &entry.page {
                             Some(old)
                                 if matches!(target, BrowseTarget::Playlist(_))
@@ -909,7 +900,6 @@ impl MusicStore {
                         entry.error = None;
                         entry.fetched_at = Some(Instant::now());
                     }
-                    Ok(_) => entry.error = Some(message(&ClientError::UnexpectedReply)),
                     Err(error) => entry.error = Some(message(&error)),
                 }
                 events.push(StoreEvent::Page(target));
@@ -943,13 +933,10 @@ impl MusicStore {
         let Some(token) = token else { return };
         let store = self.clone();
         self.spawn(async move {
-            let result = store.continuation(token).await;
+            let result = store.inner.backend.more(&target, None, &token).await;
             store.inner.update(|state, events| {
                 if let Ok(more) = &result {
-                    state.learn_ratings(
-                        section_tracks(&more.sections).chain(item_tracks(&more.items)),
-                        events,
-                    );
+                    learn_more(state, more, events);
                 }
                 let Some(entry) = state.pages.get_mut(&target) else {
                     return;
@@ -1001,13 +988,14 @@ impl MusicStore {
         let Some(token) = token else { return };
         let store = self.clone();
         self.spawn(async move {
-            let result = store.continuation(token).await;
+            let result = store
+                .inner
+                .backend
+                .more(&target, Some(section), &token)
+                .await;
             store.inner.update(|state, events| {
                 if let Ok(more) = &result {
-                    state.learn_ratings(
-                        section_tracks(&more.sections).chain(item_tracks(&more.items)),
-                        events,
-                    );
+                    learn_more(state, more, events);
                 }
                 let Some(entry) = state.pages.get_mut(&target) else {
                     return;
@@ -1040,21 +1028,6 @@ impl MusicStore {
         });
     }
 
-    async fn continuation(
-        &self,
-        token: Continuation,
-    ) -> Result<formalmusic_api::ContinuationPage, ClientError> {
-        match self
-            .inner
-            .transport
-            .call(Command::Continue { token })
-            .await?
-        {
-            Reply::Continuation(page) => Ok(page),
-            _ => Err(ClientError::UnexpectedReply),
-        }
-    }
-
     // ---------------------------------------------------------------------
     // Search
     // ---------------------------------------------------------------------
@@ -1079,27 +1052,19 @@ impl MusicStore {
         }
         let store = self.clone();
         self.spawn(async move {
-            let result = store
-                .inner
-                .transport
-                .call(Command::Search {
-                    query: key.query.clone(),
-                    filter: key.filter,
-                })
-                .await;
+            let result = store.inner.backend.search(&key.query, key.filter).await;
             store.inner.update(|state, events| {
-                if let Ok(Reply::Search(results)) = &result {
+                if let Ok(results) = &result {
                     state.learn_ratings(section_tracks(&results.sections), events);
                 }
                 let entry = state.searches.entry(key.clone()).or_default();
                 entry.loading = false;
                 match result {
-                    Ok(Reply::Search(results)) => {
+                    Ok(results) => {
                         entry.results = Some(Arc::new(results));
                         entry.error = None;
                         entry.fetched_at = Some(Instant::now());
                     }
-                    Ok(_) => entry.error = Some(message(&ClientError::UnexpectedReply)),
                     Err(error) => entry.error = Some(message(&error)),
                 }
                 events.push(StoreEvent::Search(key));
@@ -1121,13 +1086,14 @@ impl MusicStore {
         let Some(token) = token else { return };
         let store = self.clone();
         self.spawn(async move {
-            let result = store.continuation(token).await;
+            let result = store
+                .inner
+                .backend
+                .search_more(&key.query, key.filter, &token)
+                .await;
             store.inner.update(|state, events| {
                 if let Ok(more) = &result {
-                    state.learn_ratings(
-                        section_tracks(&more.sections).chain(item_tracks(&more.items)),
-                        events,
-                    );
+                    learn_more(state, more, events);
                 }
                 let Some(entry) = state.searches.get_mut(&key) else {
                     return;
@@ -1185,14 +1151,7 @@ impl MusicStore {
         let store = self.clone();
         let task = self.inner.runtime.spawn(async move {
             tokio::time::sleep(SUGGEST_DEBOUNCE).await;
-            let Ok(Reply::Suggestions(items)) = store
-                .inner
-                .transport
-                .call(Command::Suggestions {
-                    query: query.clone(),
-                })
-                .await
-            else {
+            let Ok(items) = store.inner.backend.suggestions(&query).await else {
                 return;
             };
             store.inner.update(|state, events| {
@@ -1210,28 +1169,40 @@ impl MusicStore {
     // Player
     // ---------------------------------------------------------------------
 
-    /// Sends a command whose effect comes back as daemon events; a refusal
+    /// Sends a command whose effect comes back as events; a refusal
     /// becomes a toast.
-    fn send(&self, command: Command) {
+    fn control(&self, control: Control) {
         let store = self.clone();
         self.spawn(async move {
-            if let Err(error) = store.inner.transport.call(command).await {
+            if let Err(error) = store.inner.backend.control(control).await {
                 store.notice(message(&error));
             }
         });
     }
 
-    pub fn play(&self, source: PlaySource, start_index: usize, shuffle: bool, radio: bool) {
+    /// Runs a call whose effect comes back as events; a refusal becomes a toast.
+    fn send<F>(&self, call: impl FnOnce(Arc<dyn Backend>) -> F + Send + 'static)
+    where
+        F: Future<Output = Result<(), ClientError>> + Send + 'static,
+    {
+        let store = self.clone();
+        let backend = self.inner.backend.clone();
+        self.spawn(async move {
+            if let Err(error) = call(backend).await {
+                store.notice(message(&error));
+            }
+        });
+    }
+
+    pub fn play(&self, source: PlaySource, start_index: usize, shuffle: bool) {
         self.inner.private.lock().playing_from = match &source {
-            PlaySource::Playlist { playlist_id, .. } => Some(bare_playlist(playlist_id).to_owned()),
+            PlaySource::Page {
+                target: BrowseTarget::Playlist(playlist_id),
+                ..
+            } => Some(bare_playlist(playlist_id).to_owned()),
             _ => None,
         };
-        self.send(Command::Play {
-            source,
-            start_index,
-            shuffle,
-            radio,
-        });
+        self.send(move |backend| async move { backend.play(source, start_index, shuffle).await });
     }
 
     pub fn toggle(&self) {
@@ -1246,38 +1217,41 @@ impl MusicStore {
             state.player.status = next;
             events.extend([StoreEvent::Player, StoreEvent::NowPlaying]);
         });
-        self.send(Command::Toggle);
+        self.control(Control::Toggle);
     }
 
     /// Pauses and waits up to `timeout` for the daemon to take it, for a
     /// window that closes just before the process exits. Blocks, so it must
     /// not run on the store's runtime.
     pub fn pause_blocking(&self, timeout: Duration) {
-        let transport = self.inner.transport.clone();
+        let backend = self.inner.backend.clone();
         let call =
-            async move { tokio::time::timeout(timeout, transport.call(Command::Pause)).await };
+            async move { tokio::time::timeout(timeout, backend.control(Control::Pause)).await };
         match self.runtime().block_on(call) {
-            Ok(Ok(_)) => {}
+            Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::warn!("pause on close: {error}"),
             Err(_) => tracing::warn!("pause on close: the daemon did not answer in time"),
         }
     }
 
     pub fn next(&self) {
-        self.send(Command::Next);
+        self.control(Control::Next);
     }
 
-    pub fn set_tray(&self, shown: bool) {
-        self.send(Command::SetTray { shown });
-    }
-
-    /// After Settings wrote a playback key the daemon reads.
+    /// Hands the daemon's keys of `config.json` to it, after Settings wrote
+    /// one and on every connect.
     pub fn reload_settings(&self) {
-        self.send(Command::ReloadSettings);
+        let settings = crate::settings::Settings::load(&crate::paths::settings_file());
+        self.send(move |backend| async move { backend.apply_settings(&settings).await });
+    }
+
+    /// Plays an equalizer setting the Settings dialog has not written yet.
+    pub fn preview_equalizer(&self, equalizer: crate::equalizer::Equalizer) {
+        self.send(move |backend| async move { backend.preview_equalizer(equalizer).await });
     }
 
     pub fn previous(&self) {
-        self.send(Command::Previous);
+        self.control(Control::Previous);
     }
 
     pub fn seek(&self, position_ms: u64) {
@@ -1289,7 +1263,7 @@ impl MusicStore {
             update_lyric_line(state, events);
             state.position_ms
         });
-        self.send(Command::SeekTo { position_ms });
+        self.control(Control::Seek(position_ms));
     }
 
     /// Seeks by `delta_ms` from where the player is.
@@ -1313,7 +1287,7 @@ impl MusicStore {
             }
             events.push(StoreEvent::Player);
         });
-        self.send(Command::SetVolume { volume });
+        self.control(Control::Volume(volume));
     }
 
     pub fn set_muted(&self, muted: bool) {
@@ -1321,7 +1295,7 @@ impl MusicStore {
             state.player.muted = muted;
             events.push(StoreEvent::Player);
         });
-        self.send(Command::SetMuted { muted });
+        self.control(Control::Muted(muted));
     }
 
     /// Off, then all, then one, the order the web app's button steps through.
@@ -1335,7 +1309,7 @@ impl MusicStore {
             events.push(StoreEvent::Player);
             state.player.repeat
         });
-        self.send(Command::SetRepeat { repeat });
+        self.control(Control::Repeat(repeat));
     }
 
     pub fn toggle_shuffle(&self) {
@@ -1344,56 +1318,15 @@ impl MusicStore {
             events.push(StoreEvent::Player);
             state.player.shuffle
         });
-        self.send(Command::SetShuffle { shuffle });
-    }
-
-    /// The Song and Video switch. The daemon moves the playing track over to
-    /// the chosen version at the same place in the song.
-    pub fn set_mode(&self, mode: PlaybackMode) {
-        let changed = self.inner.update(|state, events| {
-            let changed = state.player.mode != mode;
-            state.player.mode = mode;
-            events.extend([StoreEvent::Player, StoreEvent::NowPlaying]);
-            changed
-        });
-        if changed {
-            self.send(Command::SetMode { mode });
-        }
-    }
-
-    /// A video-only stream of `video_id` for the player to decode beside
-    /// the daemon's audio. `refresh` asks yt-dlp again after a refused URL.
-    pub async fn video_stream(
-        &self,
-        video_id: String,
-        max_height: u32,
-        refresh: bool,
-    ) -> Option<VideoStream> {
-        let reply = self
-            .inner
-            .transport
-            .call(Command::VideoStream {
-                video_id,
-                max_height,
-                refresh,
-            })
-            .await;
-        match reply {
-            Ok(Reply::VideoStream(stream)) => Some(stream),
-            Ok(_) => None,
-            Err(error) => {
-                tracing::warn!("video stream: {error}");
-                None
-            }
-        }
+        self.control(Control::Shuffle(shuffle));
     }
 
     pub fn enqueue(&self, tracks: Vec<Track>, position: EnqueuePosition) {
-        self.send(Command::Enqueue { tracks, position });
+        self.send(move |backend| async move { backend.enqueue(tracks, position).await });
     }
 
     pub fn jump_to(&self, index: usize) {
-        self.send(Command::JumpTo { index });
+        self.control(Control::Jump(index));
     }
 
     pub fn remove_from_queue(&self, index: usize) {
@@ -1410,7 +1343,7 @@ impl MusicStore {
             });
             events.push(StoreEvent::Queue);
         });
-        self.send(Command::RemoveFromQueue { index });
+        self.control(Control::Remove(index));
     }
 
     /// Moves a queue row so it ends up at `to`, as a drag drops it.
@@ -1428,26 +1361,26 @@ impl MusicStore {
             true
         });
         if moved {
-            self.send(Command::MoveInQueue { from, to });
+            self.control(Control::Move { from, to });
         }
     }
 
     pub fn clear_queue(&self) {
-        self.send(Command::ClearQueue);
+        self.control(Control::Clear);
     }
 
     // ---------------------------------------------------------------------
     // Lyrics and related
     // ---------------------------------------------------------------------
 
-    pub fn load_lyrics(&self, video_id: String) {
+    pub fn load_lyrics(&self, key: String) {
         let fetch = self.inner.update(|state, events| {
-            let entry = state.lyrics.entry(video_id.clone()).or_default();
+            let entry = state.lyrics.entry(key.clone()).or_default();
             if entry.loading || entry.lyrics.is_some() || entry.missing {
                 return false;
             }
             entry.loading = true;
-            events.push(StoreEvent::Lyrics(video_id.clone()));
+            events.push(StoreEvent::Lyrics(key.clone()));
             true
         });
         if !fetch {
@@ -1455,29 +1388,23 @@ impl MusicStore {
         }
         let store = self.clone();
         self.spawn(async move {
-            let result = store
-                .inner
-                .transport
-                .call(Command::Lyrics {
-                    video_id: video_id.clone(),
-                })
-                .await;
+            let result = store.inner.backend.lyrics(&key).await;
             store.inner.update(|state, events| {
-                let entry = state.lyrics.entry(video_id.clone()).or_default();
+                let entry = state.lyrics.entry(key.clone()).or_default();
                 entry.loading = false;
                 match result {
-                    Ok(Reply::Lyrics(Some(lyrics))) => entry.lyrics = Some(Arc::new(lyrics)),
-                    Ok(Reply::Lyrics(None)) => entry.missing = true,
-                    _ => {}
+                    Ok(Some(lyrics)) => entry.lyrics = Some(Arc::new(lyrics)),
+                    Ok(None) => entry.missing = true,
+                    Err(error) => tracing::debug!("lyrics: {error}"),
                 }
-                events.push(StoreEvent::Lyrics(video_id));
+                events.push(StoreEvent::Lyrics(key));
                 update_lyric_line(state, events);
             });
         });
     }
 
-    /// Asks the daemon for the album's animated cover once. The daemon has
-    /// usually warmed it already, so this is a cache read.
+    /// Looks the album's animated cover up once. Found ones stay on disk,
+    /// so a cover seen before is a cache read.
     pub fn load_animated_cover(&self, key: (String, String)) {
         let fetch = self.inner.update(|state, _| {
             let entry = state.animated_covers.entry(key.clone()).or_default();
@@ -1493,35 +1420,39 @@ impl MusicStore {
         let store = self.clone();
         self.spawn(async move {
             let (artist, album) = key.clone();
-            let result = store
-                .inner
-                .transport
-                .call(Command::AnimatedCover { artist, album })
-                .await;
+            let result = if store.kind() == BackendKind::Demo {
+                crate::demo::animated_cover().await
+            } else {
+                match store.inner.covers.animated_cover(&artist, &album).await {
+                    Ok(path) => path,
+                    Err(error) => {
+                        tracing::debug!("animated cover: {error}");
+                        None
+                    }
+                }
+            };
             store.inner.update(|state, events| {
                 let entry = state.animated_covers.entry(key).or_default();
                 entry.loading = false;
                 match result {
-                    Ok(Reply::AnimatedCover(Some(path))) => {
-                        entry.path = Some(std::path::PathBuf::from(path).into())
-                    }
+                    Some(path) => entry.path = Some(path.into()),
                     // A failed lookup is not asked again this session: the
                     // static cover is a fine answer, and the bar renders often.
-                    _ => entry.missing = true,
+                    None => entry.missing = true,
                 }
                 events.push(StoreEvent::AnimatedCover);
             });
         });
     }
 
-    pub fn load_related(&self, browse_id: String) {
+    pub fn load_related(&self, key: String) {
         let fetch = self.inner.update(|state, events| {
-            let entry = state.related.entry(browse_id.clone()).or_default();
+            let entry = state.related.entry(key.clone()).or_default();
             if entry.loading || entry.page.is_some() {
                 return false;
             }
             entry.loading = true;
-            events.push(StoreEvent::Related(browse_id.clone()));
+            events.push(StoreEvent::Related(key.clone()));
             true
         });
         if !fetch {
@@ -1529,27 +1460,31 @@ impl MusicStore {
         }
         let store = self.clone();
         self.spawn(async move {
-            let result = store
-                .inner
-                .transport
-                .call(Command::Related {
-                    browse_id: browse_id.clone(),
-                })
-                .await;
+            let result = store.inner.backend.related(&key).await;
             store.inner.update(|state, events| {
-                if let Ok(Reply::Page(page)) = &result {
+                if let Ok(page) = &result {
                     state.learn_ratings(section_tracks(&page.sections), events);
                 }
-                let entry = state.related.entry(browse_id.clone()).or_default();
+                let entry = state.related.entry(key.clone()).or_default();
                 entry.loading = false;
                 match result {
-                    Ok(Reply::Page(page)) => entry.page = Some(Arc::new(page)),
-                    Ok(_) => entry.error = Some(message(&ClientError::UnexpectedReply)),
+                    Ok(page) => entry.page = Some(Arc::new(page)),
                     Err(error) => entry.error = Some(message(&error)),
                 }
-                events.push(StoreEvent::Related(browse_id));
+                events.push(StoreEvent::Related(key));
             });
         });
+    }
+
+    /// The web app's link to an item, for Share.
+    pub async fn share_url(&self, item: &Item) -> Option<String> {
+        match self.inner.backend.share_url(item).await {
+            Ok(url) => url,
+            Err(error) => {
+                tracing::debug!("share: {error}");
+                None
+            }
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -1559,52 +1494,45 @@ impl MusicStore {
     /// Shows the rating at once and puts the previous one back if YouTube
     /// refuses it.
     pub fn rate(&self, track: &Track, rating: Rating) {
-        let video_id = track.video_id.clone();
+        let key = track.key.clone();
+        let rate_ref = track
+            .actions
+            .rate_ref
+            .clone()
+            .unwrap_or_else(|| key.clone());
         let seq = self.inner.update(|state, events| {
-            let before = match state.rating_sent.get(&video_id) {
+            let before = match state.rating_sent.get(&key) {
                 Some((_, before)) => *before,
-                None => state.ratings.get(&video_id).copied(),
+                None => state.ratings.get(&key).copied(),
             };
-            let seq = state
-                .rating_sent
-                .get(&video_id)
-                .map_or(0, |(seq, _)| seq + 1);
-            state.rating_sent.insert(video_id.clone(), (seq, before));
-            state.ratings.insert(video_id.clone(), rating);
+            let seq = state.rating_sent.get(&key).map_or(0, |(seq, _)| seq + 1);
+            state.rating_sent.insert(key.clone(), (seq, before));
+            state.ratings.insert(key.clone(), rating);
             events.push(StoreEvent::Ratings);
             seq
         });
         let store = self.clone();
         self.spawn(async move {
-            let result = store
-                .inner
-                .transport
-                .call(Command::Rate {
-                    target: RateTarget::Track {
-                        video_id: video_id.clone(),
-                    },
-                    rating,
-                })
-                .await;
-            store.rated(&video_id, seq, result.as_ref().err().map(message));
+            let result = store.inner.backend.rate(&rate_ref, rating).await;
+            store.rated(&key, seq, result.as_ref().err().map(message));
         });
     }
 
-    /// Settles the rate `seq` of `video_id`. Only the latest one counts: an
+    /// Settles the rate `seq` of `key`. Only the latest one counts: an
     /// earlier answer arriving late changes nothing.
-    fn rated(&self, video_id: &str, seq: u64, error: Option<String>) {
+    fn rated(&self, key: &str, seq: u64, error: Option<String>) {
         self.inner.update(|state, events| {
-            let Some(&(latest, before)) = state.rating_sent.get(video_id) else {
+            let Some(&(latest, before)) = state.rating_sent.get(key) else {
                 return;
             };
             if latest != seq {
                 return;
             }
-            state.rating_sent.remove(video_id);
+            state.rating_sent.remove(key);
             if error.is_some() {
                 match before {
-                    Some(before) => state.ratings.insert(video_id.to_owned(), before),
-                    None => state.ratings.remove(video_id),
+                    Some(before) => state.ratings.insert(key.to_owned(), before),
+                    None => state.ratings.remove(key),
                 };
                 events.push(StoreEvent::Ratings);
             }
@@ -1614,131 +1542,127 @@ impl MusicStore {
         }
     }
 
-    pub fn set_subscribed(&self, channel_id: String, subscribed: bool) {
-        self.send(Command::SetSubscribed {
-            channel_id,
-            subscribed,
-        });
+    /// Rates an album or a playlist by the ref its page gave.
+    pub fn rate_ref(&self, rate_ref: String, rating: Rating) {
+        self.send(move |backend| async move { backend.rate(&rate_ref, rating).await });
+    }
+
+    /// Subscribes to an artist or stops, by the artist's follow ref.
+    pub fn set_subscribed(&self, follow_ref: String, subscribed: bool) {
+        self.send(move |backend| async move { backend.follow(&follow_ref, subscribed).await });
     }
 
     /// Shows the change at once and puts it back if YouTube refuses it.
     pub fn set_song_in_library(&self, track: &Track, saved: bool) {
-        let Some(library) = &track.library else {
+        let Some(save_ref) = track.actions.save_ref.clone() else {
             return;
         };
-        let feedback_token = if saved {
-            library.add_token.clone()
-        } else {
-            library.remove_token.clone()
-        };
-        let video_id = track.video_id.clone();
+        let key = track.key.clone();
         self.inner.update(|state, _| {
-            state.saved_songs.insert(video_id.clone(), saved);
+            state.saved_songs.insert(key.clone(), saved);
         });
         let store = self.clone();
         self.spawn(async move {
-            let result = store
-                .inner
-                .transport
-                .call(Command::SetSongInLibrary { feedback_token })
-                .await;
-            if let Err(error) = result {
+            if let Err(error) = store.inner.backend.save(&save_ref, saved).await {
                 store.inner.update(|state, _| {
-                    state.saved_songs.remove(&video_id);
+                    state.saved_songs.remove(&key);
                 });
                 store.notice(message(&error));
             }
         });
     }
 
-    pub fn set_in_library(&self, playlist_id: String, saved: bool) {
-        self.send(Command::SetInLibrary { playlist_id, saved });
+    /// Saves an album or someone else's playlist to the library or takes it
+    /// out, by the save ref its page gave.
+    pub fn set_in_library(&self, save_ref: String, saved: bool) {
+        self.send(move |backend| async move { backend.save(&save_ref, saved).await });
     }
 
-    pub fn add_to_playlist(&self, playlist_id: String, video_ids: Vec<String>) {
-        let edits = video_ids
-            .into_iter()
-            .map(|video_id| PlaylistEdit::Add { video_id })
-            .collect();
-        self.send(Command::EditPlaylist { playlist_id, edits });
+    pub fn add_to_playlist(&self, playlist_id: String, keys: Vec<String>) {
+        self.send(move |backend| async move { backend.add_to_playlist(&playlist_id, keys).await });
     }
 
-    /// Takes the row off the cached page at once; the daemon's
-    /// `LibraryChanged` brings the real page back after.
-    pub fn remove_from_playlist(&self, playlist_id: String, track: &Track) {
-        let Some(set_video_id) = track.set_video_id.clone() else {
-            return;
-        };
-        let video_id = track.video_id.clone();
-        self.drop_rows(BrowseTarget::Playlist(playlist_id.clone()), |row| {
-            row.set_video_id.as_deref() == Some(set_video_id.as_str())
-        });
-        self.send(Command::EditPlaylist {
-            playlist_id,
-            edits: vec![PlaylistEdit::Remove {
-                video_id,
-                set_video_id,
-            }],
-        });
-    }
-
-    /// Moves row `from` of the playlist's list to `to` at once, and tells
-    /// YouTube which row it now sits before.
-    pub fn move_in_playlist(&self, playlist_id: String, from: usize, to: usize) {
+    /// Takes row `index` of the playlist's list off the cached page at once;
+    /// the daemon's change notice brings the real page back after.
+    pub fn remove_from_playlist(&self, playlist_id: String, index: usize) {
         let target = BrowseTarget::Playlist(playlist_id.clone());
-        let edit = self.inner.update(|state, events| {
+        self.inner.update(|state, events| {
+            let Some(page) = state.pages.get_mut(&target).and_then(|e| e.page.as_mut()) else {
+                return;
+            };
+            let mut next = (**page).clone();
+            if let Some(section) = next.sections.first_mut()
+                && index < section.items.len()
+            {
+                section.items.remove(index);
+                *page = Arc::new(next);
+                events.push(StoreEvent::Page(target.clone()));
+            }
+        });
+        self.send(
+            move |backend| async move { backend.remove_from_playlist(&playlist_id, index).await },
+        );
+    }
+
+    /// The search filters the source takes, in the order to offer them.
+    pub fn search_filters(&self) -> Vec<SearchFilter> {
+        self.inner.backend.search_filters()
+    }
+
+    /// Whether rows of your own playlists can be dragged into a new order.
+    pub fn playlists_reorder(&self) -> bool {
+        self.inner.backend.playlists_reorder()
+    }
+
+    /// Moves row `from` of the playlist's list to `to` at once, and on YouTube.
+    pub fn move_in_playlist(&self, playlist_id: String, from: usize, to: usize) {
+        if !self.playlists_reorder() {
+            return;
+        }
+        let target = BrowseTarget::Playlist(playlist_id.clone());
+        let moved = self.inner.update(|state, events| {
             let page = state.pages.get_mut(&target)?.page.as_mut()?;
             let mut next = (**page).clone();
             let section = next.sections.first_mut()?;
-            let keys: Vec<&str> = section
-                .items
-                .iter()
-                .map(|item| match item {
-                    Item::Track(track) => track.set_video_id.as_deref(),
-                    _ => None,
-                })
-                .collect::<Option<_>>()?;
-            let edit = playlist_move(&keys, from, to)?;
+            if from == to || from >= section.items.len() || to >= section.items.len() {
+                return None;
+            }
             let row = section.items.remove(from);
             section.items.insert(to, row);
             *page = Arc::new(next);
             events.push(StoreEvent::Page(target.clone()));
-            Some(edit)
+            Some(())
         });
-        if let Some(edit) = edit {
-            self.send(Command::EditPlaylist {
-                playlist_id,
-                edits: vec![edit],
+        if moved.is_some() {
+            self.send(move |backend| async move {
+                backend.move_in_playlist(&playlist_id, from, to).await
             });
         }
     }
 
     /// Renames, describes or changes the privacy of a playlist; the daemon's
-    /// `LibraryChanged` brings the page back with them.
+    /// change notice brings the page back with them.
     pub async fn edit_playlist(
         &self,
         playlist_id: String,
-        edits: Vec<PlaylistEdit>,
+        details: PlaylistDetails,
     ) -> Result<(), String> {
-        if edits.is_empty() {
+        if details == PlaylistDetails::default() {
             return Ok(());
         }
-        let command = Command::EditPlaylist { playlist_id, edits };
-        match self.inner.transport.call(command).await {
-            Ok(_) => Ok(()),
-            Err(error) => Err(message(&error)),
-        }
+        let result = self
+            .inner
+            .backend
+            .edit_playlist(&playlist_id, details)
+            .await;
+        self.refresh(BrowseTarget::Playlist(playlist_id));
+        result.map_err(|error| message(&error))
     }
 
     pub async fn delete_playlist(&self, playlist_id: String) -> Result<(), String> {
         let target = BrowseTarget::Playlist(playlist_id.clone());
-        match self
-            .inner
-            .transport
-            .call(Command::DeletePlaylist { playlist_id })
-            .await
-        {
-            Ok(_) => {
+        match self.inner.backend.delete_playlist(&playlist_id).await {
+            Ok(()) => {
                 self.inner.update(|state, _| {
                     state.pages.remove(&target);
                 });
@@ -1751,13 +1675,13 @@ impl MusicStore {
 
     /// Takes the row off the History page at once, as `remove_from_playlist` does.
     pub fn remove_from_history(&self, track: &Track) {
-        let Some(feedback_token) = track.feedback_token.clone() else {
+        let Some(token) = track.actions.history_token.clone() else {
             return;
         };
         self.drop_rows(BrowseTarget::History, |row| {
-            row.feedback_token.as_deref() == Some(feedback_token.as_str())
+            row.actions.history_token.as_deref() == Some(token.as_str())
         });
-        self.send(Command::RemoveFromHistory { feedback_token });
+        self.send(move |backend| async move { backend.remove_from_history(&token).await });
     }
 
     /// Removes the track rows `matches` picks from the cached page, and the
@@ -1787,20 +1711,13 @@ impl MusicStore {
     pub async fn create_playlist(
         &self,
         title: String,
-        video_ids: Vec<String>,
+        keys: Vec<String>,
     ) -> Result<String, String> {
-        let command = Command::CreatePlaylist {
-            title,
-            description: String::new(),
-            privacy: Privacy::Private,
-            video_ids,
-        };
-        match self.inner.transport.call(command).await {
-            Ok(Reply::PlaylistCreated { playlist_id }) => {
+        match self.inner.backend.create_playlist(title, keys).await {
+            Ok(playlist_id) => {
                 self.refresh(BrowseTarget::Library(LibraryTab::Playlists));
                 Ok(playlist_id)
             }
-            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
             Err(error) => Err(message(&error)),
         }
     }
@@ -1809,73 +1726,57 @@ impl MusicStore {
     // Session
     // ---------------------------------------------------------------------
 
-    pub async fn sign_in(&self, cookies: String) -> Result<(), String> {
-        match self.inner.transport.call(Command::SignIn { cookies }).await {
-            Ok(Reply::Session(session)) if session.signed_in => {
-                self.apply(Event::Session(session));
-                Ok(())
+    fn signed_in_as(
+        &self,
+        result: Result<SessionInfo, ClientError>,
+    ) -> Result<SessionInfo, String> {
+        match result {
+            Ok(session) if session.signed_in => {
+                self.apply(Event::Session(session.clone()));
+                Ok(session)
             }
-            Ok(Reply::Session(_)) | Ok(Reply::Ok) => Err("Those cookies did not sign in. Copy them again from a signed-in music.youtube.com tab.".into()),
-            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
+            Ok(_) => Err("That did not sign in to YouTube Music.".into()),
             Err(error) => Err(message(&error)),
         }
     }
 
+    pub async fn sign_in(&self, cookies: String) -> Result<(), String> {
+        let result = self.inner.backend.sign_in(cookies).await;
+        self.signed_in_as(result).map(drop).map_err(|error| match error.as_str() {
+            "That did not sign in to YouTube Music." => "Those cookies did not sign in. Copy them again from a signed-in music.youtube.com tab.".into(),
+            _ => error,
+        })
+    }
+
     pub async fn browsers(&self) -> Result<Browsers, String> {
-        match self.inner.transport.call(Command::Browsers).await {
-            Ok(Reply::Browsers(browsers)) => Ok(browsers),
-            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
-            Err(error) => Err(message(&error)),
-        }
+        self.inner
+            .backend
+            .browsers()
+            .await
+            .map_err(|error| message(&error))
     }
 
     /// Opens `browser` (or the default) for the user to sign in, and returns
     /// once they have or the daemon gave up.
     pub async fn browser_sign_in(&self, browser: Option<String>) -> Result<(), String> {
-        match self
-            .inner
-            .transport
-            .call(Command::BrowserSignIn { browser })
-            .await
-        {
-            Ok(Reply::Session(session)) if session.signed_in => {
-                self.apply(Event::Session(session));
-                Ok(())
-            }
-            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
-            Err(error) => Err(message(&error)),
-        }
+        let result = self.inner.backend.browser_sign_in(browser).await;
+        self.signed_in_as(result).map(drop)
     }
 
     pub async fn browser_profiles(&self) -> Result<Vec<ProfileBrowser>, String> {
-        match self.inner.transport.call(Command::BrowserProfiles).await {
-            Ok(Reply::BrowserProfiles(profiles)) => Ok(profiles),
-            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
-            Err(error) => Err(message(&error)),
-        }
+        self.inner
+            .backend
+            .browser_profiles()
+            .await
+            .map_err(|error| message(&error))
     }
 
     /// Takes the session from a browser profile and answers with the name of
-    /// the account it belongs to.
-    pub async fn import_cookies(&self, browser: String, profile: String) -> Result<String, String> {
-        match self
-            .inner
-            .transport
-            .call(Command::ImportCookies { browser, profile })
-            .await
-        {
-            Ok(Reply::Session(session)) if session.signed_in => {
-                let name = session
-                    .account
-                    .as_ref()
-                    .map(|a| a.name.clone())
-                    .unwrap_or_default();
-                self.apply(Event::Session(session));
-                Ok(name)
-            }
-            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
-            Err(error) => Err(message(&error)),
-        }
+    /// the account it belongs to, when the daemon says.
+    pub async fn import_cookies(&self, profile: String) -> Result<Option<String>, String> {
+        let result = self.inner.backend.import_profile(&profile).await;
+        self.signed_in_as(result)
+            .map(|session| session.account.map(|account| account.name))
     }
 
     // ---------------------------------------------------------------------
@@ -1885,75 +1786,60 @@ impl MusicStore {
     pub fn load_scrobbling(&self) {
         let store = self.clone();
         self.spawn(async move {
-            if let Ok(Reply::Scrobbling(status)) =
-                store.inner.transport.call(Command::Scrobbling).await
-            {
+            if let Ok(status) = store.inner.backend.scrobbling().await {
                 store.apply(Event::Scrobbling(status));
             }
         });
     }
 
-    async fn scrobbling_call(&self, command: Command) -> Result<(), String> {
-        match self.inner.transport.call(command).await {
-            Ok(Reply::Scrobbling(status)) => {
+    fn scrobbled(&self, result: Result<ScrobbleStatus, ClientError>) -> Result<(), String> {
+        match result {
+            Ok(status) => {
                 self.apply(Event::Scrobbling(status));
                 Ok(())
             }
-            Ok(_) => Err(message(&ClientError::UnexpectedReply)),
             Err(error) => Err(message(&error)),
         }
     }
 
-    /// Opens Last.fm's "allow access" page; the daemon reports the outcome
-    /// as a [`StoreEvent::Scrobbling`] once the user has answered there.
-    /// `app` is the API key and shared secret typed into Settings, when the
-    /// daemon has none yet.
+    /// Opens Last.fm's "allow access" page and returns once the user has
+    /// answered there. `app` is the API key and shared secret typed into
+    /// Settings, when the daemon has none yet.
     pub async fn connect_lastfm(&self, app: Option<LastFmApp>) -> Result<(), String> {
-        self.scrobbling_call(Command::ConnectLastFm { app }).await
+        self.inner.update(|state, events| {
+            state.scrobbling.get_or_insert_default().lastfm.connecting = true;
+            events.push(StoreEvent::Scrobbling);
+        });
+        let result = self.inner.backend.connect_lastfm(app).await;
+        self.inner.update(|state, events| {
+            if let Some(status) = &mut state.scrobbling {
+                status.lastfm.connecting = false;
+                events.push(StoreEvent::Scrobbling);
+            }
+        });
+        self.scrobbled(result)
     }
 
-    pub async fn connect_listenbrainz(&self, source: ListenBrainzSource) -> Result<(), String> {
-        self.scrobbling_call(Command::ConnectListenBrainz { source })
-            .await
+    pub async fn connect_listenbrainz(&self, token: String) -> Result<(), String> {
+        let result = self.inner.backend.connect_listenbrainz(token).await;
+        self.scrobbled(result)
     }
 
     pub fn disconnect_scrobbler(&self, service: ScrobbleService) {
         let store = self.clone();
         self.spawn(async move {
-            if let Err(error) = store
-                .scrobbling_call(Command::DisconnectScrobbler { service })
-                .await
-            {
+            let result = store.inner.backend.disconnect_scrobbler(service).await;
+            if let Err(error) = store.scrobbled(result) {
                 store.notice(error);
             }
         });
-    }
-
-    pub fn set_scrobbling(&self, service: ScrobbleService, scrobble: bool, now_playing: bool) {
-        let store = self.clone();
-        self.spawn(async move {
-            if let Err(error) = store
-                .scrobbling_call(Command::SetScrobbling {
-                    service,
-                    scrobble,
-                    now_playing,
-                })
-                .await
-            {
-                store.notice(error);
-            }
-        });
-    }
-
-    pub async fn cancel_sign_in(&self) {
-        let _ = self.inner.transport.call(Command::CancelSignIn).await;
     }
 
     pub fn sign_out(&self) {
         let store = self.clone();
         self.spawn(async move {
-            match store.inner.transport.call(Command::SignOut).await {
-                Ok(_) => store.apply(Event::Session(SessionInfo::default())),
+            match store.inner.backend.sign_out().await {
+                Ok(()) => store.apply(Event::Session(SessionInfo::default())),
                 Err(error) => store.notice(message(&error)),
             }
         });
@@ -1962,9 +1848,7 @@ impl MusicStore {
     pub fn load_accounts(&self) {
         let store = self.clone();
         self.spawn(async move {
-            if let Ok(Reply::Accounts(accounts)) =
-                store.inner.transport.call(Command::Accounts).await
-            {
+            if let Ok(accounts) = store.inner.backend.accounts().await {
                 store.inner.update(|state, events| {
                     state.accounts = accounts;
                     events.push(StoreEvent::Accounts);
@@ -1976,20 +1860,8 @@ impl MusicStore {
     pub fn switch_account(&self, page_id: Option<String>) {
         let store = self.clone();
         self.spawn(async move {
-            match store
-                .inner
-                .transport
-                .call(Command::SwitchAccount { page_id })
-                .await
-            {
-                Ok(Reply::Session(session)) => store.apply(Event::Session(session)),
-                Ok(_) => {
-                    if let Ok(Reply::Session(session)) =
-                        store.inner.transport.call(Command::Session).await
-                    {
-                        store.apply(Event::Session(session));
-                    }
-                }
+            match store.inner.backend.switch_account(page_id).await {
+                Ok(session) => store.apply(Event::Session(session)),
                 Err(error) => store.notice(message(&error)),
             }
         });
@@ -2093,7 +1965,7 @@ fn update_lyric_line(state: &mut AppState, events: &mut Vec<StoreEvent>) {
         .player
         .track
         .as_ref()
-        .and_then(|track| state.lyrics.get(&track.video_id))
+        .and_then(|track| state.lyrics.get(&track.key))
         .and_then(|entry| entry.lyrics.as_ref())
         .and_then(|lyrics| line_at(lyrics, state.position_now()));
     if line != state.lyric_line {
@@ -2162,15 +2034,15 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::demo::DemoTransport;
-    use formalmusic_api::LyricLine;
+    use crate::demo::DemoBackend;
+    use crate::model::{Continuation, LyricLine};
 
     fn store() -> MusicStore {
         let dir =
             std::env::temp_dir().join(format!("formalmusic-store-art-{}", std::process::id()));
-        let art = Arc::new(ArtCache::new(dir, reqwest::Client::new()));
+        let art = Arc::new(ArtCache::new(dir));
         MusicStore::new(
-            Arc::new(DemoTransport::new()),
+            Arc::new(DemoBackend::new()),
             StoreOptions {
                 cache: None,
                 art,
@@ -2304,7 +2176,7 @@ mod tests {
                 ..LyricLine::default()
             };
             state.lyrics.insert(
-                track.video_id.clone(),
+                track.key.clone(),
                 LyricsEntry {
                     lyrics: Some(Arc::new(Lyrics {
                         source: None,
@@ -2382,20 +2254,24 @@ mod tests {
         store.apply(Event::Queue(QueueState {
             tracks: tracks.clone(),
             current: Some(1),
-            radio: false,
         }));
         store.move_in_queue(1, 3);
         assert_eq!(store.state().queue.current, Some(3));
-        assert_eq!(store.state().queue.tracks[3].video_id, tracks[1].video_id);
+        assert_eq!(store.state().queue.tracks[3].key, tracks[1].key);
         store.remove_from_queue(0);
         assert_eq!(store.state().queue.current, Some(2));
     }
 
     fn rated_track(id: &str, like: Option<Rating>) -> Track {
+        let track = crate::demo::catalog().albums[0].tracks[0].clone();
         Track {
-            video_id: id.into(),
-            like,
-            ..crate::demo::catalog().albums[0].tracks[0].clone()
+            key: id.into(),
+            actions: crate::model::Actions {
+                rating: like,
+                rate_ref: Some(id.into()),
+                ..track.actions.clone()
+            },
+            ..track
         }
     }
 
@@ -2409,7 +2285,6 @@ mod tests {
         store.apply(Event::Queue(QueueState {
             tracks: vec![from_next.clone()],
             current: Some(0),
-            radio: true,
         }));
         store.apply(Event::Player(PlayerState {
             track: Some(from_next.clone()),
@@ -2440,7 +2315,6 @@ mod tests {
         store.apply(Event::Queue(QueueState {
             tracks: vec![track.clone()],
             current: None,
-            radio: false,
         }));
         assert_eq!(store.state().rating(&track), Rating::Like);
 
@@ -2469,7 +2343,7 @@ mod tests {
             target,
             header: None,
             chips: Vec::new(),
-            sections: vec![formalmusic_api::Section {
+            sections: vec![crate::model::Section {
                 title: None,
                 strapline: None,
                 layout: SectionLayout::List,
@@ -2552,12 +2426,11 @@ mod tests {
 
         // The queue playing from it keeps it however long it was away.
         store.play(
-            PlaySource::Playlist {
-                playlist_id: "RDTMAK5uy_supermix".into(),
+            PlaySource::Page {
+                target: BrowseTarget::Playlist("RDTMAK5uy_supermix".into()),
                 tracks: Vec::new(),
             },
             0,
-            false,
             false,
         );
         store.inner.update(|state, _| {
@@ -2570,14 +2443,7 @@ mod tests {
         // Away half an hour and not playing: coming back loads it afresh
         // instead of swapping the list in under the user.
         store.set_visible(Route::Browse(BrowseTarget::Home));
-        store.play(
-            PlaySource::Radio {
-                video_id: "x".into(),
-            },
-            0,
-            false,
-            true,
-        );
+        store.play(PlaySource::Radio { key: "x".into() }, 0, false);
         store.inner.update(|state, _| {
             state.pages.get_mut(&mix).unwrap().hidden_at = Some(old);
         });
@@ -2608,23 +2474,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_playlist_move_names_the_row_it_lands_before() {
-        let keys = ["a", "b", "c", "d"];
-        let moved = |from, to| match playlist_move(&keys, from, to) {
-            Some(PlaylistEdit::Move {
-                set_video_id,
-                before_set_video_id,
-            }) => Some((set_video_id, before_set_video_id)),
-            _ => None,
-        };
-        assert_eq!(moved(0, 2), Some(("a".into(), Some("d".into()))));
-        assert_eq!(moved(0, 3), Some(("a".into(), None)));
-        assert_eq!(moved(3, 1), Some(("d".into(), Some("b".into()))));
-        assert_eq!(moved(2, 2), None);
-        assert_eq!(moved(1, 4), None);
-    }
-
     #[tokio::test]
     async fn a_dragged_playlist_row_moves_at_once() {
         let store = store();
@@ -2635,7 +2484,7 @@ mod tests {
         settle(&store, |state| state.page(&target).is_some()).await;
         let ids = |store: &MusicStore| -> Vec<String> {
             section_tracks(&store.state().page(&target).unwrap().sections)
-                .map(|track| track.set_video_id.clone().unwrap())
+                .map(|track| track.key.clone())
                 .collect()
         };
         let before = ids(&store);
@@ -2656,8 +2505,8 @@ mod tests {
         store.set_song_in_library(&track, true);
         assert_eq!(store.state().in_library(&track), Some(true));
         let mut unknown = track.clone();
-        unknown.library = None;
-        unknown.video_id = "elsewhere".into();
+        unknown.actions.save_ref = None;
+        unknown.key = "elsewhere".into();
         store.set_song_in_library(&unknown, true);
         assert_eq!(store.state().in_library(&unknown), None);
     }

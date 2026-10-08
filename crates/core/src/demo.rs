@@ -2,24 +2,26 @@
 //! screenshots, tests and working on the UI with no YouTube account.
 //!
 //! The pages are hand built in YouTube Music's shapes (Home with chips and
-//! shelves, album, artist, a 1000 track playlist). Once `formalmusic-innertube`
-//! lands with its recorded fixtures, `pages()` is the seam to swap: parse
-//! those instead and keep the player simulation below as it is.
+//! shelves, album, artist, a 1000 track playlist), with a player simulation
+//! that moves the position on and the queue along.
 
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use async_trait::async_trait;
-use formalmusic_api::*;
 use parking_lot::Mutex;
 use tokio::sync::{Notify, mpsc};
 use tokio::task::AbortHandle;
 
-use crate::art::DEMO_SCHEME;
-use crate::transport::{ClientError, ConnectionStatus, Transport, TransportEvent, TransportKind};
+use crate::backend::{Backend, BackendKind, ClientError, ConnectionStatus, Control, Event, Result};
+use crate::model::*;
+use crate::settings::Settings;
 
 const TICK: std::time::Duration = std::time::Duration::from_millis(250);
 const LONG_PLAYLIST: &str = "PLdemo-late-night";
+/// An artist's "see all songs" page is the artist's id with this after it.
+const SONGS_SHELF: &str = "-songs";
 const PLAYLIST_PAGE: usize = 100;
 
 pub struct Album {
@@ -183,12 +185,12 @@ const MOODS: [(&str, u32); 12] = [
     ("Soul", 0xff6d597a),
 ];
 
-fn art(seed: &str) -> Thumbnails {
-    vec![Thumbnail {
-        url: format!("{DEMO_SCHEME}{seed}"),
-        width: 544,
-        height: 544,
-    }]
+fn art(seed: &str) -> Option<Art> {
+    Some(Art {
+        kind: ArtKind::Demo,
+        id: seed.to_owned(),
+        version: 0,
+    })
 }
 
 /// The same pseudo-random sequence on every run.
@@ -236,8 +238,9 @@ fn build_catalog() -> Catalog {
                 } else {
                     SONGS[rng.below(SONGS.len() as u64) as usize]
                 };
+                let key = format!("demo-{n}-{index}");
                 Track {
-                    video_id: format!("demo-{n}-{index}"),
+                    key: key.clone(),
                     title: song.to_string(),
                     artists: vec![Link {
                         text: artists[artist].name.into(),
@@ -248,19 +251,17 @@ fn build_catalog() -> Catalog {
                         target: Some(BrowseTarget::Album(browse_id.clone())),
                     }),
                     duration_ms: Some(150_000 + rng.below(160_000)),
-                    thumbnails: art(&format!("album-{n}")),
+                    art: art(&format!("album-{n}")),
                     explicit: rng.below(7) == 0,
                     kind: TrackKind::Song,
-                    like: Some(Rating::Indifferent),
-                    set_video_id: None,
                     plays: Some(format!("{}M plays", 1 + rng.below(90))),
-                    feedback_token: None,
-                    library: Some(LibraryToggle {
-                        saved: index % 3 == 0,
-                        add_token: format!("demo-save-{n}-{index}"),
-                        remove_token: format!("demo-unsave-{n}-{index}"),
-                    }),
-                    counterpart: None,
+                    actions: Actions {
+                        rate_ref: Some(key),
+                        rating: Some(Rating::Indifferent),
+                        save_ref: Some(format!("demo-save-{n}-{index}")),
+                        saved: Some(index % 3 == 0),
+                        ..Actions::default()
+                    },
                 }
             })
             .collect();
@@ -284,15 +285,9 @@ fn build_catalog() -> Catalog {
         .iter()
         .flat_map(|album| album.tracks.iter())
         .collect();
-    let pick = |count: usize, owned: bool, rng: &mut Rng| -> Vec<Track> {
+    let pick = |count: usize, rng: &mut Rng| -> Vec<Track> {
         (0..count)
-            .map(|n| {
-                let mut track = every[rng.below(every.len() as u64) as usize].clone();
-                if owned {
-                    track.set_video_id = Some(format!("set-{n}-{}", track.video_id));
-                }
-                track
-            })
+            .map(|_| every[rng.below(every.len() as u64) as usize].clone())
             .collect()
     };
     let playlists = vec![
@@ -300,49 +295,49 @@ fn build_catalog() -> Catalog {
             playlist_id: "LM".into(),
             title: "Liked music",
             owned: false,
-            tracks: pick(64, false, &mut rng),
+            tracks: pick(64, &mut rng),
         },
         Playlist {
             playlist_id: LONG_PLAYLIST.into(),
             title: "Late night drive",
             owned: true,
-            tracks: pick(1000, true, &mut rng),
+            tracks: pick(1000, &mut rng),
         },
         Playlist {
             playlist_id: "PLdemo-run".into(),
             title: "Morning run",
             owned: true,
-            tracks: pick(32, true, &mut rng),
+            tracks: pick(32, &mut rng),
         },
         Playlist {
             playlist_id: "PLdemo-focus".into(),
             title: "Deep focus",
             owned: true,
-            tracks: pick(48, true, &mut rng),
+            tracks: pick(48, &mut rng),
         },
         Playlist {
             playlist_id: "PLdemo-road".into(),
             title: "Road trip 2026",
             owned: true,
-            tracks: pick(27, true, &mut rng),
+            tracks: pick(27, &mut rng),
         },
         Playlist {
             playlist_id: "PLdemo-saved".into(),
             title: "Saved for later",
             owned: true,
-            tracks: pick(12, true, &mut rng),
+            tracks: pick(12, &mut rng),
         },
         Playlist {
             playlist_id: "RDdemo-mix-1".into(),
             title: "My supermix",
             owned: false,
-            tracks: pick(50, false, &mut rng),
+            tracks: pick(50, &mut rng),
         },
         Playlist {
             playlist_id: "RDdemo-mix-2".into(),
             title: "Discover mix",
             owned: false,
-            tracks: pick(50, false, &mut rng),
+            tracks: pick(50, &mut rng),
         },
     ];
     Catalog {
@@ -365,13 +360,17 @@ fn album_item(catalog: &Catalog, n: usize) -> Item {
     let album = &catalog.albums[n];
     Item::Album {
         browse_id: album.browse_id.clone(),
-        playlist_id: Some(album.playlist_id.clone()),
         title: album.title.clone(),
         album_type: Some(album.album_type.into()),
         artists: vec![artist_link(catalog, album.artist)],
         year: Some(album.year.to_string()),
-        thumbnails: art(&format!("album-{n}")),
+        art: art(&format!("album-{n}")),
         explicit: album.tracks.iter().any(|track| track.explicit),
+        actions: Actions {
+            save_ref: Some(album.playlist_id.clone()),
+            saved: Some(n.is_multiple_of(3)),
+            ..Actions::default()
+        },
     }
 }
 
@@ -381,7 +380,12 @@ fn artist_item(catalog: &Catalog, n: usize) -> Item {
         browse_id: artist.browse_id.clone(),
         name: artist.name.into(),
         subtitle: Some(artist.subscribers.into()),
-        thumbnails: art(&format!("artist-{n}")),
+        art: art(&format!("artist-{n}")),
+        actions: Actions {
+            follow_ref: Some(artist.browse_id.clone()),
+            followed: Some(n.is_multiple_of(2)),
+            ..Actions::default()
+        },
     }
 }
 
@@ -398,7 +402,12 @@ fn playlist_item(playlist: &Playlist) -> Item {
             "Playlist \u{2022} {owner} \u{2022} {} songs",
             playlist.tracks.len()
         )),
-        thumbnails: art(&format!("playlist-{}", playlist.playlist_id)),
+        art: art(&format!("playlist-{}", playlist.playlist_id)),
+        actions: Actions {
+            save_ref: (!playlist.owned).then(|| playlist.playlist_id.clone()),
+            saved: (!playlist.owned).then_some(true),
+            ..Actions::default()
+        },
     }
 }
 
@@ -434,7 +443,7 @@ fn home(chip: Option<&str>) -> Page {
         .iter()
         .map(|title| Chip {
             title: (*title).into(),
-            params: format!("chip-{title}"),
+            id: format!("chip-{title}"),
             selected: chip == Some(*title),
         })
         .collect();
@@ -490,8 +499,8 @@ fn home(chip: Option<&str>) -> Page {
     );
     similar.strapline = Some("Recommended artists".into());
     Page {
-        target: chip.map_or(BrowseTarget::Home, |chip| BrowseTarget::HomeChip {
-            params: format!("chip-{chip}"),
+        target: chip.map_or(BrowseTarget::Home, |chip| {
+            BrowseTarget::HomeChip(format!("chip-{chip}"))
         }),
         header: None,
         chips,
@@ -546,8 +555,8 @@ fn moods() -> Vec<Item> {
         .iter()
         .map(|(title, color)| Item::Mood {
             title: (*title).into(),
-            params: format!("mood-{title}"),
-            color: Some(*color),
+            id: format!("mood-{title}"),
+            color: Some(color & 0xffffff),
         })
         .collect()
 }
@@ -648,7 +657,7 @@ fn library(tab: LibraryTab) -> Page {
         .iter()
         .map(|title| Chip {
             title: (*title).into(),
-            params: format!("library-{}", title.to_lowercase()),
+            id: format!("library-{}", title.to_lowercase()),
             selected: format!("{tab:?}") == *title,
         })
         .collect();
@@ -708,11 +717,18 @@ fn album_page(browse_id: &str) -> Option<Page> {
                 "{} recorded {} over one winter in a borrowed house by the sea.",
                 catalog.artists[album.artist].name, album.title
             )),
-            thumbnails: art(&format!("album-{n}")),
-            playlist_id: Some(album.playlist_id.clone()),
+            art: art(&format!("album-{n}")),
+            play: Some(PlaySource::Page {
+                target: BrowseTarget::Album(browse_id.into()),
+                tracks: Vec::new(),
+            }),
             editable: false,
-            saved: Some(n % 3 == 0),
             privacy: None,
+            actions: Actions {
+                save_ref: Some(album.playlist_id.clone()),
+                saved: Some(n.is_multiple_of(3)),
+                ..Actions::default()
+            },
         }),
         chips: Vec::new(),
         sections: vec![
@@ -765,11 +781,12 @@ fn artist_page(browse_id: &str) -> Option<Page> {
     let fans = (1..catalog.artists.len())
         .map(|step| artist_item(catalog, (n + step) % catalog.artists.len()))
         .collect();
-    let mut top_songs = section("Top songs", SectionLayout::List, top);
-    top_songs.more = Some(BrowseTarget::ArtistShelf {
-        browse_id: browse_id.into(),
-        params: "songs".into(),
+    let first = top.iter().find_map(|item| match item {
+        Item::Track(track) => Some(track.key.clone()),
+        _ => None,
     });
+    let mut top_songs = section("Top songs", SectionLayout::List, top);
+    top_songs.more = Some(BrowseTarget::Page(format!("{browse_id}{SONGS_SHELF}")));
     Some(Page {
         target: BrowseTarget::Artist(browse_id.into()),
         header: Some(Header::Artist {
@@ -778,13 +795,18 @@ fn artist_page(browse_id: &str) -> Option<Page> {
                 "{} writes songs about leaving and coming back, recorded mostly live with the same four players since the first record.",
                 artist.name
             )),
-            thumbnails: art(&format!("artist-{n}")),
-            channel_id: Some(browse_id.into()),
-            subscribed: Some(n % 2 == 0),
+            art: art(&format!("artist-{n}")),
             subscribers: Some(artist.subscribers.into()),
-            shuffle_playlist_id: Some(format!("RDAOdemo-{n}")),
-            radio_playlist_id: Some(format!("RDEMdemo-{n}")),
             monthly_listeners: Some(format!("{}.{}M monthly audience", 1 + n % 4, n % 10)),
+            shuffle: Some(PlaySource::Artist {
+                key: browse_id.into(),
+            }),
+            radio: first.map(|key| PlaySource::Radio { key }),
+            actions: Actions {
+                follow_ref: Some(browse_id.into()),
+                followed: Some(n.is_multiple_of(2)),
+                ..Actions::default()
+            },
         }),
         chips: Vec::new(),
         sections: vec![
@@ -840,11 +862,18 @@ fn playlist_page(playlist_id: &str) -> Option<Page> {
                 minutes(&playlist.tracks)
             )),
             description: None,
-            thumbnails: art(&format!("playlist-{playlist_id}")),
-            playlist_id: Some(playlist_id.into()),
+            art: art(&format!("playlist-{playlist_id}")),
+            play: Some(PlaySource::Page {
+                target: BrowseTarget::Playlist(playlist_id.into()),
+                tracks: Vec::new(),
+            }),
             editable: playlist.owned,
-            saved: (!playlist.owned).then_some(true),
             privacy: playlist.owned.then_some(Privacy::Private),
+            actions: Actions {
+                save_ref: (!playlist.owned).then(|| playlist_id.to_owned()),
+                saved: (!playlist.owned).then_some(true),
+                ..Actions::default()
+            },
         }),
         chips: Vec::new(),
         sections: vec![Section {
@@ -860,13 +889,11 @@ fn playlist_page(playlist_id: &str) -> Option<Page> {
     })
 }
 
-fn mood_page(params: &str) -> Page {
-    let title = params.strip_prefix("mood-").unwrap_or(params);
+fn mood_page(id: &str) -> Page {
+    let title = id.strip_prefix("mood-").unwrap_or(id);
     let catalog = catalog();
     Page {
-        target: BrowseTarget::MoodCategory {
-            params: params.into(),
-        },
+        target: BrowseTarget::Mood(id.into()),
         header: Some(Header::Title {
             title: title.into(),
         }),
@@ -891,12 +918,9 @@ fn mood_page(params: &str) -> Page {
 
 /// Every page the demo can show; `None` is a page it does not have.
 pub fn page(target: &BrowseTarget) -> Option<Page> {
-    if let Some(page) = fixtures::page(target) {
-        return Some(page);
-    }
     match target {
         BrowseTarget::Home => Some(home(None)),
-        BrowseTarget::HomeChip { params } => Some(home(params.strip_prefix("chip-"))),
+        BrowseTarget::HomeChip(id) => Some(home(id.strip_prefix("chip-"))),
         BrowseTarget::Explore | BrowseTarget::NewReleases | BrowseTarget::Charts => Some(explore()),
         BrowseTarget::MoodsAndGenres => Some(Page {
             target: target.clone(),
@@ -907,7 +931,7 @@ pub fn page(target: &BrowseTarget) -> Option<Page> {
             sections: vec![section("Moods and genres", SectionLayout::Grid, moods())],
             continuation: None,
         }),
-        BrowseTarget::MoodCategory { params } => Some(mood_page(params)),
+        BrowseTarget::Mood(id) => Some(mood_page(id)),
         BrowseTarget::Library(tab) => Some(library(*tab)),
         BrowseTarget::History => Some(Page {
             target: target.clone(),
@@ -919,7 +943,7 @@ pub fn page(target: &BrowseTarget) -> Option<Page> {
                 .into_iter()
                 .map(|(day, seed, count)| {
                     let rows = tracks_from(seed, count).into_iter().map(|mut track| {
-                        track.feedback_token = Some(format!("history-{day}-{}", track.video_id));
+                        track.actions.history_token = Some(format!("history-{day}-{}", track.key));
                         Item::Track(track)
                     });
                     section(day, SectionLayout::List, rows.collect())
@@ -929,12 +953,13 @@ pub fn page(target: &BrowseTarget) -> Option<Page> {
         }),
         BrowseTarget::Album(id) => album_page(id),
         BrowseTarget::Artist(id) => artist_page(id),
-        BrowseTarget::ArtistShelf { browse_id, .. } => {
+        BrowseTarget::Page(id) if id.ends_with(SONGS_SHELF) => {
+            let browse_id = id.strip_suffix(SONGS_SHELF)?;
             let mut page = artist_page(browse_id)?;
             let n = catalog()
                 .artists
                 .iter()
-                .position(|artist| artist.browse_id == *browse_id)?;
+                .position(|artist| artist.browse_id == browse_id)?;
             let songs = catalog()
                 .albums
                 .iter()
@@ -1114,18 +1139,18 @@ const ECHOES: [&str; 4] = [
     "(we were younger)",
 ];
 
-/// Whether the demo sings `video_id` as a duet, every other couplet from the
+/// Whether the demo sings `key` as a duet, every other couplet from the
 /// second voice on the other side of the lane.
-pub fn duet(video_id: &str) -> bool {
-    video_id.bytes().last().is_some_and(|byte| byte % 2 == 0)
+pub fn duet(key: &str) -> bool {
+    key.bytes().last().is_some_and(|byte| byte % 2 == 0)
 }
 
 /// Word synced the way Apple Music's are: syllable chunks on the longer
 /// words, a backing vocal after every fourth line and an instrumental break
 /// in place of every ninth.
-fn lyrics(video_id: &str, duration_ms: u64) -> Lyrics {
-    let offset = video_id.len() % LYRICS.len();
-    let duet = duet(video_id);
+fn lyrics(key: &str, duration_ms: u64) -> Lyrics {
+    let offset = key.len() % LYRICS.len();
+    let duet = duet(key);
     let mut lines = Vec::new();
     let mut at = 8_000;
     let mut n = 0;
@@ -1209,10 +1234,7 @@ fn timed_words(text: &str, start_ms: u64, span_ms: u64) -> Vec<LyricWord> {
 fn related() -> Page {
     let catalog = catalog();
     Page {
-        target: BrowseTarget::Raw {
-            browse_id: "MPTRdemo".into(),
-            params: None,
-        },
+        target: BrowseTarget::Page("related".into()),
         header: None,
         chips: Vec::new(),
         sections: vec![
@@ -1240,46 +1262,45 @@ fn related() -> Page {
 
 fn tracks_for(source: &PlaySource) -> Vec<Track> {
     let catalog = catalog();
+    let list = |page: Option<Page>| -> Option<Vec<Track>> {
+        let tracks: Vec<Track> = page?
+            .sections
+            .into_iter()
+            .find(|section| section.layout == SectionLayout::List)?
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Track(track) => Some(track),
+                _ => None,
+            })
+            .collect();
+        (!tracks.is_empty()).then_some(tracks)
+    };
     match source {
         PlaySource::Tracks { tracks } => tracks.clone(),
-        PlaySource::Playlist { playlist_id, .. } if !playlist_id.contains("demo") => {
-            let target = if playlist_id.starts_with("OLAK") {
-                BrowseTarget::Album("recorded".into())
-            } else {
-                BrowseTarget::Playlist("recorded".into())
-            };
-            fixtures::tracks(&target).unwrap_or_else(|| tracks_from(playlist_id.len() as u64, 25))
+        PlaySource::Page {
+            target: BrowseTarget::Playlist(id),
+            ..
+        } => catalog
+            .playlists
+            .iter()
+            .find(|playlist| playlist.playlist_id == *id)
+            .map(|playlist| playlist.tracks.clone())
+            .unwrap_or_else(|| tracks_from(id.len() as u64, 25)),
+        PlaySource::Page { target, .. } => list(page(target)).unwrap_or_else(|| tracks_from(7, 25)),
+        PlaySource::Artist { key } => {
+            list(page(&BrowseTarget::Page(format!("{key}{SONGS_SHELF}"))))
+                .unwrap_or_else(|| tracks_from(key.len() as u64, 25))
         }
-        PlaySource::Radio { video_id }
-            if !video_id.starts_with("demo-") && fixtures::radio().is_some() =>
-        {
-            fixtures::radio().unwrap_or_default()
-        }
-        PlaySource::Playlist { playlist_id, .. } => {
-            if let Some(album) = catalog
-                .albums
-                .iter()
-                .find(|album| album.playlist_id == *playlist_id)
-            {
-                return album.tracks.clone();
-            }
-            if let Some(playlist) = catalog
-                .playlists
-                .iter()
-                .find(|playlist| playlist.playlist_id == *playlist_id)
-            {
-                return playlist.tracks.clone();
-            }
-            tracks_from(playlist_id.len() as u64, 25)
-        }
-        PlaySource::Radio { video_id } => {
+        PlaySource::PlaylistRadio { id } => tracks_from(id.len() as u64 * 7, 24),
+        PlaySource::Radio { key } => {
             let seed = catalog
                 .albums
                 .iter()
                 .flat_map(|album| album.tracks.iter())
-                .find(|track| track.video_id == *video_id)
+                .find(|track| track.key == *key)
                 .cloned();
-            let mut tracks = tracks_from(video_id.len() as u64 * 13, 24);
+            let mut tracks = tracks_from(key.len() as u64 * 13, 24);
             if let Some(seed) = seed {
                 tracks.insert(0, seed);
             }
@@ -1322,8 +1343,7 @@ impl DemoState {
         };
         self.queue.current = Some(index);
         self.player.duration_ms = track.duration_ms;
-        self.player.related_browse_id = Some(format!("MPTRdemo-{}", track.video_id));
-        self.player.playing_id = demo_video_file().is_some().then(|| track.video_id.clone());
+        self.player.stream = Some("opus 256 kbps".into());
         self.player.track = Some(track);
         self.base_ms = 0;
         self.since = None;
@@ -1345,7 +1365,7 @@ fn account(name: &str, handle: &str, page_id: Option<&str>, selected: bool) -> A
     Account {
         name: name.into(),
         handle: Some(handle.into()),
-        thumbnails: art(&format!("account-{name}")),
+        art: art(&format!("account-{name}")),
         page_id: page_id.map(Into::into),
         selected,
     }
@@ -1365,7 +1385,7 @@ fn session(signed_in: bool, page_id: Option<String>) -> SessionInfo {
 
 struct DemoShared {
     state: Mutex<DemoState>,
-    events: Mutex<Option<mpsc::UnboundedSender<TransportEvent>>>,
+    events: Mutex<Option<mpsc::UnboundedSender<Event>>>,
     wake: Notify,
     ticker: Mutex<Option<AbortHandle>>,
 }
@@ -1373,7 +1393,7 @@ struct DemoShared {
 impl DemoShared {
     fn emit(&self, event: Event) {
         if let Some(events) = self.events.lock().as_ref() {
-            let _ = events.send(TransportEvent::Event(event));
+            let _ = events.send(event);
         }
     }
 
@@ -1387,41 +1407,43 @@ impl DemoShared {
         let queue = self.state.lock().queue.clone();
         self.emit(Event::Queue(queue));
     }
+
+    fn signed_in(&self, session: SessionInfo) -> SessionInfo {
+        self.state.lock().session = session.clone();
+        session
+    }
+
+    fn scrobbling(&self, change: impl FnOnce(&mut ScrobbleStatus)) -> ScrobbleStatus {
+        let mut state = self.state.lock();
+        change(&mut state.scrobbling);
+        state.scrobbling.clone()
+    }
 }
 
-pub struct DemoTransport {
+pub struct DemoBackend {
     shared: Arc<DemoShared>,
 }
 
-impl DemoTransport {
+impl DemoBackend {
     pub fn new() -> Self {
         let signed_in = std::env::var("FORMALMUSIC_DEMO_SIGNED_OUT").ok().as_deref() != Some("1");
         let album = &catalog().albums[2];
-        let mut tracks = fixtures::tracks(&BrowseTarget::Album("recorded".into()))
-            .unwrap_or_else(|| album.tracks.clone());
-        if demo_video_file().is_some() {
-            for track in &mut tracks {
-                track.kind = TrackKind::Video;
-            }
-        }
         let mut state = DemoState {
             player: PlayerState {
                 volume: 0.8,
                 ..PlayerState::default()
             },
             queue: QueueState {
-                tracks,
+                tracks: album.tracks.clone(),
                 current: None,
-                radio: false,
             },
             since: None,
             base_ms: 0,
             session: session(signed_in, None),
             scrobbling: ScrobbleStatus {
-                lastfm_app: true,
                 lastfm: ScrobbleAccount {
-                    username: Some("demo".into()),
-                    ..ScrobbleAccount::default()
+                    connected: true,
+                    connecting: false,
                 },
                 ..ScrobbleStatus::default()
             },
@@ -1440,19 +1462,17 @@ impl DemoTransport {
     }
 }
 
-impl Default for DemoTransport {
+impl Default for DemoBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Sends a position four times a second while playing and moves on at the
-/// end of a track. Parked on `wake` while paused, so a paused demo costs nothing.
 /// Every demo album shares one animated cover: `demo/animated-cover.mp4` in
 /// the cache dir, rendered by ffmpeg the first time it is asked for. Copy a
 /// real Apple Music cover over it to measure with real footage.
-async fn demo_cover() -> Option<String> {
-    static COVER: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
+pub async fn animated_cover() -> Option<PathBuf> {
+    static COVER: tokio::sync::OnceCell<Option<PathBuf>> = tokio::sync::OnceCell::const_new();
     COVER
         .get_or_init(|| async {
             let path = crate::paths::cache_dir()
@@ -1461,7 +1481,7 @@ async fn demo_cover() -> Option<String> {
             if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
                 tokio::fs::create_dir_all(path.parent()?).await.ok()?;
                 let partial = path.with_extension("part.mp4");
-                let status = formalmusic_api::process::async_command("ffmpeg")
+                let status = crate::process::async_command("ffmpeg")
                     .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i"])
                     .arg("gradients=s=768x768:r=24:d=12:speed=0.02:n=4,noise=alls=10:allf=t")
                     .args(["-c:v", "libx264", "-b:v", "2M", "-pix_fmt", "yuv420p"])
@@ -1474,51 +1494,14 @@ async fn demo_cover() -> Option<String> {
                 }
                 tokio::fs::rename(&partial, &path).await.ok()?;
             }
-            Some(path.to_string_lossy().into_owned())
+            Some(path)
         })
         .await
         .clone()
 }
 
-/// `FORMALMUSIC_DEMO_VIDEO=<file>`: the demo queue plays as music videos
-/// that all show this local file, so the video path can be measured without
-/// googlevideo in the way. It should run at least as long as a demo track.
-fn demo_video_file() -> Option<String> {
-    std::env::var("FORMALMUSIC_DEMO_VIDEO")
-        .ok()
-        .filter(|path| !path.is_empty())
-}
-
-async fn demo_video() -> Option<VideoStream> {
-    let path = demo_video_file()?;
-    let output = formalmusic_api::process::async_command("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0"])
-        .args(["-show_entries", "stream=width,height,avg_frame_rate"])
-        .args(["-of", "csv=p=0"])
-        .arg(&path)
-        .output()
-        .await
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut fields = text.trim().split(',');
-    let width = fields.next()?.parse().ok()?;
-    let height = fields.next()?.parse().ok()?;
-    let (numer, denom) = fields.next()?.split_once('/')?;
-    let fps = numer.parse::<f64>().ok()? / denom.parse::<f64>().ok()?;
-    Some(VideoStream {
-        url: path,
-        headers: Vec::new(),
-        width,
-        height,
-        fps: if fps.is_finite() && fps > 0. {
-            fps
-        } else {
-            30.
-        },
-        codec: "avc1".into(),
-    })
-}
-
+/// Sends a position four times a second while playing and moves on at the
+/// end of a track. Parked on `wake` while paused, so a paused demo costs nothing.
 async fn tick(shared: Arc<DemoShared>) {
     loop {
         let playing = shared.state.lock().player.status == Status::Playing;
@@ -1567,14 +1550,23 @@ async fn tick(shared: Arc<DemoShared>) {
     }
 }
 
+fn demo_browsers() -> Vec<Browser> {
+    [("helium", "Helium"), ("firefox", "Firefox")]
+        .map(|(id, name)| Browser {
+            id: id.into(),
+            name: name.into(),
+        })
+        .into()
+}
+
 #[async_trait]
-impl Transport for DemoTransport {
-    fn kind(&self) -> TransportKind {
-        TransportKind::Demo
+impl Backend for DemoBackend {
+    fn kind(&self) -> BackendKind {
+        BackendKind::Demo
     }
 
-    fn start(&self, events: mpsc::UnboundedSender<TransportEvent>) {
-        let _ = events.send(TransportEvent::Connection {
+    fn start(&self, events: mpsc::UnboundedSender<Event>) {
+        let _ = events.send(Event::Connection {
             status: ConnectionStatus::Online,
             error: None,
         });
@@ -1585,274 +1577,173 @@ impl Transport for DemoTransport {
         *self.shared.ticker.lock() = Some(task.abort_handle());
     }
 
-    async fn call(&self, command: Command) -> Result<Reply, ClientError> {
+    fn stop(&self) {
+        if let Some(task) = self.shared.ticker.lock().take() {
+            task.abort();
+        }
+        *self.shared.events.lock() = None;
+    }
+
+    async fn session(&self) -> Result<SessionInfo> {
+        Ok(self.shared.state.lock().session.clone())
+    }
+
+    async fn browse(&self, target: &BrowseTarget) -> Result<Page> {
+        if !self.shared.state.lock().session.signed_in
+            && matches!(target, BrowseTarget::Library(_) | BrowseTarget::History)
+        {
+            return Err(ClientError::SignedOut);
+        }
+        page(target).ok_or_else(|| ClientError::NotFound(format!("{target:?}")))
+    }
+
+    async fn more(
+        &self,
+        target: &BrowseTarget,
+        section: Option<usize>,
+        token: &Continuation,
+    ) -> Result<ContinuationPage> {
+        let token = &token.0;
+        if section.is_none() {
+            let n = token
+                .strip_prefix("home-")
+                .and_then(|n| n.parse().ok())
+                .ok_or_else(|| ClientError::NotFound(token.clone()))?;
+            return Ok(home_more(n));
+        }
+        let BrowseTarget::Playlist(id) = target else {
+            return Err(ClientError::NotFound(token.clone()));
+        };
+        let offset: usize = token
+            .rsplit_once(':')
+            .and_then(|(_, offset)| offset.parse().ok())
+            .ok_or_else(|| ClientError::BadRequest(token.clone()))?;
+        let playlist = catalog()
+            .playlists
+            .iter()
+            .find(|playlist| playlist.playlist_id == *id)
+            .ok_or_else(|| ClientError::NotFound(id.clone()))?;
+        let items = playlist
+            .tracks
+            .iter()
+            .skip(offset)
+            .take(PLAYLIST_PAGE)
+            .cloned()
+            .map(Item::Track)
+            .collect();
+        let next = offset + PLAYLIST_PAGE;
+        let continuation =
+            (next < playlist.tracks.len()).then(|| Continuation(format!("playlist:{id}:{next}")));
+        Ok(ContinuationPage {
+            sections: Vec::new(),
+            items,
+            continuation,
+        })
+    }
+
+    async fn search(&self, query: &str, filter: Option<SearchFilter>) -> Result<SearchResults> {
+        Ok(search(query, filter))
+    }
+
+    async fn search_more(
+        &self,
+        _query: &str,
+        _filter: Option<SearchFilter>,
+        token: &Continuation,
+    ) -> Result<ContinuationPage> {
+        Err(ClientError::NotFound(token.0.clone()))
+    }
+
+    async fn suggestions(&self, query: &str) -> Result<Vec<Suggestion>> {
+        Ok(suggestions(query))
+    }
+
+    fn search_filters(&self) -> Vec<SearchFilter> {
+        let signed_in = self.shared.state.lock().session.signed_in;
+        SearchFilter::ALL
+            .into_iter()
+            .filter(|filter| signed_in || *filter != SearchFilter::Library)
+            .collect()
+    }
+
+    async fn lyrics(&self, key: &str) -> Result<Option<Lyrics>> {
+        let duration = catalog()
+            .albums
+            .iter()
+            .flat_map(|album| album.tracks.iter())
+            .find(|track| track.key == key)
+            .and_then(|track| track.duration_ms)
+            .unwrap_or(200_000);
+        Ok(Some(lyrics(key, duration)))
+    }
+
+    async fn related(&self, _key: &str) -> Result<Page> {
+        Ok(related())
+    }
+
+    async fn artwork(&self, art: &Art, _hq: bool) -> Result<Vec<u8>> {
+        Err(ClientError::NotFound(art.id.clone()))
+    }
+
+    async fn share_url(&self, item: &Item) -> Result<Option<String>> {
+        const BASE: &str = "https://music.youtube.com";
+        Ok(match item {
+            Item::Track(track) => Some(format!("{BASE}/watch?v={}", track.key)),
+            Item::Album { browse_id, .. }
+            | Item::Artist { browse_id, .. }
+            | Item::Podcast { browse_id, .. } => Some(format!("{BASE}/browse/{browse_id}")),
+            _ => None,
+        })
+    }
+
+    async fn play(&self, source: PlaySource, start_index: usize, shuffle: bool) -> Result<()> {
+        let mut tracks = tracks_for(&source);
+        if shuffle {
+            let mut rng = Rng(tracks.len() as u64 * 2654435761 | 1);
+            for n in (1..tracks.len()).rev() {
+                tracks.swap(n, rng.below(n as u64 + 1) as usize);
+            }
+        }
+        {
+            let mut state = self.shared.state.lock();
+            state.queue = QueueState {
+                tracks,
+                current: None,
+            };
+            state.player.shuffle = shuffle;
+            state.load(if shuffle { 0 } else { start_index }, true);
+        }
+        self.shared.emit_player();
+        self.shared.emit_queue();
+        Ok(())
+    }
+
+    async fn enqueue(&self, tracks: Vec<Track>, position: EnqueuePosition) -> Result<()> {
         let shared = &self.shared;
-        let reply = match command {
-            Command::Hello { .. } => Reply::Hello {
-                protocol: PROTOCOL_VERSION,
-                version: "demo".into(),
-            },
-            Command::Subscribe => Reply::Ok,
-            Command::Session => Reply::Session(shared.state.lock().session.clone()),
-            Command::SignIn { cookies } => {
-                if !cookies.contains('=') {
-                    return Err(ApiError::BadRequest("That does not look like a Cookie header. It should contain name=value pairs.".into()).into());
-                }
-                let session = session(true, None);
-                shared.state.lock().session = session.clone();
-                Reply::Session(session)
+        let start = {
+            let mut state = shared.state.lock();
+            let at = match position {
+                EnqueuePosition::Next => state.queue.current.map_or(0, |current| current + 1),
+                EnqueuePosition::End => state.queue.tracks.len(),
+            };
+            let empty = state.queue.tracks.is_empty();
+            for (offset, track) in tracks.into_iter().enumerate() {
+                state.queue.tracks.insert(at + offset, track);
             }
-            Command::Browsers => Reply::Browsers(Browsers {
-                installed: [("helium", "Helium"), ("firefox", "Firefox")]
-                    .map(|(id, name)| Browser {
-                        id: id.into(),
-                        name: name.into(),
-                    })
-                    .into(),
-                default: Some("helium".into()),
-            }),
-            Command::BrowserSignIn { .. } => {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                let session = session(true, None);
-                shared.state.lock().session = session.clone();
-                Reply::Session(session)
-            }
-            Command::CancelSignIn => Reply::Ok,
-            Command::BrowserProfiles => Reply::BrowserProfiles(vec![ProfileBrowser {
-                browser: Browser {
-                    id: "helium".into(),
-                    name: "Helium".into(),
-                },
-                profiles: vec![
-                    BrowserProfile {
-                        path: "Default".into(),
-                        name: "Personal".into(),
-                        email: Some("demo@example.com".into()),
-                    },
-                    BrowserProfile {
-                        path: "Profile 1".into(),
-                        name: "Work".into(),
-                        email: None,
-                    },
-                ],
-            }]),
-            Command::ImportCookies { .. } => {
-                let session = session(true, None);
-                shared.state.lock().session = session.clone();
-                Reply::Session(session)
-            }
-            Command::Scrobbling => Reply::Scrobbling(shared.state.lock().scrobbling.clone()),
-            Command::ConnectLastFm { .. } => {
-                let mut state = shared.state.lock();
-                state.scrobbling.lastfm_app = true;
-                state.scrobbling.lastfm.username = Some("demo".into());
-                Reply::Scrobbling(state.scrobbling.clone())
-            }
-            Command::ConnectListenBrainz { .. } => {
-                let mut state = shared.state.lock();
-                state.scrobbling.listenbrainz.username = Some("demo".into());
-                Reply::Scrobbling(state.scrobbling.clone())
-            }
-            Command::DisconnectScrobbler { service } => {
-                let mut state = shared.state.lock();
-                let account = match service {
-                    ScrobbleService::LastFm => &mut state.scrobbling.lastfm,
-                    ScrobbleService::ListenBrainz => &mut state.scrobbling.listenbrainz,
-                };
-                account.username = None;
-                Reply::Scrobbling(state.scrobbling.clone())
-            }
-            Command::SetScrobbling {
-                service,
-                scrobble,
-                now_playing,
-            } => {
-                let mut state = shared.state.lock();
-                let account = match service {
-                    ScrobbleService::LastFm => &mut state.scrobbling.lastfm,
-                    ScrobbleService::ListenBrainz => &mut state.scrobbling.listenbrainz,
-                };
-                account.scrobble = scrobble;
-                account.now_playing = now_playing;
-                Reply::Scrobbling(state.scrobbling.clone())
-            }
-            Command::SignOut => {
-                let session = session(false, None);
-                shared.state.lock().session = session.clone();
-                shared.emit(Event::Session(session));
-                Reply::Ok
-            }
-            Command::Accounts => {
-                let brand = shared
-                    .state
-                    .lock()
-                    .session
-                    .account
-                    .as_ref()
-                    .and_then(|account| account.page_id.clone())
-                    .is_some();
-                Reply::Accounts(vec![
-                    account("Alex Rivera", "@alexrivera", None, !brand),
-                    account(
-                        "Rivera Records",
-                        "@riverarecords",
-                        Some("demo-brand"),
-                        brand,
-                    ),
-                ])
-            }
-            Command::SwitchAccount { page_id } => {
-                let session = session(true, page_id);
-                shared.state.lock().session = session.clone();
-                Reply::Session(session)
-            }
-            Command::Browse { target } => {
-                if !shared.state.lock().session.signed_in
-                    && matches!(target, BrowseTarget::Library(_) | BrowseTarget::History)
-                {
-                    return Err(ApiError::SignedOut.into());
-                }
-                Reply::Page(
-                    page(&target).ok_or_else(|| {
-                        ClientError::Api(ApiError::NotFound(format!("{target:?}")))
-                    })?,
-                )
-            }
-            Command::Continue { token } => {
-                if let Some(more) = fixtures::continuation(&token) {
-                    return Ok(Reply::Continuation(more));
-                }
-                let token = token.0;
-                if let Some(n) = token.strip_prefix("home-").and_then(|n| n.parse().ok()) {
-                    Reply::Continuation(home_more(n))
-                } else if let Some(rest) = token.strip_prefix("playlist:") {
-                    let (id, offset) = rest
-                        .rsplit_once(':')
-                        .ok_or_else(|| ClientError::Api(ApiError::BadRequest(token.clone())))?;
-                    let offset: usize = offset.parse().unwrap_or(0);
-                    let playlist = catalog()
-                        .playlists
-                        .iter()
-                        .find(|playlist| playlist.playlist_id == id)
-                        .ok_or_else(|| ClientError::Api(ApiError::NotFound(id.into())))?;
-                    let items = playlist
-                        .tracks
-                        .iter()
-                        .skip(offset)
-                        .take(PLAYLIST_PAGE)
-                        .cloned()
-                        .map(Item::Track)
-                        .collect();
-                    let next = offset + PLAYLIST_PAGE;
-                    let continuation = (next < playlist.tracks.len())
-                        .then(|| Continuation(format!("playlist:{id}:{next}")));
-                    Reply::Continuation(ContinuationPage {
-                        sections: Vec::new(),
-                        items,
-                        continuation,
-                    })
-                } else {
-                    return Err(ApiError::NotFound(token).into());
-                }
-            }
-            Command::Search { query, filter } => Reply::Search(
-                fixtures::search(&query, filter).unwrap_or_else(|| search(&query, filter)),
-            ),
-            Command::Suggestions { query } => {
-                Reply::Suggestions(fixtures::suggestions().unwrap_or_else(|| suggestions(&query)))
-            }
-            Command::Lyrics { video_id } => {
-                let duration = catalog()
-                    .albums
-                    .iter()
-                    .flat_map(|album| album.tracks.iter())
-                    .find(|track| track.video_id == video_id)
-                    .and_then(|track| track.duration_ms)
-                    .unwrap_or(200_000);
-                Reply::Lyrics(Some(lyrics(&video_id, duration)))
-            }
-            Command::Related { .. } => Reply::Page(fixtures::related().unwrap_or_else(related)),
-            Command::AnimatedCover { .. } => Reply::AnimatedCover(demo_cover().await),
-            Command::VideoStream { video_id, .. } => match demo_video().await {
-                Some(stream) => Reply::VideoStream(stream),
-                None => {
-                    return Err(
-                        ApiError::NotFound(format!("{video_id} has no video in the demo")).into(),
-                    );
-                }
-            },
-            Command::Rate { .. } => {
-                shared.emit(Event::LibraryChanged {
-                    scope: LibraryScope::Likes,
-                });
-                Reply::Ok
-            }
-            Command::SetSubscribed { .. } => Reply::Ok,
-            Command::SetSongInLibrary { .. } => {
-                shared.emit(Event::LibraryChanged {
-                    scope: LibraryScope::Songs,
-                });
-                Reply::Ok
-            }
-            Command::CreatePlaylist { .. } => Reply::PlaylistCreated {
-                playlist_id: "PLdemo-new".into(),
-            },
-            Command::EditPlaylist { .. }
-            | Command::DeletePlaylist { .. }
-            | Command::SetInLibrary { .. }
-            | Command::RemoveFromHistory { .. }
-            | Command::SetTray { .. }
-            | Command::ReloadSettings => Reply::Ok,
-            Command::Play {
-                source,
-                start_index,
-                shuffle,
-                radio,
-            } => {
-                let mut tracks = tracks_for(&source);
-                if shuffle {
-                    let mut rng = Rng(tracks.len() as u64 * 2654435761 | 1);
-                    for n in (1..tracks.len()).rev() {
-                        tracks.swap(n, rng.below(n as u64 + 1) as usize);
-                    }
-                }
-                {
-                    let mut state = shared.state.lock();
-                    state.queue = QueueState {
-                        tracks,
-                        current: None,
-                        radio,
-                    };
-                    state.player.shuffle = shuffle;
-                    state.load(if shuffle { 0 } else { start_index }, true);
-                }
-                shared.emit_player();
-                shared.emit_queue();
-                Reply::Ok
-            }
-            Command::Enqueue { tracks, position } => {
-                let start = {
-                    let mut state = shared.state.lock();
-                    let at = match position {
-                        EnqueuePosition::Next => {
-                            state.queue.current.map_or(0, |current| current + 1)
-                        }
-                        EnqueuePosition::End => state.queue.tracks.len(),
-                    };
-                    let empty = state.queue.tracks.is_empty();
-                    for (offset, track) in tracks.into_iter().enumerate() {
-                        state.queue.tracks.insert(at + offset, track);
-                    }
-                    empty
-                };
-                if start {
-                    shared.state.lock().load(0, true);
-                    shared.emit_player();
-                }
-                shared.emit_queue();
-                Reply::Ok
-            }
-            Command::RemoveFromQueue { index } => {
+            empty
+        };
+        if start {
+            shared.state.lock().load(0, true);
+            shared.emit_player();
+        }
+        shared.emit_queue();
+        Ok(())
+    }
+
+    async fn control(&self, control: Control) -> Result<()> {
+        let shared = &self.shared;
+        match control {
+            Control::Remove(index) => {
                 {
                     let mut state = shared.state.lock();
                     if index < state.queue.tracks.len() {
@@ -1870,9 +1761,8 @@ impl Transport for DemoTransport {
                     }
                 }
                 shared.emit_queue();
-                Reply::Ok
             }
-            Command::MoveInQueue { from, to } => {
+            Control::Move { from, to } => {
                 {
                     let mut state = shared.state.lock();
                     if from < state.queue.tracks.len() && to < state.queue.tracks.len() {
@@ -1892,9 +1782,8 @@ impl Transport for DemoTransport {
                     }
                 }
                 shared.emit_queue();
-                Reply::Ok
             }
-            Command::ClearQueue => {
+            Control::Clear => {
                 {
                     let mut state = shared.state.lock();
                     let current = state
@@ -1905,22 +1794,18 @@ impl Transport for DemoTransport {
                     state.queue.current = (!state.queue.tracks.is_empty()).then_some(0);
                 }
                 shared.emit_queue();
-                Reply::Ok
             }
-            Command::JumpTo { index } => {
+            Control::Jump(index) => {
                 shared.state.lock().load(index, true);
                 shared.emit_player();
                 shared.emit_queue();
-                Reply::Ok
             }
-            Command::Toggle | Command::Pause | Command::Resume => {
+            Control::Toggle | Control::Pause => {
                 {
                     let mut state = shared.state.lock();
-                    let playing = state.player.status == Status::Playing;
-                    let next = match command {
-                        Command::Pause => Status::Paused,
-                        Command::Resume => Status::Playing,
-                        _ if playing => Status::Paused,
+                    let next = match control {
+                        Control::Pause => Status::Paused,
+                        _ if state.player.status == Status::Playing => Status::Paused,
                         _ => Status::Playing,
                     };
                     if state.player.track.is_some() {
@@ -1928,14 +1813,13 @@ impl Transport for DemoTransport {
                     }
                 }
                 shared.emit_player();
-                Reply::Ok
             }
-            Command::Next | Command::Previous => {
+            Control::Next | Control::Previous => {
                 {
                     let mut state = shared.state.lock();
                     let current = state.queue.current.unwrap_or(0);
                     let len = state.queue.tracks.len();
-                    let target = if matches!(command, Command::Next) {
+                    let target = if control == Control::Next {
                         (current + 1).min(len.saturating_sub(1))
                     } else if state.position() > 3_000 {
                         current
@@ -1946,9 +1830,8 @@ impl Transport for DemoTransport {
                 }
                 shared.emit_player();
                 shared.emit_queue();
-                Reply::Ok
             }
-            Command::SeekTo { position_ms } => {
+            Control::Seek(position_ms) => {
                 {
                     let mut state = shared.state.lock();
                     state.base_ms = position_ms;
@@ -1962,44 +1845,181 @@ impl Transport for DemoTransport {
                     position_ms,
                     buffered_ms: (position_ms + 40_000).min(duration),
                 });
-                Reply::Ok
             }
-            Command::SetVolume { volume } => {
+            Control::Volume(volume) => {
                 shared.state.lock().player.volume = volume;
                 shared.emit_player();
-                Reply::Ok
             }
-            Command::SetMuted { muted } => {
+            Control::Muted(muted) => {
                 shared.state.lock().player.muted = muted;
                 shared.emit_player();
-                Reply::Ok
             }
-            Command::SetRepeat { repeat } => {
+            Control::Repeat(repeat) => {
                 shared.state.lock().player.repeat = repeat;
                 shared.emit_player();
-                Reply::Ok
             }
-            Command::SetShuffle { shuffle } => {
+            Control::Shuffle(shuffle) => {
                 shared.state.lock().player.shuffle = shuffle;
                 shared.emit_player();
-                Reply::Ok
             }
-            Command::SetMode { mode } => {
-                shared.state.lock().player.mode = mode;
-                shared.emit_player();
-                Reply::Ok
-            }
-            Command::PlayerState => Reply::Player(shared.state.lock().snapshot()),
-            Command::QueueState => Reply::Queue(shared.state.lock().queue.clone()),
-        };
-        Ok(reply)
+        }
+        Ok(())
     }
 
-    fn stop(&self) {
-        if let Some(task) = self.shared.ticker.lock().take() {
-            task.abort();
+    async fn rate(&self, _rate_ref: &str, _rating: Rating) -> Result<()> {
+        self.shared.emit(Event::LibraryChanged {
+            scope: LibraryScope::Likes,
+        });
+        Ok(())
+    }
+
+    async fn follow(&self, _follow_ref: &str, _follow: bool) -> Result<()> {
+        Ok(())
+    }
+
+    async fn save(&self, _save_ref: &str, _saved: bool) -> Result<()> {
+        self.shared.emit(Event::LibraryChanged {
+            scope: LibraryScope::Songs,
+        });
+        Ok(())
+    }
+
+    async fn remove_from_history(&self, _token: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn create_playlist(&self, _title: String, _keys: Vec<String>) -> Result<String> {
+        Ok("PLdemo-new".into())
+    }
+
+    async fn add_to_playlist(&self, _playlist_id: &str, _keys: Vec<String>) -> Result<()> {
+        Ok(())
+    }
+
+    async fn remove_from_playlist(&self, _playlist_id: &str, _index: usize) -> Result<()> {
+        Ok(())
+    }
+
+    async fn move_in_playlist(&self, _playlist_id: &str, _from: usize, _to: usize) -> Result<()> {
+        Ok(())
+    }
+
+    fn playlists_reorder(&self) -> bool {
+        true
+    }
+
+    async fn edit_playlist(&self, _playlist_id: &str, _details: PlaylistDetails) -> Result<()> {
+        Ok(())
+    }
+
+    async fn delete_playlist(&self, _playlist_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn sign_in(&self, cookies: String) -> Result<SessionInfo> {
+        if !cookies.contains('=') {
+            return Err(ClientError::BadRequest(
+                "That does not look like a Cookie header. It should contain name=value pairs."
+                    .into(),
+            ));
         }
-        *self.shared.events.lock() = None;
+        Ok(self.shared.signed_in(session(true, None)))
+    }
+
+    async fn browsers(&self) -> Result<Browsers> {
+        Ok(Browsers {
+            installed: demo_browsers(),
+            default: Some("helium".into()),
+        })
+    }
+
+    async fn browser_sign_in(&self, _browser: Option<String>) -> Result<SessionInfo> {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        Ok(self.shared.signed_in(session(true, None)))
+    }
+
+    async fn browser_profiles(&self) -> Result<Vec<ProfileBrowser>> {
+        Ok(vec![ProfileBrowser {
+            browser: demo_browsers().remove(0),
+            profiles: vec![
+                BrowserProfile {
+                    path: "Default".into(),
+                    name: "Personal".into(),
+                    email: Some("demo@example.com".into()),
+                },
+                BrowserProfile {
+                    path: "Profile 1".into(),
+                    name: "Work".into(),
+                    email: None,
+                },
+            ],
+        }])
+    }
+
+    async fn import_profile(&self, _profile: &str) -> Result<SessionInfo> {
+        Ok(self.shared.signed_in(session(true, None)))
+    }
+
+    async fn sign_out(&self) -> Result<()> {
+        let session = self.shared.signed_in(session(false, None));
+        self.shared.emit(Event::Session(session));
+        Ok(())
+    }
+
+    async fn accounts(&self) -> Result<Vec<Account>> {
+        let brand = self
+            .shared
+            .state
+            .lock()
+            .session
+            .account
+            .as_ref()
+            .and_then(|account| account.page_id.clone())
+            .is_some();
+        Ok(vec![
+            account("Alex Rivera", "@alexrivera", None, !brand),
+            account(
+                "Rivera Records",
+                "@riverarecords",
+                Some("demo-brand"),
+                brand,
+            ),
+        ])
+    }
+
+    async fn switch_account(&self, page_id: Option<String>) -> Result<SessionInfo> {
+        Ok(self.shared.signed_in(session(true, page_id)))
+    }
+
+    async fn scrobbling(&self) -> Result<ScrobbleStatus> {
+        Ok(self.shared.state.lock().scrobbling.clone())
+    }
+
+    async fn connect_lastfm(&self, _app: Option<LastFmApp>) -> Result<ScrobbleStatus> {
+        Ok(self
+            .shared
+            .scrobbling(|status| status.lastfm.connected = true))
+    }
+
+    async fn connect_listenbrainz(&self, _token: String) -> Result<ScrobbleStatus> {
+        Ok(self
+            .shared
+            .scrobbling(|status| status.listenbrainz.connected = true))
+    }
+
+    async fn disconnect_scrobbler(&self, service: ScrobbleService) -> Result<ScrobbleStatus> {
+        Ok(self.shared.scrobbling(|status| match service {
+            ScrobbleService::LastFm => status.lastfm.connected = false,
+            ScrobbleService::ListenBrainz => status.listenbrainz.connected = false,
+        }))
+    }
+
+    async fn apply_settings(&self, _settings: &Settings) -> Result<()> {
+        Ok(())
+    }
+
+    async fn preview_equalizer(&self, _equalizer: crate::equalizer::Equalizer) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -2027,172 +2047,16 @@ mod tests {
 
     #[tokio::test]
     async fn the_long_playlist_pages_through_every_track() {
-        let demo = DemoTransport::new();
-        let Reply::Page(page) = demo
-            .call(Command::Browse {
-                target: BrowseTarget::Playlist(LONG_PLAYLIST.into()),
-            })
-            .await
-            .unwrap()
-        else {
-            panic!()
-        };
+        let demo = DemoBackend::new();
+        let target = BrowseTarget::Playlist(LONG_PLAYLIST.into());
+        let page = demo.browse(&target).await.unwrap();
         let mut count = page.sections[0].items.len();
         let mut token = page.sections[0].continuation.clone();
         while let Some(next) = token {
-            let Reply::Continuation(more) =
-                demo.call(Command::Continue { token: next }).await.unwrap()
-            else {
-                panic!()
-            };
+            let more = demo.more(&target, Some(0), &next).await.unwrap();
             count += more.items.len();
             token = more.continuation;
         }
         assert_eq!(count, 1000);
-    }
-}
-
-/// innertube's recorded responses, parsed by its own parsers. Any album opens
-/// the recorded album and any playlist the recorded playlist; the made-up
-/// catalog fills in what was not recorded (the library, lyrics with timing).
-#[cfg(feature = "demo-fixtures")]
-mod fixtures {
-    use formalmusic_api::*;
-    use formalmusic_innertube::parse;
-    use serde_json::Value;
-
-    const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../innertube/fixtures");
-
-    fn load(name: &str) -> Option<Value> {
-        let text = std::fs::read_to_string(format!("{DIR}/{name}.json")).ok()?;
-        serde_json::from_str(&text).ok()
-    }
-
-    fn name_for(target: &BrowseTarget) -> Option<&'static str> {
-        Some(match target {
-            BrowseTarget::Home | BrowseTarget::HomeChip { .. } => "home",
-            BrowseTarget::Explore => "explore",
-            BrowseTarget::Charts => "charts",
-            BrowseTarget::NewReleases => "new_releases",
-            BrowseTarget::MoodsAndGenres => "moods",
-            BrowseTarget::MoodCategory { .. } => "mood_category",
-            BrowseTarget::Album(id) if id.starts_with("MPREdemo") => return None,
-            BrowseTarget::Album(_) => "album",
-            BrowseTarget::Artist(id) if id.starts_with("UCdemo") => return None,
-            BrowseTarget::Artist(_) => "artist",
-            BrowseTarget::ArtistShelf { .. } => "artist_singles",
-            BrowseTarget::Playlist(id) if id.contains("demo") || id == "LM" => return None,
-            BrowseTarget::Playlist(_) => "playlist_large",
-            BrowseTarget::Podcast(_) => "podcast",
-            BrowseTarget::Episode(_) => "episode",
-            _ => return None,
-        })
-    }
-
-    pub fn page(target: &BrowseTarget) -> Option<Page> {
-        let name = name_for(target)?;
-        let mut page = parse::page::parse_page(target.clone(), &load(name)?).ok()?;
-        page.target = target.clone();
-        Some(page)
-    }
-
-    /// The recorded continuations, whichever page asked: Home's next
-    /// sections, or the next hundred tracks of the large playlist.
-    pub fn continuation(token: &Continuation) -> Option<ContinuationPage> {
-        let home = page(&BrowseTarget::Home)?;
-        if home.continuation.as_ref() == Some(token) {
-            return parse::page::parse_continuation(&load("home_continuation")?).ok();
-        }
-        let playlist = page(&BrowseTarget::Playlist("PL".into()))?;
-        if playlist
-            .sections
-            .iter()
-            .any(|section| section.continuation.as_ref() == Some(token))
-        {
-            return parse::page::parse_continuation(&load("playlist_continuation")?).ok();
-        }
-        None
-    }
-
-    pub fn search(query: &str, filter: Option<SearchFilter>) -> Option<SearchResults> {
-        let name = match filter {
-            None | Some(SearchFilter::Library) => "search_all",
-            Some(SearchFilter::Songs) => "search_songs",
-            Some(SearchFilter::Videos) => "search_videos",
-            Some(SearchFilter::Albums) => "search_albums",
-            Some(SearchFilter::Artists) => "search_artists",
-            Some(SearchFilter::CommunityPlaylists) => "search_community_playlists",
-            Some(SearchFilter::FeaturedPlaylists) => "search_featured_playlists",
-            Some(SearchFilter::Podcasts) => "search_podcasts",
-            Some(SearchFilter::Episodes) => "search_episodes",
-            Some(SearchFilter::Profiles) => "search_profiles",
-        };
-        parse::search::parse_search(query, filter, &load(name)?).ok()
-    }
-
-    pub fn suggestions() -> Option<Vec<Suggestion>> {
-        Some(parse::suggestions::parse_suggestions(&load("suggestions")?))
-    }
-
-    pub fn related() -> Option<Page> {
-        parse::page::parse_page(
-            BrowseTarget::Raw {
-                browse_id: "MPTRdemo".into(),
-                params: None,
-            },
-            &load("related")?,
-        )
-        .ok()
-    }
-
-    pub fn radio() -> Option<Vec<Track>> {
-        Some(parse::next::parse_next(&load("next_radio")?).ok()?.tracks)
-    }
-
-    /// The tracks of the first list on a recorded page, for playing it whole.
-    pub fn tracks(target: &BrowseTarget) -> Option<Vec<Track>> {
-        let page = page(target)?;
-        let tracks: Vec<Track> = page
-            .sections
-            .iter()
-            .find(|section| section.layout == SectionLayout::List)?
-            .items
-            .iter()
-            .filter_map(|item| {
-                if let Item::Track(track) = item {
-                    Some(track.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        (!tracks.is_empty()).then_some(tracks)
-    }
-}
-
-#[cfg(not(feature = "demo-fixtures"))]
-mod fixtures {
-    use formalmusic_api::*;
-
-    pub fn page(_: &BrowseTarget) -> Option<Page> {
-        None
-    }
-    pub fn continuation(_: &Continuation) -> Option<ContinuationPage> {
-        None
-    }
-    pub fn search(_: &str, _: Option<SearchFilter>) -> Option<SearchResults> {
-        None
-    }
-    pub fn suggestions() -> Option<Vec<Suggestion>> {
-        None
-    }
-    pub fn related() -> Option<Page> {
-        None
-    }
-    pub fn radio() -> Option<Vec<Track>> {
-        None
-    }
-    pub fn tracks(_: &BrowseTarget) -> Option<Vec<Track>> {
-        None
     }
 }

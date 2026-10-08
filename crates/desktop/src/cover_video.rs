@@ -4,8 +4,8 @@
 //! becomes a `RenderImage` painted on a canvas, and the previous texture is
 //! released as the next lands, so the atlas holds one frame per cover.
 //!
-//! Decoding runs only while it is seen: the track plays, the window is
-//! visible, and the owner has not paused it. Otherwise ffmpeg is stopped and
+//! Decoding runs only while it is seen: the track plays and the window is
+//! visible. Otherwise ffmpeg is stopped and
 //! the last frame stays on screen. A cover given a `source` (the player bar
 //! while the expanded player is open) paints that one's frames, scaled down
 //! on the GPU, and only decodes itself while the source does not.
@@ -13,8 +13,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use formalmusic_api::Status;
 use formalmusic_core::MusicStore;
+use formalmusic_core::model::Status;
 use formalmusic_core::video::{self, Loop, VideoFrame, VideoInfo};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -38,8 +38,7 @@ pub struct CoverVideo {
     max_fps: f64,
     scale: f32,
     visible: bool,
-    paused: bool,
-    /// `(artist, album)` of the current track, what the daemon looks covers up by.
+    /// `(artist, album)` of the current track, what animated covers are looked up by.
     key: Option<(String, String)>,
     path: Option<Arc<Path>>,
     info: Option<VideoInfo>,
@@ -80,7 +79,6 @@ impl CoverVideo {
             max_fps,
             scale: 1.,
             visible: true,
-            paused: false,
             key: None,
             path: None,
             info: None,
@@ -145,15 +143,6 @@ impl CoverVideo {
         }
     }
 
-    /// Holds the current frame without decoding, for a copy that something
-    /// else on screen already shows larger.
-    pub fn set_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
-        if self.paused != paused {
-            self.paused = paused;
-            self.sync(cx);
-        }
-    }
-
     /// Brings the decoder in line with the track, the cover and whether
     /// anyone can see it.
     fn sync(&mut self, cx: &mut Context<Self>) {
@@ -196,7 +185,7 @@ impl CoverVideo {
         if mirrored {
             self.release(cx);
         }
-        let wanted = self.visible && !self.paused && !mirrored && playing && self.info.is_some();
+        let wanted = self.visible && !mirrored && playing && self.info.is_some();
         let was = self.run.is_some();
         if wanted && self.run.is_none() {
             self.start(cx);
@@ -239,7 +228,7 @@ impl CoverVideo {
             info,
             side,
             (self.max_fps, self.position),
-            crate::music_video::hardware_decode(),
+            hardware_decode(),
             tx,
         ));
         self.receiver = Some(cx.spawn(async move |this, cx| {
@@ -298,20 +287,13 @@ impl Render for CoverVideo {
         }
         self.sync(cx);
         let palette = Theme::get(cx);
-        // A music video queued in Song mode plays its album track: show that
-        // track's square cover, not the video's frame grab.
-        let thumbnails = {
-            let state = self.store.state();
-            let player = &state.player;
-            player
-                .track
-                .as_ref()
-                .map(|track| {
-                    let playing = player.playing_id.as_deref().unwrap_or(&track.video_id);
-                    track.thumbnails_of(playing).clone()
-                })
-                .unwrap_or_default()
-        };
+        let art = self
+            .store
+            .state()
+            .player
+            .track
+            .as_ref()
+            .and_then(|track| track.art.clone());
         let (size, radius) = (self.size, self.radius);
         let frame = self.mirrored(cx).unwrap_or_else(|| self.frame.clone());
         let picture = frame.map(|frame| {
@@ -337,7 +319,7 @@ impl Render for CoverVideo {
             .relative()
             .size(size)
             .flex_shrink_0()
-            .child(art::cover(&thumbnails, size, radius, false, &palette))
+            .child(art::cover(art.as_ref(), size, radius, false, &palette))
             .when_some(picture, |el, picture| {
                 el.child(picture).child(
                     div()
@@ -349,4 +331,12 @@ impl Render for CoverVideo {
                 )
             })
     }
+}
+
+/// VA-API through ffmpeg for animated covers where there is a render node,
+/// unless `FORMALMUSIC_VAAPI=0`. ffmpeg falls back to software when it fails.
+fn hardware_decode() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::var("FORMALMUSIC_VAAPI").as_deref() != Ok("0")
+        && std::path::Path::new("/dev/dri/renderD128").exists()
 }

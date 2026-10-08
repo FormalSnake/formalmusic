@@ -15,7 +15,6 @@ mod live_theme;
 mod lyrics;
 mod menus;
 mod motion;
-mod music_video;
 mod new_playlist;
 mod now_playing;
 mod page;
@@ -31,6 +30,7 @@ mod theme;
 mod toast;
 mod topbar;
 mod trace;
+mod tray;
 
 use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::*;
@@ -90,11 +90,47 @@ fn cap_malloc_arenas() {
     }
 }
 
+/// The runtime every store call runs on, for windows opened after the first.
+struct Runtime(tokio::runtime::Handle);
+
+impl Global for Runtime {}
+
+type Preload = std::thread::JoinHandle<Option<formalmusic_core::cache::CachedState>>;
+
+fn open_window(preload: Option<Preload>, cx: &mut App) {
+    let runtime = cx.global::<Runtime>().0.clone();
+    cx.spawn(async move |cx| {
+        let options = cx.update(|cx| window_options(cx));
+        let opened = cx.open_window(options, |window, cx| {
+            trace::log_if_enabled("window created");
+            let view = cx.new(|cx| AppRoot::new(runtime, preload, window, cx));
+            trace::log_if_enabled("views built");
+            cx.new(|cx| Root::new(view, window, cx))
+        });
+        if let Err(error) = opened {
+            eprintln!("formalmusic: cannot open a window: {error}");
+        }
+    })
+    .detach();
+}
+
+/// Brings the window forward, or opens one again when the app was running
+/// in the tray alone.
+pub fn raise(cx: &mut App) {
+    cx.activate(true);
+    match cx.windows().first() {
+        Some(window) => {
+            let _ = window.update(cx, |_, window, _| window.activate_window());
+        }
+        None => open_window(None, cx),
+    }
+}
+
 fn main() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     cap_malloc_arenas();
     trace::init();
-    let single_instance::Launch::First(activations) = single_instance::claim() else {
+    let single_instance::Launch::First(mut activations) = single_instance::claim() else {
         return;
     };
     // Every socket call, timer, file read or write, JSON parse and image
@@ -150,29 +186,14 @@ fn main() {
             trace::watch_keys(cx);
             trace::log_if_enabled("app initialised");
 
-            let runtime_handle = runtime_handle.clone();
-            let preload = preload.take();
+            cx.set_global(Runtime(runtime_handle.clone()));
+            open_window(preload.take(), cx);
+            let Some(mut activations) = activations.take() else {
+                return;
+            };
             cx.spawn(async move |cx| {
-                let options = cx.update(|cx| window_options(cx));
-                let window = cx
-                    .open_window(options, |window, cx| {
-                        trace::log_if_enabled("window created");
-                        let view = cx.new(|cx| AppRoot::new(runtime_handle, preload, window, cx));
-                        trace::log_if_enabled("views built");
-                        cx.new(|cx| Root::new(view, window, cx))
-                    })
-                    .expect("open window");
-                let Some(mut activations) = activations else {
-                    return;
-                };
                 while activations.recv().await.is_some() {
-                    cx.update(|cx| cx.activate(true));
-                    if window
-                        .update(cx, |_, window, _| window.activate_window())
-                        .is_err()
-                    {
-                        break;
-                    }
+                    cx.update(raise);
                 }
             })
             .detach();

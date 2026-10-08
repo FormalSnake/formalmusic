@@ -1,80 +1,82 @@
-//! Artwork on disk. Each URL is fetched once into
-//! `$XDG_CACHE_HOME/formalmusic/art/<hash>`, and the desktop decodes from
-//! there at the size it shows the picture. Googleusercontent URLs carry their
-//! size in the path, so they are asked for at a size step just over the box
-//! instead of the 544 px the page offered.
+//! Artwork on disk. Each picture kopuzd hands out is fetched once into
+//! `$XDG_CACHE_HOME/formalmusic/art/<hash>`, keyed by its version so a new
+//! picture is a new file, and the desktop decodes from there at the size it
+//! shows the picture.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use formalmusic_api::{Thumbnail, best};
 use parking_lot::Mutex;
 
-/// Sizes asked of the image server, so a 48 px row and a 56 px card share a file.
-const STEPS: [u32; 6] = [60, 120, 226, 360, 544, 1080];
+use crate::backend::Backend;
+use crate::model::{Art, ArtKind};
 
-/// Scheme of the demo set's artwork, painted locally rather than fetched.
-pub const DEMO_SCHEME: &str = "demo:";
+/// Boxes wider than this many device pixels ask kopuzd for the full-size
+/// picture (544 px) rather than its thumbnail (400 px).
+pub const HQ_ABOVE: u32 = 400;
 
 pub struct ArtCache {
     dir: PathBuf,
-    http: reqwest::Client,
-    /// One lock per URL in flight, so two views asking at once fetch once.
-    inflight: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One lock per picture in flight, so two views asking at once fetch once.
+    inflight: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl ArtCache {
-    pub fn new(dir: PathBuf, http: reqwest::Client) -> Self {
+    pub fn new(dir: PathBuf) -> Self {
         Self {
             dir,
-            http,
             inflight: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn path_for(&self, url: &str) -> PathBuf {
-        self.dir.join(format!("{:016x}", fnv1a(url.as_bytes())))
+    pub fn path_for(&self, art: &Art, hq: bool) -> PathBuf {
+        let key = format!("{:?}/{}/{}/{hq}", art.kind, art.id, art.version);
+        self.dir.join(format!("{:016x}", fnv1a(key.as_bytes())))
     }
 
-    /// The file for `url`, fetching it first if it is not on disk yet.
-    pub async fn fetch(&self, url: &str) -> Option<PathBuf> {
-        let path = self.path_for(url);
+    /// The file for `art`, fetching it first if it is not on disk yet.
+    pub async fn fetch(&self, art: &Art, hq: bool, backend: &dyn Backend) -> Option<PathBuf> {
+        let path = self.path_for(art, hq);
         if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             return Some(path);
         }
         let lock = self
             .inflight
             .lock()
-            .entry(url.to_owned())
+            .entry(path.clone())
             .or_default()
             .clone();
         let _held = lock.lock().await;
         let result = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             Some(path.clone())
         } else {
-            self.download(url, &path).await
+            self.download(art, hq, &path, backend).await
         };
-        self.inflight.lock().remove(url);
+        self.inflight.lock().remove(&path);
         result
     }
 
-    async fn download(&self, url: &str, path: &Path) -> Option<PathBuf> {
-        let bytes = if let Some(seed) = url.strip_prefix(DEMO_SCHEME) {
-            let seed = seed.to_owned();
+    async fn download(
+        &self,
+        art: &Art,
+        hq: bool,
+        path: &Path,
+        backend: &dyn Backend,
+    ) -> Option<PathBuf> {
+        let bytes = if art.kind == ArtKind::Demo {
+            let seed = art.id.clone();
             tokio::task::spawn_blocking(move || demo_art(&seed))
                 .await
                 .ok()?
         } else {
-            let response = self
-                .http
-                .get(url)
-                .send()
-                .await
-                .ok()?
-                .error_for_status()
-                .ok()?;
-            response.bytes().await.ok()?.to_vec()
+            match backend.artwork(art, hq).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::debug!("artwork {}: {error}", art.id);
+                    return None;
+                }
+            }
         };
         tokio::fs::create_dir_all(&self.dir).await.ok()?;
         let temp = path.with_extension(format!("{}.tmp", std::process::id()));
@@ -82,31 +84,6 @@ impl ArtCache {
         tokio::fs::rename(&temp, path).await.ok()?;
         Some(path.to_owned())
     }
-}
-
-/// The URL to fetch for a box `px` device pixels wide.
-pub fn url_for(thumbnails: &[Thumbnail], px: u32) -> Option<String> {
-    let thumb = best(thumbnails, px)?;
-    let step = STEPS
-        .iter()
-        .copied()
-        .find(|step| *step >= px)
-        .unwrap_or(STEPS[STEPS.len() - 1]);
-    Some(resize_url(&thumb.url, step))
-}
-
-/// Rewrites the `=w544-h544-...` tail googleusercontent and ggpht URLs carry.
-/// Anything else (i.ytimg.com video stills) comes back unchanged.
-pub fn resize_url(url: &str, px: u32) -> String {
-    let resizable = url.contains("googleusercontent.com") || url.contains("ggpht.com");
-    let Some(at) = url.rfind('=').filter(|_| resizable) else {
-        return url.to_owned();
-    };
-    let tail = &url[at + 1..];
-    if !tail.starts_with('w') && !tail.starts_with('s') {
-        return url.to_owned();
-    }
-    format!("{}=w{px}-h{px}-l90-rj", &url[..at])
 }
 
 /// 64-bit FNV-1a: stable across builds, unlike `DefaultHasher`, so the file
@@ -173,43 +150,20 @@ fn hsl(h: f32, s: f32, l: f32) -> [f32; 3] {
 mod tests {
     use super::*;
 
-    #[test]
-    fn googleusercontent_urls_are_asked_for_at_the_next_step() {
-        let thumbs = vec![
-            Thumbnail {
-                url: "https://lh3.googleusercontent.com/abc=w60-h60-l90-rj".into(),
-                width: 60,
-                height: 60,
-            },
-            Thumbnail {
-                url: "https://lh3.googleusercontent.com/abc=w544-h544-l90-rj".into(),
-                width: 544,
-                height: 544,
-            },
-        ];
-        assert_eq!(
-            url_for(&thumbs, 100).unwrap(),
-            "https://lh3.googleusercontent.com/abc=w120-h120-l90-rj"
-        );
-        assert_eq!(
-            url_for(&thumbs, 2000).unwrap(),
-            "https://lh3.googleusercontent.com/abc=w1080-h1080-l90-rj"
-        );
-    }
-
-    #[test]
-    fn video_stills_keep_their_url() {
-        let url = "https://i.ytimg.com/vi/abc/hqdefault.jpg?sqp=x";
-        assert_eq!(resize_url(url, 120), url);
-    }
-
     #[tokio::test]
     async fn demo_art_lands_on_disk_once() {
         let dir = std::env::temp_dir().join(format!("formalmusic-art-{}", std::process::id()));
-        let cache = ArtCache::new(dir.clone(), reqwest::Client::new());
-        let first = cache.fetch("demo:album-1").await.unwrap();
-        let second = cache.fetch("demo:album-1").await.unwrap();
+        let cache = ArtCache::new(dir.clone());
+        let backend = crate::demo::DemoBackend::new();
+        let art = Art {
+            kind: ArtKind::Demo,
+            id: "album-1".into(),
+            version: 0,
+        };
+        let first = cache.fetch(&art, false, &backend).await.unwrap();
+        let second = cache.fetch(&art, false, &backend).await.unwrap();
         assert_eq!(first, second);
+        assert_ne!(first, cache.path_for(&art, true));
         assert!(
             image::ImageReader::open(&first)
                 .unwrap()

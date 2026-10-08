@@ -26,12 +26,6 @@ pub(crate) async fn fetch(req: RequestBuilder, timeout: Duration) -> Result<(Sta
     Ok((status, res.text().await?))
 }
 
-/// The body of a 2xx answer, `None` for any other status.
-pub(crate) async fn fetch_ok(req: RequestBuilder, timeout: Duration) -> Result<Option<String>> {
-    let (status, body) = fetch(req, timeout).await?;
-    Ok(status.is_success().then_some(body))
-}
-
 /// The body of a 2xx answer; anything else is an error.
 pub(crate) async fn text(req: RequestBuilder, timeout: Duration) -> Result<String> {
     let (status, body) = fetch(req, timeout).await?;

@@ -1,7 +1,7 @@
 //! The "Edit playlist" dialog: title, description and privacy of a playlist
 //! you own, and deleting it, which asks once more first.
 
-use formalmusic_api::{BrowseTarget, LibraryTab, PlaylistEdit, Privacy};
+use formalmusic_core::model::{BrowseTarget, LibraryTab, PlaylistDetails, Privacy};
 use formalmusic_core::{MusicStore, Route};
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -63,22 +63,14 @@ impl EditPlaylist {
         }
     }
 
-    fn edits(&self, cx: &App) -> Vec<PlaylistEdit> {
+    fn edits(&self, cx: &App) -> PlaylistDetails {
         let title = self.title.read(cx).value().trim().to_owned();
         let description = self.description.read(cx).value().trim().to_owned();
-        let mut edits = Vec::new();
-        if !title.is_empty() && title != self.current.title {
-            edits.push(PlaylistEdit::Rename { title });
+        PlaylistDetails {
+            title: (!title.is_empty() && title != self.current.title).then_some(title),
+            description: (description != self.current.description).then_some(description),
+            privacy: (self.privacy != self.current.privacy).then_some(self.privacy),
         }
-        if description != self.current.description {
-            edits.push(PlaylistEdit::Describe { description });
-        }
-        if self.privacy != self.current.privacy {
-            edits.push(PlaylistEdit::SetPrivacy {
-                privacy: self.privacy,
-            });
-        }
-        edits
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {

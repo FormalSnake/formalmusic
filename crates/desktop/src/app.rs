@@ -4,11 +4,11 @@
 
 use std::sync::Arc;
 
-use formalmusic_api::BrowseTarget;
 use formalmusic_core::art::ArtCache;
 use formalmusic_core::cache::StateCache;
+use formalmusic_core::model::BrowseTarget;
 use formalmusic_core::store::VOLUME_STEP;
-use formalmusic_core::{ConnectionStatus, MusicStore, Route, StoreOptions, TransportKind, paths};
+use formalmusic_core::{BackendKind, ConnectionStatus, MusicStore, Route, StoreOptions, paths};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -214,26 +214,44 @@ pub fn state_dir() -> std::path::PathBuf {
     }
 }
 
+/// Closing the last window pauses, unless the settings say to keep playing.
+/// It has to reach the daemon before the process can exit, so it waits for
+/// the answer instead of going through the store's queue. With the tray icon
+/// up the app stays running there; otherwise it quits.
+fn on_last_window_closed(store: MusicStore, cx: &mut App) {
+    #[cfg(not(target_os = "macos"))]
+    cx.set_quit_mode(QuitMode::Explicit);
+    cx.on_window_closed(move |cx, _| {
+        if !cx.windows().is_empty() {
+            return;
+        }
+        if !formalmusic_core::settings::Settings::load(&paths::settings_file())
+            .keep_playing_when_closed
+        {
+            store.pause_blocking(PAUSE_ON_CLOSE);
+        }
+        if cfg!(not(target_os = "macos")) && !crate::tray::showing(cx) {
+            cx.quit();
+        }
+    })
+    .detach();
+}
+
 fn build_store(
     runtime: &tokio::runtime::Handle,
     preloaded: Option<formalmusic_core::cache::CachedState>,
 ) -> MusicStore {
-    let demo = demo();
-    let http = reqwest::Client::builder()
-        .user_agent(concat!("formalmusic/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .unwrap_or_default();
-    let art = Arc::new(ArtCache::new(paths::art_dir(), http));
-    let transport: Arc<dyn formalmusic_core::Transport> = if demo {
-        Arc::new(formalmusic_core::demo::DemoTransport::new())
+    let art = Arc::new(ArtCache::new(paths::art_dir()));
+    let backend: Arc<dyn formalmusic_core::Backend> = if demo() {
+        Arc::new(formalmusic_core::demo::DemoBackend::new())
     } else {
-        Arc::new(formalmusic_core::client::DaemonClient::new(
-            formalmusic_api::socket_path(),
+        Arc::new(formalmusic_core::kopuz::KopuzBackend::new(
+            formalmusic_core::kopuz::socket_path(),
         ))
     };
     let cache = Some(Arc::new(StateCache::new(&state_dir())));
     MusicStore::new(
-        transport,
+        backend,
         StoreOptions {
             cache,
             art,
@@ -259,31 +277,27 @@ impl AppRoot {
             Some("minimal") => window.set_debug_frame_overlay_mode(DebugFrameOverlayMode::Minimal),
             _ => {}
         }
-        let store = {
-            let _guard = runtime.enter();
-            let preloaded = preload.and_then(|thread| thread.join().ok()).flatten();
-            crate::trace::log_if_enabled(&format!(
-                "cache read, {} pages",
-                preloaded.as_ref().map_or(0, |cached| cached.pages.len())
-            ));
-            build_store(&runtime, preloaded)
-        };
-        Bridge::drain(cx, store.clone());
-        // Closing the last window pauses, unless the settings say to keep
-        // playing. It has to reach the daemon before the process exits, so it
-        // waits for the answer instead of going through the store's queue.
-        let closing = store.clone();
-        cx.on_window_closed(move |cx, _| {
-            if cx.windows().is_empty()
-                && !formalmusic_core::settings::Settings::load(&paths::settings_file())
-                    .keep_playing_when_closed
-            {
-                closing.pause_blocking(PAUSE_ON_CLOSE);
+        // A window opened again from the tray keeps the store the first one built.
+        let store = match crate::bridge::store(cx) {
+            Some(store) => store,
+            None => {
+                let store = {
+                    let _guard = runtime.enter();
+                    let preloaded = preload.and_then(|thread| thread.join().ok()).flatten();
+                    crate::trace::log_if_enabled(&format!(
+                        "cache read, {} pages",
+                        preloaded.as_ref().map_or(0, |cached| cached.pages.len())
+                    ));
+                    build_store(&runtime, preloaded)
+                };
+                Bridge::drain(cx, store.clone());
+                on_last_window_closed(store.clone(), cx);
+                crate::tray::install(store.clone(), cx);
+                let starting = store.clone();
+                store.spawn(async move { starting.start().await });
+                store
             }
-        })
-        .detach();
-        let starting = store.clone();
-        store.spawn(async move { starting.start().await });
+        };
         for topic in [Topic::Session, Topic::Connection, Topic::Notice] {
             Bridge::watch(cx, topic, weak.clone().into());
         }
@@ -550,13 +564,13 @@ impl AppRoot {
         cx.stop_propagation();
         use crate::shortcuts::Shortcut;
         let store = self.store.clone();
-        let rate = |liked: formalmusic_api::Rating| {
+        let rate = |liked: formalmusic_core::model::Rating| {
             let state = store.state();
             let Some(track) = state.player.track.clone() else {
                 return;
             };
             let rating = if state.rating(&track) == liked {
-                formalmusic_api::Rating::Indifferent
+                formalmusic_core::model::Rating::Indifferent
             } else {
                 liked
             };
@@ -578,8 +592,8 @@ impl AppRoot {
             }
             Shortcut::Shuffle => store.toggle_shuffle(),
             Shortcut::Repeat => store.cycle_repeat(),
-            Shortcut::Like => rate(formalmusic_api::Rating::Like),
-            Shortcut::Dislike => rate(formalmusic_api::Rating::Dislike),
+            Shortcut::Like => rate(formalmusic_core::model::Rating::Like),
+            Shortcut::Dislike => rate(formalmusic_core::model::Rating::Dislike),
             Shortcut::Search => {
                 let handle = self.topbar.read(cx).search_handle(cx);
                 window.focus(&handle, cx);
@@ -604,7 +618,7 @@ impl AppRoot {
             Shortcut::Explore => self.navigate(Route::Browse(BrowseTarget::Explore), false, cx),
             Shortcut::Library => self.navigate(
                 Route::Browse(BrowseTarget::Library(
-                    formalmusic_api::LibraryTab::Playlists,
+                    formalmusic_core::model::LibraryTab::Playlists,
                 )),
                 false,
                 cx,
@@ -754,7 +768,7 @@ impl Render for AppRoot {
         let offline = {
             let state = self.store.state();
             (state.connection == ConnectionStatus::Offline
-                && self.store.kind() == TransportKind::Daemon)
+                && self.store.kind() == BackendKind::Daemon)
                 .then(|| {
                     state
                         .connection_error
@@ -1005,8 +1019,8 @@ fn player_tour(tab: Option<Tab>, play: bool, window: &mut Window, cx: &mut Conte
 /// (animations jumped to their end), writes a PNG and quits.
 #[cfg(feature = "screenshot")]
 fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<AppRoot>) {
-    use formalmusic_api::LibraryTab;
     use formalmusic_core::SearchKey;
+    use formalmusic_core::model::LibraryTab;
     cx.set_reduce_motion(true);
     let scene = std::env::var("FORMALMUSIC_SCREENSHOT_SCENE").unwrap_or_default();
     // "artist-end" and the like: the scene scrolled to the bottom of its page.
@@ -1048,13 +1062,7 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
             "charts" => this.navigate(Route::Browse(BrowseTarget::Charts), false, cx),
             "new-releases" => this.navigate(Route::Browse(BrowseTarget::NewReleases), false, cx),
             "moods" => this.navigate(Route::Browse(BrowseTarget::MoodsAndGenres), false, cx),
-            "mood" => this.navigate(
-                Route::Browse(BrowseTarget::MoodCategory {
-                    params: String::new(),
-                }),
-                false,
-                cx,
-            ),
+            "mood" => this.navigate(Route::Browse(BrowseTarget::Mood(String::new())), false, cx),
             "library-albums" => this.navigate(
                 Route::Browse(BrowseTarget::Library(LibraryTab::Albums)),
                 false,
@@ -1086,7 +1094,7 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
             ),
             // "search-songs", "search-albums" and so on: one filter chip.
             filtered if filtered.starts_with("search-") => {
-                use formalmusic_api::SearchFilter::*;
+                use formalmusic_core::model::SearchFilter::*;
                 let filter = match &filtered["search-".len()..] {
                     "songs" => Songs,
                     "videos" => Videos,
@@ -1117,7 +1125,7 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                 if let Some(index) = queue
                     .tracks
                     .iter()
-                    .position(|track| formalmusic_core::demo::duet(&track.video_id) == duet)
+                    .position(|track| formalmusic_core::demo::duet(&track.key) == duet)
                     && queue.current != Some(index)
                 {
                     this.store.jump_to(index);
@@ -1138,7 +1146,7 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                     playlist_id: playlist.playlist_id.clone(),
                     title: playlist.title.into(),
                     description: "Long drives after dark.".into(),
-                    privacy: formalmusic_api::Privacy::Private,
+                    privacy: formalmusic_core::model::Privacy::Private,
                 };
                 let weak = cx.entity().downgrade();
                 let close = move |_: &mut Window, cx: &mut App| {

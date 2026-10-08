@@ -1,6 +1,6 @@
 //! The "New playlist" dialog: a title, then the new playlist opens.
 
-use formalmusic_api::BrowseTarget;
+use formalmusic_core::model::BrowseTarget;
 use formalmusic_core::{MusicStore, Route};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;

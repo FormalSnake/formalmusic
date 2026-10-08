@@ -1,7 +1,7 @@
 //! The title row over the page: back and forward, the search field with live
 //! suggestions, and the account menu.
 
-use formalmusic_api::{Item, Suggestion};
+use formalmusic_core::model::{Item, Suggestion};
 use formalmusic_core::{MusicStore, Route, SearchKey};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -287,30 +287,32 @@ impl TopBar {
                         Item::Track(track) => (
                             track.title.clone(),
                             formalmusic_core::format::byline(track),
-                            track.thumbnails.clone(),
+                            track.art.clone(),
                             false,
                         ),
                         Item::Album {
                             title,
                             artists,
-                            thumbnails,
+                            art: thumbnails,
                             ..
                         } => (
                             title.clone(),
-                            format!(
-                                "Album \u{2022} {}",
-                                formalmusic_core::format::names(artists)
-                            ),
+                            match formalmusic_core::format::names(artists) {
+                                names if names.starts_with("Album") => names,
+                                names => format!("Album \u{2022} {names}"),
+                            },
                             thumbnails.clone(),
                             false,
                         ),
                         Item::Artist {
-                            name, thumbnails, ..
+                            name,
+                            art: thumbnails,
+                            ..
                         } => (name.clone(), "Artist".into(), thumbnails.clone(), true),
                         Item::Playlist {
                             title,
                             subtitle,
-                            thumbnails,
+                            art: thumbnails,
                             ..
                         } => (
                             title.clone(),
@@ -321,7 +323,7 @@ impl TopBar {
                         Item::Podcast {
                             title,
                             subtitle,
-                            thumbnails,
+                            art: thumbnails,
                             ..
                         } => (
                             title.clone(),
@@ -330,11 +332,11 @@ impl TopBar {
                             false,
                         ),
                         Item::Mood { title, .. } | Item::Shortcut { title, .. } => {
-                            (title.clone(), String::new(), Vec::new(), false)
+                            (title.clone(), String::new(), None, false)
                         }
                     };
                     row.child(art::cover(
-                        &thumbnails,
+                        thumbnails.as_ref(),
                         SUGGESTION_ART,
                         radius::ART_SMALL,
                         round,
@@ -454,7 +456,7 @@ impl Render for TopBar {
                 actions::open_menu(event.position(), items, window, cx);
             }))
             .child(match account.filter(|_| signed_in) {
-                Some(account) => art::cover(&account.thumbnails, px(28.), px(14.), true, &palette)
+                Some(account) => art::cover(account.art.as_ref(), px(28.), px(14.), true, &palette)
                     .into_any_element(),
                 None => Icon::new(IconName::Account)
                     .size(px(22.))

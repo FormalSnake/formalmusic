@@ -111,9 +111,3 @@ impl Mock {
             .collect()
     }
 }
-
-/// An address nothing listens on, for transport failures.
-pub(crate) async fn dead_base() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    format!("http://{}", listener.local_addr().unwrap())
-}

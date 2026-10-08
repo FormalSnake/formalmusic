@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use formalmusic_api::Status;
+use formalmusic_core::model::Status;
 use gpui_kit::*;
 
 use crate::bridge::{Bridge, Topic};

@@ -101,7 +101,6 @@ impl Bridge {
                     break;
                 }
                 match event {
-                    Ok(StoreEvent::Quit) => cx.update(|cx| cx.quit()),
                     Ok(event) => cx.update(|cx| {
                         Bridge::dispatch(cx, &event);
                         if event == StoreEvent::NowPlaying {

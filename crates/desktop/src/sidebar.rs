@@ -1,7 +1,7 @@
 //! Home, Explore, Library and History, then "New playlist" and your playlists. It
 //! collapses to a column of icons, the way the web app's guide does.
 
-use formalmusic_api::{BrowseTarget, Item, LibraryTab};
+use formalmusic_core::model::{BrowseTarget, Item, LibraryTab};
 use formalmusic_core::{MusicStore, Route};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;

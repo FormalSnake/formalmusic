@@ -3,8 +3,8 @@
 
 use std::path::Path;
 
-use formalmusic_api::Equalizer;
-use serde::{Deserialize, Serialize};
+use crate::equalizer::Equalizer;
+use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -12,31 +12,18 @@ pub struct Settings {
     /// Play the album's animated cover in the player bar too, not only in
     /// the expanded player.
     pub animated_cover_in_bar: bool,
-    /// Leave the daemon playing when the last window closes, instead of
+    /// Leave kopuzd playing when the last window closes, instead of
     /// pausing it.
     pub keep_playing_when_closed: bool,
-    /// Show the daemon's tray icon while a track is loaded (Linux).
+    /// Show a tray icon while a track is loaded.
     pub show_in_tray: bool,
-    /// The keys below are the daemon's: it reads them on start and on
-    /// `ReloadSettings`, over its own `daemon.json`.
-    pub audio_quality: AudioQuality,
-    /// Radio from the last track once a list runs out.
-    pub autoplay: bool,
-    pub restrict_explicit: bool,
-    /// Stop reporting plays to YouTube's watch history.
-    pub pause_history: bool,
+    /// The keys below are kopuzd's: the app hands them to it on connect and
+    /// whenever the Settings dialog changes one.
     pub equalizer: Equalizer,
-}
-
-/// The web app's audio quality setting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AudioQuality {
-    #[default]
-    Auto,
-    Low,
-    Normal,
-    High,
+    /// Level tracks by the loudness YouTube reports for them.
+    pub normalisation: bool,
+    /// Fade from one track into the next over this long; 0 plays gapless.
+    pub crossfade_ms: u32,
 }
 
 impl Default for Settings {
@@ -45,16 +32,19 @@ impl Default for Settings {
             animated_cover_in_bar: true,
             keep_playing_when_closed: false,
             show_in_tray: true,
-            audio_quality: AudioQuality::Auto,
-            autoplay: true,
-            restrict_explicit: false,
-            pause_history: false,
             equalizer: Equalizer::default(),
+            normalisation: true,
+            crossfade_ms: 0,
         }
     }
 }
 
 impl Settings {
+    /// kopuzd fades in whole seconds; any fade at all is at least one.
+    pub fn crossfade_seconds(&self) -> u8 {
+        self.crossfade_ms.div_ceil(1000).min(u8::MAX as u32) as u8
+    }
+
     /// Defaults when the file is missing or unreadable, with a warning for
     /// the second, so a typo never keeps the window from opening.
     pub fn load(path: &Path) -> Self {
@@ -105,17 +95,14 @@ mod tests {
     #[test]
     fn missing_keys_keep_their_defaults() {
         let settings: Settings = serde_json::from_str("{}").unwrap();
-        assert!(settings.animated_cover_in_bar);
+        assert!(settings.animated_cover_in_bar && settings.normalisation);
         let settings: Settings = serde_json::from_str(r#"{"animatedCoverInBar":false}"#).unwrap();
         assert!(!settings.animated_cover_in_bar);
         assert!(!settings.keep_playing_when_closed);
-        assert!(settings.show_in_tray && settings.autoplay);
-        let settings: Settings = serde_json::from_str(r#"{"audioQuality":"low"}"#).unwrap();
-        assert_eq!(settings.audio_quality, AudioQuality::Low);
-        assert_eq!(
-            serde_json::to_value(AudioQuality::Normal).unwrap(),
-            "normal"
-        );
+        assert!(settings.show_in_tray);
+        let settings: Settings = serde_json::from_str(r#"{"crossfadeMs":1500}"#).unwrap();
+        assert_eq!(settings.crossfade_seconds(), 2);
+        assert_eq!(Settings::default().crossfade_seconds(), 0);
     }
 
     #[test]

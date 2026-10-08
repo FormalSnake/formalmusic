@@ -18,8 +18,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use formalmusic_api::{Lyrics, Status};
 use formalmusic_core::MusicStore;
+use formalmusic_core::model::{Lyrics, Status};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -1743,7 +1743,7 @@ impl Painter<'_> {
 
 pub struct LyricsView {
     store: MusicStore,
-    video_id: Option<String>,
+    key: Option<String>,
     pane: Rc<RefCell<Pane>>,
     resync: Presence<()>,
 }
@@ -1755,7 +1755,7 @@ impl LyricsView {
         Bridge::watch(cx, Topic::Position, weak.into());
         Self {
             store,
-            video_id: None,
+            key: None,
             pane: Rc::new(RefCell::new(Pane::new())),
             resync: Presence::new(DURATION_FAST),
         }
@@ -1803,29 +1803,27 @@ impl Render for LyricsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::trace::render("LyricsView");
         let palette = Theme::get(cx);
-        let (video_id, entry, position_ms, playing) = {
+        let (key, entry, position_ms, playing) = {
             let state = self.store.state();
-            let video_id = state.current_video().map(str::to_owned);
-            let entry = video_id
-                .as_ref()
-                .and_then(|id| state.lyrics.get(id).cloned());
+            let key = state.current_key().map(str::to_owned);
+            let entry = key.as_ref().and_then(|id| state.lyrics.get(id).cloned());
             (
-                video_id,
+                key,
                 entry,
                 state.position_now(),
                 state.player.status == Status::Playing,
             )
         };
-        if video_id != self.video_id {
+        if key != self.key {
             let weak = cx.entity().downgrade();
-            if let Some(old) = self.video_id.take() {
+            if let Some(old) = self.key.take() {
                 Bridge::unwatch(cx, &Topic::Lyrics(old), &weak.clone().into());
             }
-            if let Some(id) = &video_id {
+            if let Some(id) = &key {
                 Bridge::watch(cx, Topic::Lyrics(id.clone()), weak.into());
                 self.store.load_lyrics(id.clone());
             }
-            self.video_id = video_id;
+            self.key = key;
         }
         let Some(lyrics) = entry.as_ref().and_then(|entry| entry.lyrics.clone()) else {
             let missing = entry.as_ref().is_some_and(|entry| entry.missing);
@@ -1941,7 +1939,7 @@ impl Render for LyricsView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use formalmusic_api::{LyricLine, LyricWord};
+    use formalmusic_core::model::{LyricLine, LyricWord};
 
     fn line(start_ms: u64, end_ms: Option<u64>, text: &str) -> LyricLine {
         LyricLine {

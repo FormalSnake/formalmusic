@@ -1,7 +1,7 @@
 //! What clicking an item does, and the context menu every item offers.
 
-use formalmusic_api::{
-    BrowseTarget, EnqueuePosition, Item, LibraryTab, Link, PlaySource, Rating, Track,
+use formalmusic_core::model::{
+    Actions, BrowseTarget, EnqueuePosition, Item, LibraryTab, Link, PlaySource, Rating, Track,
 };
 use formalmusic_core::{MusicStore, Route};
 use gpui_kit::*;
@@ -18,9 +18,7 @@ pub fn target_of(item: &Item) -> Option<BrowseTarget> {
         Item::Artist { browse_id, .. } => Some(BrowseTarget::Artist(browse_id.clone())),
         Item::Playlist { playlist_id, .. } => Some(BrowseTarget::Playlist(playlist_id.clone())),
         Item::Podcast { browse_id, .. } => Some(BrowseTarget::Podcast(browse_id.clone())),
-        Item::Mood { params, .. } => Some(BrowseTarget::MoodCategory {
-            params: params.clone(),
-        }),
+        Item::Mood { id, .. } => Some(BrowseTarget::Mood(id.clone())),
         Item::Shortcut { target, .. } => Some(target.clone()),
     }
 }
@@ -29,46 +27,30 @@ pub fn open(target: BrowseTarget, cx: &mut App) {
     app::navigate(Route::Browse(target), cx);
 }
 
-/// The play button on a card: albums and playlists play whole, a song starts
-/// its radio, as on the web app.
-pub fn play_item(item: &Item, store: &MusicStore) {
+/// What the play button on a card starts: albums and playlists play whole,
+/// a song starts its radio, as on the web app.
+pub fn play_source(item: &Item) -> Option<PlaySource> {
     match item {
-        Item::Track(track) => store.play(
-            PlaySource::Radio {
-                video_id: track.video_id.clone(),
-            },
-            0,
-            false,
-            true,
-        ),
-        Item::Album {
-            playlist_id: Some(playlist_id),
-            ..
-        }
-        | Item::Playlist { playlist_id, .. } => store.play(
-            PlaySource::Playlist {
-                playlist_id: playlist_id.clone(),
-                tracks: Vec::new(),
-            },
-            0,
-            false,
-            false,
-        ),
-        _ => {}
+        Item::Track(track) => Some(PlaySource::Radio {
+            key: track.key.clone(),
+        }),
+        Item::Album { .. } | Item::Playlist { .. } => Some(PlaySource::Page {
+            target: target_of(item)?,
+            tracks: Vec::new(),
+        }),
+        _ => None,
+    }
+}
+
+pub fn play_item(item: &Item, store: &MusicStore) {
+    if let Some(source) = play_source(item) {
+        store.play(source, 0, false);
     }
 }
 
 /// Whether a card for this item has a play button.
 pub fn playable(item: &Item) -> bool {
-    matches!(
-        item,
-        Item::Track(_)
-            | Item::Album {
-                playlist_id: Some(_),
-                ..
-            }
-            | Item::Playlist { .. }
-    )
+    play_source(item).is_some()
 }
 
 /// Where a menu came from, which decides the rows that only make sense there.
@@ -76,6 +58,8 @@ pub fn playable(item: &Item) -> bool {
 pub struct MenuContext {
     /// The playlist page the row sits on, when it is one you can edit.
     pub editable_playlist: Option<String>,
+    /// The row's place in that playlist's list.
+    pub row: Option<usize>,
 }
 
 pub fn open_menu(position: Point<Pixels>, items: Vec<MenuItem>, window: &mut Window, cx: &mut App) {
@@ -100,85 +84,25 @@ pub fn item_menu(item: &Item, context: &MenuContext, store: &MusicStore) -> Vec<
     match item {
         Item::Track(track) => track_menu(track, context, store),
         Item::Album {
-            playlist_id,
-            artists,
-            browse_id,
-            ..
+            artists, actions, ..
         } => {
-            let mut items = Vec::new();
-            if let Some(playlist_id) = playlist_id.clone() {
-                let (play, save) = (store.clone(), store.clone());
-                let save_id = playlist_id.clone();
+            let mut items = play_rows(item, store, false);
+            items.extend(save_row(actions, store));
+            if let Some(target) = target_of(item) {
                 items.push(
-                    MenuItem::item("Play", move |_, _| {
-                        play.play(
-                            PlaySource::Playlist {
-                                playlist_id: playlist_id.clone(),
-                                tracks: Vec::new(),
-                            },
-                            0,
-                            false,
-                            false,
-                        )
-                    })
-                    .icon(IconName::Play),
-                );
-                items.push(
-                    MenuItem::item("Save to library", move |_, _| {
-                        save.set_in_library(save_id.clone(), true)
-                    })
-                    .icon(IconName::Saved),
+                    MenuItem::item("Go to album", move |_, cx| open(target.clone(), cx))
+                        .icon(IconName::Album),
                 );
             }
-            let target = BrowseTarget::Album(browse_id.clone());
-            items.push(
-                MenuItem::item("Go to album", move |_, cx| open(target.clone(), cx))
-                    .icon(IconName::Album),
-            );
             items.extend(artist_rows(artists));
             items.extend(share_row(item, store));
             items
         }
-        Item::Playlist { playlist_id, .. } => {
-            let (play, shuffle, save) = (store.clone(), store.clone(), store.clone());
-            let (a, b, c) = (
-                playlist_id.clone(),
-                playlist_id.clone(),
-                playlist_id.clone(),
-            );
-            vec![
-                MenuItem::item("Play", move |_, _| {
-                    play.play(
-                        PlaySource::Playlist {
-                            playlist_id: a.clone(),
-                            tracks: Vec::new(),
-                        },
-                        0,
-                        false,
-                        false,
-                    )
-                })
-                .icon(IconName::Play),
-                MenuItem::item("Shuffle", move |_, _| {
-                    shuffle.play(
-                        PlaySource::Playlist {
-                            playlist_id: b.clone(),
-                            tracks: Vec::new(),
-                        },
-                        0,
-                        true,
-                        false,
-                    )
-                })
-                .icon(IconName::Shuffle),
-                MenuItem::item("Save to library", move |_, _| {
-                    save.set_in_library(c.clone(), true)
-                })
-                .icon(IconName::Saved),
-            ]
-            .into_iter()
-            .chain(share_row(item, store))
-            .collect()
+        Item::Playlist { actions, .. } => {
+            let mut items = play_rows(item, store, true);
+            items.extend(save_row(actions, store));
+            items.extend(share_row(item, store));
+            items
         }
         Item::Artist { browse_id, .. } => {
             let target = BrowseTarget::Artist(browse_id.clone());
@@ -202,35 +126,76 @@ pub fn item_menu(item: &Item, context: &MenuContext, store: &MusicStore) -> Vec<
     }
 }
 
-/// The web app's link to an item, as its Share copies it.
-pub fn share_url(item: &Item) -> Option<String> {
-    const BASE: &str = "https://music.youtube.com";
-    Some(match item {
-        Item::Track(track) => format!("{BASE}/watch?v={}", track.video_id),
-        Item::Album {
-            playlist_id: Some(playlist_id),
-            ..
-        }
-        | Item::Playlist { playlist_id, .. } => format!("{BASE}/playlist?list={playlist_id}"),
-        Item::Album { browse_id, .. } => format!("{BASE}/browse/{browse_id}"),
-        Item::Artist { browse_id, .. } => format!("{BASE}/channel/{browse_id}"),
-        // A podcast's page is its playlist with the MPSP prefix dropped.
-        Item::Podcast { browse_id, .. } => match browse_id.strip_prefix("MPSP") {
-            Some(playlist_id) => format!("{BASE}/playlist?list={playlist_id}"),
-            None => format!("{BASE}/browse/{browse_id}"),
-        },
-        Item::Mood { .. } | Item::Shortcut { .. } => return None,
-    })
+/// "Play", and "Shuffle" where it makes sense, for an album or a playlist.
+fn play_rows(item: &Item, store: &MusicStore, shuffle: bool) -> Vec<MenuItem> {
+    let Some(source) = play_source(item) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    {
+        let (store, source) = (store.clone(), source.clone());
+        rows.push(
+            MenuItem::item("Play", move |_, _| store.play(source.clone(), 0, false))
+                .icon(IconName::Play),
+        );
+    }
+    if shuffle {
+        let store = store.clone();
+        rows.push(
+            MenuItem::item("Shuffle", move |_, _| store.play(source.clone(), 0, true))
+                .icon(IconName::Shuffle),
+        );
+    }
+    rows
 }
 
-/// "Share": copies the item's link and says so.
-fn share_row(item: &Item, store: &MusicStore) -> Option<MenuItem> {
-    let url = share_url(item)?;
+/// "Save to library" for an album or someone else's playlist not saved yet.
+fn save_row(actions: &Actions, store: &MusicStore) -> Option<MenuItem> {
+    let save_ref = actions.save_ref.clone()?;
+    if actions.saved == Some(true) {
+        return None;
+    }
     let store = store.clone();
     Some(
+        MenuItem::item("Save to library", move |_, _| {
+            store.set_in_library(save_ref.clone(), true)
+        })
+        .icon(IconName::Saved),
+    )
+}
+
+/// Whether Share has a link to copy for the item.
+fn shareable(item: &Item) -> bool {
+    matches!(
+        item,
+        Item::Track(_) | Item::Album { .. } | Item::Artist { .. } | Item::Podcast { .. }
+    )
+}
+
+/// "Share": asks kopuzd for the item's link, copies it and says so.
+fn share_row(item: &Item, store: &MusicStore) -> Option<MenuItem> {
+    if !shareable(item) {
+        return None;
+    }
+    let (item, store) = (item.clone(), store.clone());
+    Some(
         MenuItem::item("Share", move |_, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-            store.confirm("Link copied".into());
+            let (item, asking) = (item.clone(), store.clone());
+            let task = store
+                .runtime()
+                .spawn(async move { asking.share_url(&item).await });
+            let store = store.clone();
+            cx.spawn(async move |cx| {
+                let url = task.await.ok().flatten();
+                cx.update(|cx| match url {
+                    Some(url) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(url));
+                        store.confirm("Link copied".into());
+                    }
+                    None => store.notice("There is no link to share for that.".into()),
+                });
+            })
+            .detach();
         })
         .icon(IconName::Share),
     )
@@ -257,17 +222,10 @@ pub fn track_menu(track: &Track, context: &MenuContext, store: &MusicStore) -> V
     let rating = store.state().rating(track);
     let mut items = Vec::new();
     {
-        let (store, video_id) = (store.clone(), track.video_id.clone());
+        let (store, key) = (store.clone(), track.key.clone());
         items.push(
             MenuItem::item("Start radio", move |_, _| {
-                store.play(
-                    PlaySource::Radio {
-                        video_id: video_id.clone(),
-                    },
-                    0,
-                    false,
-                    true,
-                )
+                store.play(PlaySource::Radio { key: key.clone() }, 0, false)
             })
             .icon(IconName::Radio),
         );
@@ -285,11 +243,11 @@ pub fn track_menu(track: &Track, context: &MenuContext, store: &MusicStore) -> V
         );
     }
     {
-        let (store, video_id) = (store.clone(), track.video_id.clone());
+        let (store, key) = (store.clone(), track.key.clone());
         items.push(
             MenuItem::item("Add to playlist\u{2026}", move |window, cx| {
                 let position = window.mouse_position();
-                let rows = playlist_picker(&store, vec![video_id.clone()]);
+                let rows = playlist_picker(&store, vec![key.clone()]);
                 // The first menu closes after this returns; the picker opens on the next frame.
                 window.defer(cx, move |window, cx| open_menu(position, rows, window, cx));
             })
@@ -307,21 +265,17 @@ pub fn track_menu(track: &Track, context: &MenuContext, store: &MusicStore) -> V
             MenuItem::item(label, move |_, _| store.set_song_in_library(&track, !saved)).icon(icon),
         );
     }
-    if let Some(playlist_id) = context
-        .editable_playlist
-        .clone()
-        .filter(|_| track.set_video_id.is_some())
-    {
-        let (store, track) = (store.clone(), track.clone());
+    if let (Some(playlist_id), Some(row)) = (context.editable_playlist.clone(), context.row) {
+        let store = store.clone();
         items.push(
             MenuItem::item("Remove from playlist", move |_, _| {
-                store.remove_from_playlist(playlist_id.clone(), &track)
+                store.remove_from_playlist(playlist_id.clone(), row)
             })
             .icon(IconName::Remove)
             .danger(),
         );
     }
-    if track.feedback_token.is_some() {
+    if track.actions.history_token.is_some() {
         let (store, track) = (store.clone(), track.clone());
         items.push(
             MenuItem::item("Remove from history", move |_, _| {
@@ -371,7 +325,7 @@ pub fn track_menu(track: &Track, context: &MenuContext, store: &MusicStore) -> V
 }
 
 /// The second menu "Add to playlist" opens: your playlists, newest first.
-fn playlist_picker(store: &MusicStore, video_ids: Vec<String>) -> Vec<MenuItem> {
+fn playlist_picker(store: &MusicStore, keys: Vec<String>) -> Vec<MenuItem> {
     let state = store.state();
     let mut rows = vec![MenuItem::Header("Add to playlist".into())];
     for item in state.library_playlists() {
@@ -384,11 +338,10 @@ fn playlist_picker(store: &MusicStore, video_ids: Vec<String>) -> Vec<MenuItem> 
         if playlist_id == "LM" {
             continue;
         }
-        let (store, playlist_id, video_ids) =
-            (store.clone(), playlist_id.clone(), video_ids.clone());
+        let (store, playlist_id, keys) = (store.clone(), playlist_id.clone(), keys.clone());
         rows.push(
             MenuItem::item(title.clone(), move |_, _| {
-                store.add_to_playlist(playlist_id.clone(), video_ids.clone())
+                store.add_to_playlist(playlist_id.clone(), keys.clone())
             })
             .icon(IconName::Playlist),
         );
@@ -438,51 +391,4 @@ pub fn prefetch_on_hover(target: Option<BrowseTarget>, hovered: bool, cx: &mut A
         }
     })
     .detach();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[::core::prelude::v1::test]
-    fn share_copies_the_web_apps_links() {
-        let album = |playlist_id: Option<&str>| Item::Album {
-            browse_id: "MPREb_x".into(),
-            playlist_id: playlist_id.map(Into::into),
-            title: "A".into(),
-            album_type: None,
-            artists: Vec::new(),
-            year: None,
-            thumbnails: Vec::new(),
-            explicit: false,
-        };
-        let urls = [
-            album(Some("OLAK5uy_x")),
-            album(None),
-            Item::Artist {
-                browse_id: "UCx".into(),
-                name: "B".into(),
-                subtitle: None,
-                thumbnails: Vec::new(),
-            },
-            Item::Podcast {
-                browse_id: "MPSPPLx".into(),
-                title: "C".into(),
-                subtitle: None,
-                thumbnails: Vec::new(),
-            },
-        ]
-        .iter()
-        .map(|item| share_url(item).unwrap())
-        .collect::<Vec<_>>();
-        assert_eq!(
-            urls,
-            [
-                "https://music.youtube.com/playlist?list=OLAK5uy_x",
-                "https://music.youtube.com/browse/MPREb_x",
-                "https://music.youtube.com/channel/UCx",
-                "https://music.youtube.com/playlist?list=PLx",
-            ]
-        );
-    }
 }

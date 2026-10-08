@@ -1,6 +1,6 @@
 //! Text the UI shows that is worth testing on its own.
 
-use formalmusic_api::{Link, Track};
+use crate::model::{Link, Track};
 
 /// `3:07`, `1:02:45`.
 pub fn duration(ms: u64) -> String {
