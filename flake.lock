@@ -3,17 +3,17 @@
     "kopuz": {
       "flake": false,
       "locked": {
-        "lastModified": 1791482552,
-        "narHash": "sha256-XlYY4XAy45p+/w55akrw6UNKMVpaAjdLMb5dDeNQJMs=",
+        "lastModified": 1791484919,
+        "narHash": "sha256-Zu4Hmltc/xQgsi4oJJnx70B+mSW0J3rLD7puSZx63WA=",
         "owner": "FormalSnake",
         "repo": "kopuz",
-        "rev": "7d638a98575c5f7e5eb8a11571bba108f0fbbf13",
+        "rev": "2b9f8a657f8e8cc79e0a9144dd19464f6a304442",
         "type": "github"
       },
       "original": {
         "owner": "FormalSnake",
         "repo": "kopuz",
-        "rev": "7d638a98575c5f7e5eb8a11571bba108f0fbbf13",
+        "rev": "2b9f8a657f8e8cc79e0a9144dd19464f6a304442",
         "type": "github"
       }
     },

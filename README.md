@@ -41,7 +41,8 @@ says it can do.
 - Word-synced lyrics from Apple Music, YouTube Music or LRCLIB, drawn in the
   Apple Music style.
 - Apple Music motion artwork for albums that have it.
-- Plays reported to YouTube so History and recommendations stay current.
+- Brand accounts, and plays reported to YouTube so History and recommendations
+  stay current.
 - Colours follow [matugen](https://github.com/InioX/matugen) live.
 
 Video playback and comments are not there yet.

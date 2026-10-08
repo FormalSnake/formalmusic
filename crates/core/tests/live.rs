@@ -36,17 +36,20 @@ async fn listening() -> (KopuzBackend, SessionInfo, Events) {
     (backend, session.expect("a session before online"), rx)
 }
 
-async fn queue_of(len: usize, rx: &mut Events) -> QueueState {
+/// The first queue that starts with `first` and holds at least `len` tracks;
+/// events about the queue before it are passed over.
+async fn queue_of(first: &str, len: usize, rx: &mut Events) -> QueueState {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         if let Ok(Some(Event::Queue(queue))) =
             tokio::time::timeout(Duration::from_secs(5), rx.recv()).await
+            && queue.tracks.first().is_some_and(|track| track.key == first)
             && queue.tracks.len() >= len
         {
             return queue;
         }
     }
-    panic!("the queue never reached {len} tracks");
+    panic!("the queue never started with {first} and reached {len} tracks");
 }
 
 fn tracks(page: &Page) -> Vec<&Track> {
@@ -281,6 +284,9 @@ async fn playing_a_page_queues_all_of_it() {
         .await
         .unwrap();
     let album = BrowseTarget::Album("MPREb_K8qWMWVqXGi".into());
+    let opening = tracks(&backend.browse(&album).await.unwrap())[0]
+        .key
+        .clone();
     backend
         .play(
             PlaySource::Page {
@@ -292,7 +298,7 @@ async fn playing_a_page_queues_all_of_it() {
         )
         .await
         .unwrap();
-    let queue = queue_of(13, &mut rx).await;
+    let queue = queue_of(&opening, 13, &mut rx).await;
     assert_eq!(queue.tracks.len(), 13);
 
     let mix = BrowseTarget::Playlist("RDTMAK5uy_nilrsVWxrKskY0ZUpVZ3zpB0u4LwWTVJ4".into());
@@ -310,7 +316,7 @@ async fn playing_a_page_queues_all_of_it() {
         )
         .await
         .unwrap();
-    let queue = queue_of(shown.len() + 1, &mut rx).await;
+    let queue = queue_of(&shown[0].key, shown.len() + 1, &mut rx).await;
     let keys = |tracks: &[Track]| tracks.iter().map(|t| t.key.clone()).collect::<Vec<_>>();
     assert_eq!(keys(&queue.tracks[..shown.len()]), keys(&shown));
     backend
@@ -402,7 +408,16 @@ async fn library_changes_land_and_are_undone() {
                 },
             )
             .await?;
-        let page = backend.browse(&BrowseTarget::Playlist(id.clone())).await?;
+        // YouTube takes a moment to list a track just added.
+        let target = BrowseTarget::Playlist(id.clone());
+        let mut page = backend.browse(&target).await?;
+        for _ in 0..10 {
+            if tracks(&page).len() == keys.len() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            page = backend.browse(&target).await?;
+        }
         let listed: Vec<String> = tracks(&page).iter().map(|t| t.key.clone()).collect();
         backend.remove_from_playlist(&id, 0).await?;
         let after = backend.browse(&BrowseTarget::Playlist(id.clone())).await?;
@@ -450,4 +465,36 @@ async fn a_fresh_daemon_signs_in_and_out() {
     assert!(!library.sections.is_empty());
     backend.sign_out().await.unwrap();
     assert!(!backend.session().await.unwrap().signed_in);
+}
+
+/// The accounts under the sign-in, and a switch to another and back where
+/// there is one.
+#[tokio::test]
+#[ignore = "needs a running kopuzd; switches account and back"]
+async fn brand_accounts_list_and_switch_back() {
+    let (backend, session) = connected().await;
+    if !session.signed_in {
+        eprintln!("skipped: the source is not signed in");
+        return;
+    }
+    let accounts = backend.accounts().await.unwrap();
+    println!("{} accounts", accounts.len());
+    let Some(active) = accounts.iter().find(|a| a.selected) else {
+        eprintln!("skipped: the source has no accounts to switch between");
+        return;
+    };
+    assert_eq!(
+        session.account.as_ref().map(|a| &a.name),
+        Some(&active.name)
+    );
+    let Some(other) = accounts.iter().find(|a| !a.selected) else {
+        return;
+    };
+    let switched = backend.switch_account(other.page_id.clone()).await.unwrap();
+    let back = backend
+        .switch_account(active.page_id.clone())
+        .await
+        .unwrap();
+    assert_eq!(switched.account.map(|a| a.name), Some(other.name.clone()));
+    assert_eq!(back.account.map(|a| a.name), Some(active.name.clone()));
 }

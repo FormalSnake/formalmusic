@@ -52,7 +52,7 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Watch page, Related | tab | yes | `desktop/src/now_playing.rs`, `core/src/store.rs` (`load_related`) |
 | Song credits | `get_song_credits` | no | |
 | Taste profile (pick artists) | `get_tasteprofile` | no | |
-| Account switcher | avatar menu | no | Needs kopuz's `SourceApi::accounts` and `switch_account` (FormalSnake/kopuz `ytm/brand-accounts`, not in the pinned rev); `desktop/src/topbar.rs` lists them once kopuzd does |
+| Account switcher | avatar menu | yes | `desktop/src/topbar.rs`, kopuz `SourceApi::accounts` and `switch_account` |
 | Settings page | avatar menu | partial | `desktop/src/settings.rs`, see Settings |
 
 ## Playback and player
@@ -149,7 +149,7 @@ are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
 | Delete watch history | privacy | no | |
 | Notifications | account settings | no | No desktop notifications; in-app toasts only (`desktop/src/toast.rs`) |
 | Connected apps, scrobbling | account settings | partial | Last.fm and ListenBrainz (token) in `desktop/src/settings.rs`, sent by kopuzd; no per-service switches |
-| Sign in, sign out, brand accounts | avatar menu | partial | `desktop/src/signin.rs` through kopuzd's browser sign-in, profile import and pasted cookies; no brand accounts yet |
+| Sign in, sign out, brand accounts | avatar menu | yes | `desktop/src/signin.rs` through kopuzd's browser sign-in, profile import and pasted cookies; brand accounts from the account menu |
 
 ## Gaps
 

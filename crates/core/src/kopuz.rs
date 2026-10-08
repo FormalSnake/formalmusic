@@ -218,7 +218,29 @@ impl KopuzBackend {
             .into_iter()
             .find(|source| source.id == id)
             .ok_or_else(|| ClientError::NotFound("the YouTube Music source".into()))?;
-        Ok(self.learn_source(source))
+        let session = self.learn_source(source);
+        Ok(self.with_account(session).await)
+    }
+
+    /// The session with the account it acts as, for a source with several
+    /// under one sign-in.
+    async fn with_account(&self, mut session: SessionInfo) -> SessionInfo {
+        let (id, several) = {
+            let known = self.shared.known.read();
+            match &known.source {
+                Some(source) => (source.id.clone(), source.capabilities.accounts),
+                None => return session,
+            }
+        };
+        if session.signed_in && several {
+            match call(REQUEST_TIMEOUT, self.api().accounts(id)).await {
+                Ok(accounts) => {
+                    session.account = accounts.iter().find(|a| a.active).map(account);
+                }
+                Err(error) => tracing::debug!("accounts: {error}"),
+            }
+        }
+        session
     }
 
     async fn integrations(&self) -> Result<ScrobbleStatus> {
@@ -379,6 +401,16 @@ fn session_of(source: &SourceInfo) -> SessionInfo {
     }
 }
 
+fn account(account: &api::SourceAccount) -> Account {
+    Account {
+        name: account.name.clone(),
+        handle: account.handle.clone(),
+        art: None,
+        page_id: account.id.clone(),
+        selected: account.active,
+    }
+}
+
 fn text(text: &api::Text) -> String {
     match text {
         api::Text::Key(key) | api::Text::Literal(key) => key.clone(),
@@ -480,11 +512,11 @@ impl Shared {
 
     /// Everything a fresh connection reports before its events: the
     /// session, the player and the queue.
-    async fn snapshot(&self, events: &mpsc::UnboundedSender<Event>) -> Result<()> {
+    async fn snapshot(self: &Arc<Self>, events: &mpsc::UnboundedSender<Event>) -> Result<()> {
         let source = self.settle_source().await?;
-        let session = session_of(&source);
-        self.known.write().source = Some(source);
+        let session = self.backend().learn_source(source);
         self.settled.send_replace(true);
+        let session = self.backend().with_account(session).await;
         let _ = events.send(Event::Session(session));
         self.refresh_favorites().await;
         if let Ok(state) = call(REQUEST_TIMEOUT, self.api.player_state()).await {
@@ -1180,13 +1212,28 @@ impl Backend for KopuzBackend {
     }
 
     async fn accounts(&self) -> Result<Vec<Account>> {
-        Ok(Vec::new())
+        let several = self
+            .shared
+            .known
+            .read()
+            .source
+            .as_ref()
+            .is_some_and(|source| source.capabilities.accounts);
+        if !several {
+            return Ok(Vec::new());
+        }
+        let accounts = call(REQUEST_TIMEOUT, self.api().accounts(self.source_id()?)).await?;
+        Ok(accounts.iter().map(account).collect())
     }
 
-    async fn switch_account(&self, _page_id: Option<String>) -> Result<SessionInfo> {
-        Err(ClientError::Unsupported(
-            "switching accounts needs a newer music daemon".into(),
-        ))
+    async fn switch_account(&self, page_id: Option<String>) -> Result<SessionInfo> {
+        let source = call(
+            SLOW_TIMEOUT,
+            self.api().switch_account(self.source_id()?, page_id),
+        )
+        .await?;
+        let session = self.learn_source(source);
+        Ok(self.with_account(session).await)
     }
 
     async fn scrobbling(&self) -> Result<ScrobbleStatus> {
