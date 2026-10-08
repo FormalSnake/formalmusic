@@ -5,6 +5,7 @@
   fetchurl,
   pkg-config,
   cmake,
+  git,
   makeBinaryWrapper,
   alsa-lib,
   libopus,
@@ -40,9 +41,11 @@ rustPlatform.buildRustPackage {
   };
   cargoBuildFlags = [ "--package=kopuz-kopuzd" ];
 
+  # rookie's build script asks git for a commit hash, and fails without it.
   nativeBuildInputs = [
     pkg-config
     cmake
+    git
     makeBinaryWrapper
   ];
   buildInputs = [
