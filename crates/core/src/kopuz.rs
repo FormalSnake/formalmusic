@@ -1121,16 +1121,29 @@ impl Backend for KopuzBackend {
     }
 
     async fn browsers(&self) -> Result<Browsers> {
-        let known = self.shared.known.read();
-        let field = known
+        // An anonymous source has no sign-in options of its own; the
+        // service's form for a new one lists the same browsers.
+        let field =
+            |fields: &[api::FieldSpec]| fields.iter().find(|field| field.key == "browser").cloned();
+        let mut found = self
+            .shared
+            .known
+            .read()
             .source
             .as_ref()
-            .and_then(|source| source.settings.iter().find(|field| field.key == "browser"));
-        let options = match field.map(|field| &field.kind) {
+            .and_then(|source| field(&source.settings));
+        if found.is_none() {
+            let services = call(REQUEST_TIMEOUT, self.api().services()).await?;
+            found = services
+                .iter()
+                .find(|service| service.id == SERVICE)
+                .and_then(|service| field(&service.fields));
+        }
+        let options = match found.map(|field| field.kind) {
             Some(
                 api::FieldKind::Choice { options, .. } | api::FieldKind::Radio { options, .. },
-            ) => options.as_slice(),
-            _ => &[],
+            ) => options,
+            _ => Vec::new(),
         };
         let installed: Vec<Browser> = options
             .iter()
