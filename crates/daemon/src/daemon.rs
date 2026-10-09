@@ -6,9 +6,11 @@ use crate::playback::Playback;
 use crate::scrobble::Scrobbler;
 use crate::session::{ImportedFrom, Session};
 use crate::signin::BrowserSignIn;
-use formalmusic_api::{ApiError, Command, Event, LibraryScope, RateTarget, Reply};
+use formalmusic_api::{ApiError, Command, Event, LibraryScope, RateTarget, Reply, SessionInfo};
 use formalmusic_player::Player;
+use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{broadcast, watch};
 
 /// Rotated cookies reach `session.json` within this long.
@@ -27,6 +29,53 @@ pub struct Daemon {
     pub tray: watch::Sender<bool>,
     config: Config,
     app_settings: std::path::PathBuf,
+    recovery: Recovery,
+}
+
+/// Lets one failing command at a time repair the session. Commands that fail
+/// while another one is repairing wait for it, then retry without repairing
+/// again.
+#[derive(Default)]
+struct Recovery {
+    lock: tokio::sync::Mutex<()>,
+    repaired: AtomicU64,
+}
+
+impl Recovery {
+    fn epoch(&self) -> u64 {
+        self.repaired.load(Ordering::Acquire)
+    }
+
+    /// Whether the session is usable again. `seen` is the [`Recovery::epoch`]
+    /// from before the failed attempt; a later epoch means someone else
+    /// already repaired it.
+    async fn run(&self, seen: u64, repair: impl Future<Output = bool>) -> bool {
+        let _guard = self.lock.lock().await;
+        if self.epoch() != seen {
+            return true;
+        }
+        let repaired = repair.await;
+        if repaired {
+            self.repaired.fetch_add(1, Ordering::Release);
+        }
+        repaired
+    }
+}
+
+/// `attempt`, and once more if it answered signed out and `repair` got the
+/// session back.
+async fn retry_once<T, A, R>(
+    mut attempt: impl FnMut() -> A,
+    repair: impl FnOnce() -> R,
+) -> Result<T, ApiError>
+where
+    A: Future<Output = Result<T, ApiError>>,
+    R: Future<Output = bool>,
+{
+    match attempt().await {
+        Err(ApiError::SignedOut) if repair().await => attempt().await,
+        result => result,
+    }
 }
 
 impl Daemon {
@@ -64,6 +113,7 @@ impl Daemon {
             tray,
             config,
             app_settings: paths.app_settings.clone(),
+            recovery: Recovery::default(),
         }))
     }
 
@@ -97,7 +147,9 @@ impl Daemon {
             if ticks.is_multiple_of(KEEPALIVE_TICKS) && self.session.cookies().is_some() {
                 match self.session.keepalive().await {
                     Ok(()) => {}
-                    Err(ApiError::SignedOut) => self.check_session().await,
+                    Err(ApiError::SignedOut) => {
+                        self.check_session().await;
+                    }
                     Err(e) => tracing::debug!("session keepalive: {e}"),
                 }
             }
@@ -105,9 +157,17 @@ impl Daemon {
         }
     }
 
-    async fn check_session(&self) {
+    /// Whether the stored cookies are signed in afterwards.
+    async fn check_session(&self) -> bool {
         match self.session.refresh().await {
-            Ok(info) if !info.signed_in && self.session.imported_from().is_some() => {
+            // Dead cookies make account_menu answer 401 or 403, which arrives
+            // as an error rather than a signed-out reply.
+            Ok(SessionInfo {
+                signed_in: false, ..
+            })
+            | Err(ApiError::SignedOut)
+                if self.session.imported_from().is_some() =>
+            {
                 self.reimport().await
             }
             Ok(info) => {
@@ -116,19 +176,33 @@ impl Daemon {
                     premium = info.premium,
                     "session checked"
                 );
+                let signed_in = info.signed_in;
                 self.emit(Event::Session(info));
+                signed_in
             }
-            Err(e) => tracing::warn!("could not check the stored session: {e}"),
+            Err(e) => {
+                tracing::warn!("could not check the stored session: {e}");
+                false
+            }
         }
     }
 
     /// An imported session shares the browser's Google session, which the
     /// browser rotates; once YouTube stops taking the daemon's copy, the
-    /// profile has the current one.
-    async fn reimport(&self) {
+    /// profile has the current one. One `verify_session` first, since it
+    /// rotates cookies that merely aged out and costs no profile read.
+    async fn reimport(&self) -> bool {
         let Some(from) = self.session.imported_from() else {
-            return;
+            return false;
         };
+        if self.session.keepalive().await.is_ok()
+            && let Ok(info) = self.session.refresh().await
+            && info.signed_in
+        {
+            tracing::info!("the session came back after one verify_session");
+            self.emit(Event::Session(info));
+            return true;
+        }
         let signed_in = match self.signin.import(&from.browser, &from.profile).await {
             Ok(cookies) => self.session.sign_in_from(&cookies, None, Some(from)).await,
             Err(e) => Err(e),
@@ -138,15 +212,31 @@ impl Daemon {
                 tracing::info!("read the session again from the browser profile it came from");
                 self.playback.session_changed();
                 self.emit(Event::Session(info));
+                true
             }
             Err(e) => {
                 tracing::warn!("the imported session expired and the profile has none: {e}");
                 self.emit(Event::Session(self.session.info()));
+                false
             }
         }
     }
 
+    /// Runs `command`; a signed-out answer repairs the session and retries
+    /// the command once.
     pub async fn dispatch(&self, command: Command) -> Result<Reply, ApiError> {
+        let seen = self.recovery.epoch();
+        retry_once(
+            || self.execute(command.clone()),
+            || async {
+                self.session.cookies().is_some()
+                    && self.recovery.run(seen, self.check_session()).await
+            },
+        )
+        .await
+    }
+
+    async fn execute(&self, command: Command) -> Result<Reply, ApiError> {
         let client = self.session.client();
         let playback = &self.playback;
         match command {
@@ -381,5 +471,106 @@ impl Daemon {
                 Err(ApiError::BadRequest("not a dispatched command".into()))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[tokio::test]
+    async fn signed_out_command_is_retried_once_after_a_repair() {
+        let attempts = AtomicUsize::new(0);
+        let repairs = AtomicUsize::new(0);
+        let result: Result<u8, _> = retry_once(
+            || async {
+                match attempts.fetch_add(1, Ordering::SeqCst) {
+                    0 => Err(ApiError::SignedOut),
+                    _ => Ok(7),
+                }
+            },
+            || async {
+                repairs.fetch_add(1, Ordering::SeqCst);
+                true
+            },
+        )
+        .await;
+        assert!(matches!(result, Ok(7)));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(repairs.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn still_signed_out_after_the_retry_is_not_retried_again() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<(), _> = retry_once(
+            || async {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err(ApiError::SignedOut)
+            },
+            || async { true },
+        )
+        .await;
+        assert!(matches!(result, Err(ApiError::SignedOut)));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_repair_and_other_errors_do_not_retry() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<(), _> = retry_once(
+            || async {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err(ApiError::SignedOut)
+            },
+            || async { false },
+        )
+        .await;
+        assert!(result.is_err());
+        let result: Result<(), _> = retry_once(
+            || async {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err(ApiError::Network("down".into()))
+            },
+            || async { panic!("repaired a network error") },
+        )
+        .await;
+        assert!(matches!(result, Err(ApiError::Network(_))));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_failures_repairs_once() {
+        let recovery = Arc::new(Recovery::default());
+        let repairs = Arc::new(AtomicUsize::new(0));
+        let seen = recovery.epoch();
+        let tasks: Vec<_> = (0..8)
+            .map(|_| {
+                let (recovery, repairs) = (recovery.clone(), repairs.clone());
+                tokio::spawn(async move {
+                    recovery
+                        .run(seen, async {
+                            tokio::task::yield_now().await;
+                            repairs.fetch_add(1, Ordering::SeqCst);
+                            true
+                        })
+                        .await
+                })
+            })
+            .collect();
+        for task in tasks {
+            assert!(task.await.unwrap());
+        }
+        assert_eq!(repairs.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_repair_can_be_tried_again_later() {
+        let recovery = Recovery::default();
+        let seen = recovery.epoch();
+        assert!(!recovery.run(seen, async { false }).await);
+        assert!(recovery.run(seen, async { true }).await);
+        assert_eq!(recovery.epoch(), seen + 1);
     }
 }
