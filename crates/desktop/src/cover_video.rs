@@ -4,8 +4,8 @@
 //! becomes a `RenderImage` painted on a canvas, and the previous texture is
 //! released as the next lands, so the atlas holds one frame per cover.
 //!
-//! Decoding runs only while it is seen: the track plays and the window is
-//! visible. Otherwise ffmpeg is stopped and
+//! Decoding runs only while it is seen: the track plays, the window is
+//! visible, and the owner has not paused it. Otherwise ffmpeg is stopped and
 //! the last frame stays on screen. A cover given a `source` (the player bar
 //! while the expanded player is open) paints that one's frames, scaled down
 //! on the GPU, and only decodes itself while the source does not.
@@ -38,6 +38,7 @@ pub struct CoverVideo {
     max_fps: f64,
     scale: f32,
     visible: bool,
+    paused: bool,
     /// `(artist, album)` of the current track, what animated covers are looked up by.
     key: Option<(String, String)>,
     path: Option<Arc<Path>>,
@@ -79,6 +80,7 @@ impl CoverVideo {
             max_fps,
             scale: 1.,
             visible: true,
+            paused: false,
             key: None,
             path: None,
             info: None,
@@ -143,6 +145,15 @@ impl CoverVideo {
         }
     }
 
+    /// Holds the current frame without decoding, for a copy that something
+    /// else on screen already shows larger.
+    pub fn set_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
+        if self.paused != paused {
+            self.paused = paused;
+            self.sync(cx);
+        }
+    }
+
     /// Brings the decoder in line with the track, the cover and whether
     /// anyone can see it.
     fn sync(&mut self, cx: &mut Context<Self>) {
@@ -185,7 +196,7 @@ impl CoverVideo {
         if mirrored {
             self.release(cx);
         }
-        let wanted = self.visible && !mirrored && playing && self.info.is_some();
+        let wanted = self.visible && !self.paused && !mirrored && playing && self.info.is_some();
         let was = self.run.is_some();
         if wanted && self.run.is_none() {
             self.start(cx);
@@ -201,7 +212,7 @@ impl CoverVideo {
     fn probe(&mut self, path: Arc<Path>, cx: &mut Context<Self>) {
         let task = self.store.runtime().spawn({
             let path = path.clone();
-            async move { video::probe(&path).await }
+            async move { video::probe(&*path).await }
         });
         cx.spawn(async move |this, cx| {
             let info = task.await.ok().flatten();
@@ -333,9 +344,10 @@ impl Render for CoverVideo {
     }
 }
 
-/// VA-API through ffmpeg for animated covers where there is a render node,
-/// unless `FORMALMUSIC_VAAPI=0`. ffmpeg falls back to software when it fails.
-fn hardware_decode() -> bool {
+/// VA-API through ffmpeg for animated covers and music videos where there is
+/// a render node, unless `FORMALMUSIC_VAAPI=0`. ffmpeg falls back to
+/// software when it fails.
+pub(crate) fn hardware_decode() -> bool {
     cfg!(target_os = "linux")
         && std::env::var("FORMALMUSIC_VAAPI").as_deref() != Ok("0")
         && std::path::Path::new("/dev/dri/renderD128").exists()

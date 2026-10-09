@@ -64,8 +64,8 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Shuffle and repeat (off, all, one) | buttons | yes | `desktop/src/player_bar.rs`, kopuzd's queue |
 | Like and dislike | thumbs | yes | `desktop/src/header.rs` (`rating_buttons`), kopuz `LibraryApi::rate` |
 | Expanded player | full screen player | yes | `desktop/src/now_playing.rs` |
-| Song or Video toggle | switch | no | kopuzd has no video stream and no song or video counterpart on a row |
-| Autoplay radio keeps queue filled | autoplay | partial | A track radio tops itself up in kopuzd; a list that runs out does not turn into radio |
+| Song or Video toggle | switch | yes | `desktop/src/now_playing.rs` (`mode_switch`), kopuz `PlayerCommand::SetVersion`; the picture through `PlayerApi::video`, `core/src/relay.rs` and `desktop/src/music_video.rs`. A video with no song cut has no picture (see Gaps) |
+| Autoplay radio keeps queue filled | autoplay | yes | kopuzd's `autoplay_radio`, from `autoplay` in `config.json` |
 | Queue reorder, remove | drag | yes | `desktop/src/now_playing.rs` (`QueueDrag`) |
 | Clear queue | button | partial | `MusicStore::clear_queue`, no control in `desktop/src` |
 | Save queue as playlist | menu | no | |
@@ -89,8 +89,8 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Go to album, go to artist | track menu | yes | `desktop/src/actions.rs` |
 | Remove from queue | queue menu | yes | `desktop/src/now_playing.rs` |
 | Remove from history | history menu | yes | `desktop/src/actions.rs` (`track_menu`), `core/src/store.rs` (`remove_from_history`) |
-| Share, copy link | menu | partial | `desktop/src/actions.rs` (`share_row`): song, video, album, artist and podcast menus copy the link kopuzd gives; playlists have none until kopuz has a web URL for them |
-| Report, not interested | menu | no | |
+| Share, copy link | menu | yes | `desktop/src/actions.rs` (`share_row`): every song, video, album, artist, playlist and podcast menu copies the link kopuzd gives |
+| Report, not interested | menu | no | kopuz has `LibraryApi::dont_recommend`; no menu row reaches it yet |
 | Shuffle play an album or playlist | menu | yes | `desktop/src/actions.rs` |
 | Subscribe to an artist | artist header | yes | `desktop/src/header.rs`, kopuz `LibraryApi::follow` |
 | Hover play button on cards | cards | yes | `desktop/src/shelves.rs`, `desktop/src/actions.rs` (`play_item`) |
@@ -101,7 +101,7 @@ rows come from ytmusicapi and the help page, not from the live menus.
 |---|---|---|---|
 | Create playlist | New playlist | partial | `desktop/src/new_playlist.rs` takes a title only, as kopuz's `create_playlist` does |
 | Rename, describe, change privacy | edit playlist | yes | "Edit playlist" in `desktop/src/header.rs` opens `desktop/src/edit_playlist.rs` |
-| Reorder tracks in a playlist | drag | no | kopuzd's YouTube Music source takes no reorder (`PlaylistCapability::AddRemove`); the drag in `desktop/src/shelves.rs` (`RowDrag`) comes back with it |
+| Reorder tracks in a playlist | drag | yes | `desktop/src/shelves.rs` (`RowDrag`), where the playlist's own capability (or the source's) is `Reorder` |
 | Delete playlist | menu | yes | `desktop/src/edit_playlist.rs`, after a confirmation |
 | Add whole playlist into another | menu | no | |
 | Collaborative playlists | `join_collaborative_playlist` | no | |
@@ -140,12 +140,12 @@ are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
 
 | Feature | Web app | FormalMusic | Notes |
 |---|---|---|---|
-| Audio quality (Low, Normal, High, Always high) | playback settings | no | kopuzd has no quality setting |
+| Audio quality (Low, Normal, High, Always high) | playback settings | partial | `desktop/src/settings.rs`, kopuzd's `stream_quality`: Low, Normal and High; no Always high |
 | Premium bitrate | automatic with Premium | yes | kopuzd |
-| Autoplay | playback settings | no | kopuzd has no autoplay setting |
-| Show or hide music videos (audio only) | playback settings | no | See the Song or Video toggle |
-| Restrict explicit content | playback settings | no | kopuzd says nothing of explicit tracks |
-| Pause watch history | privacy | no | kopuzd always reports plays when signed in |
+| Autoplay | playback settings | yes | `desktop/src/settings.rs`, kopuzd's `autoplay_radio` |
+| Show or hide music videos (audio only) | playback settings | partial | The Song or Video switch holds for the queue; no setting of its own |
+| Restrict explicit content | playback settings | yes | `desktop/src/settings.rs`, kopuzd's `skip_explicit`; rows show an explicit badge |
+| Pause watch history | privacy | yes | `desktop/src/settings.rs`, kopuzd's `pause_watch_history` |
 | Delete watch history | privacy | no | |
 | Notifications | account settings | no | No desktop notifications; in-app toasts only (`desktop/src/toast.rs`) |
 | Connected apps, scrobbling | account settings | partial | Last.fm and ListenBrainz (token) in `desktop/src/settings.rs`, sent by kopuzd; no per-service switches |

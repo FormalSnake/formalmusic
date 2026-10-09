@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use crate::equalizer::Equalizer;
+use crate::model::AudioQuality;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -24,6 +25,13 @@ pub struct Settings {
     pub normalisation: bool,
     /// Fade from one track into the next over this long; 0 plays gapless.
     pub crossfade_ms: u32,
+    pub audio_quality: AudioQuality,
+    /// Radio from the last track once a list runs out.
+    pub autoplay: bool,
+    /// Leave songs YouTube marks explicit out of the queue.
+    pub restrict_explicit: bool,
+    /// Stop reporting plays to YouTube's watch history.
+    pub pause_history: bool,
 }
 
 impl Default for Settings {
@@ -35,6 +43,10 @@ impl Default for Settings {
             equalizer: Equalizer::default(),
             normalisation: true,
             crossfade_ms: 0,
+            audio_quality: AudioQuality::High,
+            autoplay: true,
+            restrict_explicit: false,
+            pause_history: false,
         }
     }
 }
@@ -103,6 +115,9 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"crossfadeMs":1500}"#).unwrap();
         assert_eq!(settings.crossfade_seconds(), 2);
         assert_eq!(Settings::default().crossfade_seconds(), 0);
+        assert!(settings.autoplay && !settings.restrict_explicit && !settings.pause_history);
+        let settings: Settings = serde_json::from_str(r#"{"audioQuality":"auto"}"#).unwrap();
+        assert_eq!(settings.audio_quality, AudioQuality::High);
     }
 
     #[test]

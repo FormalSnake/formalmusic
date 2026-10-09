@@ -7,7 +7,7 @@
     # kopuz-client to; the two move together. Its own flake packages the
     # Dioxus app and not kopuzd, so kopuzd is built from source here.
     kopuz = {
-      url = "github:FormalSnake/kopuz/2b9f8a657f8e8cc79e0a9144dd19464f6a304442";
+      url = "github:FormalSnake/kopuz/9f3f2b2a44096b214dfaeb01cc758840948e25e0";
       flake = false;
     };
   };

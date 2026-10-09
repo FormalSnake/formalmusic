@@ -25,11 +25,13 @@ use crate::art::ArtCache;
 use crate::backend::{Backend, BackendKind, ClientError, ConnectionStatus, Control, Event};
 use crate::cache::{CachedState, StateCache};
 use crate::model::{
-    Account, BrowseTarget, Browsers, ContinuationPage, EnqueuePosition, Header, Item, LastFmApp,
-    LibraryScope, LibraryTab, Lyrics, Page, PlaySource, PlayerState, PlaylistDetails,
-    ProfileBrowser, QueueState, Rating, Repeat, ScrobbleService, ScrobbleStatus, SearchFilter,
-    SearchResults, SectionLayout, SessionInfo, Status, Suggestion, Track,
+    Account, BrowseTarget, Browsers, ContinuationPage, EnqueuePosition, Features, Header, Item,
+    LastFmApp, LibraryScope, LibraryTab, Lyrics, Page, PlaySource, PlaybackMode, PlayerState,
+    PlaylistDetails, ProfileBrowser, QueueState, Rating, Repeat, ScrobbleService, ScrobbleStatus,
+    SearchFilter, SearchResults, SectionLayout, SessionInfo, Status, Suggestion, Track,
+    VideoStream,
 };
+use crate::relay::Relay;
 
 /// A page older than this is shown and fetched again behind it.
 const STALE_AFTER: Duration = Duration::from_secs(5 * 60);
@@ -481,6 +483,17 @@ fn message(error: &ClientError) -> String {
     }
 }
 
+/// Whether `track` is the other cut from `mode` and has the one `mode` picks.
+fn needs_swap(track: Option<&Track>, mode: PlaybackMode) -> bool {
+    track.is_some_and(|track| {
+        track.version().is_some_and(|version| version != mode)
+            && track
+                .counterpart
+                .as_ref()
+                .is_some_and(|other| other.version == mode)
+    })
+}
+
 /// The active line for `position_ms`: the last one that has started.
 pub fn line_at(lyrics: &Lyrics, position_ms: u64) -> Option<usize> {
     if !lyrics.synced {
@@ -652,22 +665,33 @@ impl MusicStore {
     pub fn apply(&self, event: Event) {
         match event {
             Event::Connection { .. } => {}
-            Event::Player(player) => self.inner.update(|state, events| {
-                let changed_track = state.player.track.as_ref().map(|t| &t.key)
-                    != player.track.as_ref().map(|t| &t.key);
-                if changed_track || state.player.status != player.status {
-                    events.push(StoreEvent::NowPlaying);
+            Event::Player(player) => {
+                let swap = self.inner.update(|state, events| {
+                    let changed_track = state.player.track.as_ref().map(|t| &t.key)
+                        != player.track.as_ref().map(|t| &t.key);
+                    if changed_track || state.player.status != player.status {
+                        events.push(StoreEvent::NowPlaying);
+                    }
+                    state.position_ms = player.position_ms;
+                    state.position_at = Some(Instant::now());
+                    state.learn_ratings(&player.track, events);
+                    let mode = state.player.mode;
+                    state.player = player;
+                    state.player.mode = mode;
+                    events.extend([StoreEvent::Player, StoreEvent::Position]);
+                    if changed_track {
+                        state.buffered_ms = 0;
+                    }
+                    update_lyric_line(state, events);
+                    changed_track && needs_swap(state.player.track.as_ref(), mode)
+                });
+                // The switch holds for the queue: a track that starts as the
+                // other cut is swapped for the one picked.
+                if swap {
+                    let mode = self.state().player.mode;
+                    self.control(Control::Version(mode));
                 }
-                state.position_ms = player.position_ms;
-                state.position_at = Some(Instant::now());
-                state.learn_ratings(&player.track, events);
-                state.player = player;
-                events.extend([StoreEvent::Player, StoreEvent::Position]);
-                if changed_track {
-                    state.buffered_ms = 0;
-                }
-                update_lyric_line(state, events);
-            }),
+            }
             Event::Position {
                 position_ms,
                 buffered_ms,
@@ -1321,6 +1345,50 @@ impl MusicStore {
         self.control(Control::Shuffle(shuffle));
     }
 
+    /// The Song and Video switch. kopuzd swaps the playing track for the
+    /// chosen cut at the same place in the song, and every track after it
+    /// that has one follows.
+    pub fn set_mode(&self, mode: PlaybackMode) {
+        let swap = self.inner.update(|state, events| {
+            state.player.mode = mode;
+            events.extend([StoreEvent::Player, StoreEvent::NowPlaying]);
+            needs_swap(state.player.track.as_ref(), mode)
+        });
+        if swap {
+            self.control(Control::Version(mode));
+        }
+    }
+
+    /// What the source can do past browsing and playing.
+    pub fn features(&self) -> Features {
+        self.inner.backend.features()
+    }
+
+    /// The picture of the playing music video `key`, served to ffmpeg from
+    /// kopuzd for as long as the [`Relay`] lives, with its size and rate.
+    pub async fn video_stream(&self, key: String) -> Option<(VideoStream, Relay)> {
+        let relay = match Relay::start(self.inner.backend.clone(), key).await {
+            Ok(relay) => relay,
+            Err(error) => {
+                tracing::warn!("video relay: {error}");
+                return None;
+            }
+        };
+        let Some(info) = crate::video::probe(&relay.url).await else {
+            tracing::warn!("music video: ffprobe could not read the picture");
+            return None;
+        };
+        let stream = VideoStream {
+            url: relay.url.clone(),
+            headers: Vec::new(),
+            width: info.width,
+            height: info.height,
+            fps: info.fps,
+            codec: info.codec,
+        };
+        Some((stream, relay))
+    }
+
     pub fn enqueue(&self, tracks: Vec<Track>, position: EnqueuePosition) {
         self.send(move |backend| async move { backend.enqueue(tracks, position).await });
     }
@@ -1609,14 +1677,14 @@ impl MusicStore {
         self.inner.backend.search_filters()
     }
 
-    /// Whether rows of your own playlists can be dragged into a new order.
-    pub fn playlists_reorder(&self) -> bool {
-        self.inner.backend.playlists_reorder()
+    /// Whether rows of this playlist of your own can be dragged into a new order.
+    pub fn playlist_reorders(&self, playlist_id: &str) -> bool {
+        self.inner.backend.playlist_reorders(playlist_id)
     }
 
     /// Moves row `from` of the playlist's list to `to` at once, and on YouTube.
     pub fn move_in_playlist(&self, playlist_id: String, from: usize, to: usize) {
-        if !self.playlists_reorder() {
+        if !self.playlist_reorders(&playlist_id) {
             return;
         }
         let target = BrowseTarget::Playlist(playlist_id.clone());
@@ -2428,7 +2496,6 @@ mod tests {
         store.play(
             PlaySource::Page {
                 target: BrowseTarget::Playlist("RDTMAK5uy_supermix".into()),
-                tracks: Vec::new(),
             },
             0,
             false,
@@ -2530,5 +2597,35 @@ mod tests {
             state.pages[&target].fetched_at.is_some() && !state.pages[&target].loading
         })
         .await;
+    }
+
+    #[test]
+    fn the_switch_swaps_only_a_track_with_the_other_cut() {
+        let track = |version: Option<PlaybackMode>| Track {
+            key: "song".into(),
+            title: String::new(),
+            artists: Vec::new(),
+            album: None,
+            duration_ms: None,
+            art: None,
+            explicit: false,
+            kind: crate::model::TrackKind::Song,
+            plays: None,
+            actions: crate::model::Actions::default(),
+            counterpart: version.map(|version| {
+                Box::new(crate::model::Counterpart {
+                    key: "video".into(),
+                    version,
+                    duration_ms: None,
+                })
+            }),
+        };
+        let song = track(Some(PlaybackMode::Video));
+        assert!(needs_swap(Some(&song), PlaybackMode::Video));
+        assert!(!needs_swap(Some(&song), PlaybackMode::Song));
+        let video = track(Some(PlaybackMode::Song));
+        assert!(needs_swap(Some(&video), PlaybackMode::Song));
+        assert!(!needs_swap(Some(&track(None)), PlaybackMode::Video));
+        assert!(!needs_swap(None, PlaybackMode::Video));
     }
 }

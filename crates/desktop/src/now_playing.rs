@@ -6,7 +6,8 @@ use std::rc::Rc;
 
 use formalmusic_core::MusicStore;
 use formalmusic_core::format::{duration, names};
-use formalmusic_core::model::{Item, Status, Track};
+use formalmusic_core::model::{Item, PlaybackMode, Status, Track};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -16,6 +17,8 @@ use crate::bridge::{Bridge, Topic};
 use crate::cover_video::CoverVideo;
 use crate::icons::{Icon, IconName};
 use crate::lyrics::LyricsView;
+use crate::motion::{self, DURATION_BASE, Presence};
+use crate::music_video::MusicVideo;
 use crate::primitives::IconButton;
 use crate::shelves::{self, Env};
 use crate::theme::{
@@ -39,6 +42,13 @@ const QUEUE_ROW: Pixels = px(56.);
 pub struct NowPlaying {
     store: MusicStore,
     cover: Entity<CoverVideo>,
+    video: Entity<MusicVideo>,
+    /// The music video has a frame up and the cover is faded out.
+    video_showing: bool,
+    /// Bumped when `video_showing` flips, so the crossfade replays.
+    video_flips: u64,
+    /// A spinner over the art while the video has no frame to show yet.
+    video_loading: Presence<()>,
     tab: Tab,
     queue: Entity<QueueView>,
     lyrics: Entity<LyricsView>,
@@ -54,11 +64,27 @@ impl NowPlaying {
         let cover =
             cx.new(|cx| CoverVideo::new(store.clone(), px(400.), radius::CARD, COVER_FPS, cx));
         Bridge::watch(cx, Topic::Player, weak.into());
+        let video = cx.new(|cx| MusicVideo::new(store.clone(), cx));
+        // The video repaints itself every frame; this view only cares when
+        // a picture appears or goes, or starts or stops loading.
+        cx.observe(&video, |this: &mut Self, video, cx| {
+            let video = video.read(cx);
+            if video.showing() != this.video_showing
+                || video.loading() != this.video_loading.is_open()
+            {
+                cx.notify();
+            }
+        })
+        .detach();
         let queue = cx.new(|cx| QueueView::new(store.clone(), cx));
         let lyrics = cx.new(|cx| LyricsView::new(store.clone(), cx));
         let mut this = Self {
             store,
             cover,
+            video,
+            video_showing: false,
+            video_flips: 0,
+            video_loading: Presence::new(DURATION_BASE),
             tab,
             queue,
             lyrics,
@@ -199,19 +225,108 @@ impl NowPlaying {
 }
 
 impl NowPlaying {
-    fn stage(&self, art_size: Pixels, palette: Palette) -> AnyElement {
+    /// The cover, or the music video in its place, crossfading between them.
+    fn stage(&self, width: Pixels, art_size: Pixels, palette: Palette) -> AnyElement {
+        let spinner = self.video_loading.current().map(|_| {
+            motion::toward(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .size(px(40.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(radius::PILL)
+                            .bg(palette.overlay)
+                            .child(Spinner::new().color(palette.text)),
+                    ),
+                self.video_loading.id("video-loading"),
+                self.video_loading.is_open(),
+                DURATION_BASE,
+                DURATION_BASE,
+                |el, t| el.opacity(t),
+            )
+        });
+        let showing = self.video_showing;
+        let flips = self.video_flips;
+        let cover = div()
+            .rounded(radius::CARD)
+            .shadow(crate::primitives::overlay_shadows(&palette))
+            .child(self.cover.clone());
+        let video = div().absolute().inset_0().child(self.video.clone());
+        // Nothing fades on the first paint, only when the picture comes or goes.
+        let (cover, video) = if flips == 0 {
+            (cover.into_any_element(), video.into_any_element())
+        } else {
+            (
+                motion::toward(
+                    cover,
+                    ElementId::NamedInteger("stage-cover".into(), flips),
+                    !showing,
+                    DURATION_BASE,
+                    DURATION_BASE,
+                    |el, t| el.opacity(t),
+                ),
+                motion::toward(
+                    video,
+                    ElementId::NamedInteger("stage-video".into(), flips),
+                    showing,
+                    DURATION_BASE,
+                    DURATION_BASE,
+                    |el, t| el.opacity(t),
+                ),
+            )
+        };
         div()
             .relative()
-            .size(art_size)
+            .w(width)
+            .h(art_size)
             .flex()
             .items_center()
             .justify_center()
-            .child(
-                div()
-                    .rounded(radius::CARD)
-                    .shadow(crate::primitives::overlay_shadows(&palette))
-                    .child(self.cover.clone()),
-            )
+            .child(cover)
+            .child(video)
+            .children(spinner)
+            .into_any_element()
+    }
+
+    /// "Song | Video", as on music.youtube.com, for a track with both cuts.
+    fn mode_switch(&self, playing: PlaybackMode, palette: Palette) -> AnyElement {
+        let segment = |id: &'static str, label: &'static str, value: PlaybackMode| {
+            let active = playing == value;
+            let store = self.store.clone();
+            div()
+                .id(id)
+                .h(px(28.))
+                .px(spacing::X4)
+                .flex()
+                .items_center()
+                .rounded(radius::PILL)
+                .text_size(type_scale::BODY.font_size)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if active { palette.canvas } else { palette.text })
+                .when(active, |el| el.bg(palette.text))
+                .when(!active, |el| {
+                    el.cursor_pointer()
+                        .hover(move |style| style.bg(palette.raised_hover))
+                        .on_click(move |_, _, _| store.set_mode(value))
+                })
+                .child(label)
+        };
+        div()
+            .p(px(2.))
+            .flex()
+            .flex_row()
+            .rounded(radius::PILL)
+            .bg(palette.press_wash)
+            .occlude()
+            .child(segment("mode-song", "Song", PlaybackMode::Song))
+            .child(segment("mode-video", "Video", PlaybackMode::Video))
             .into_any_element()
     }
 }
@@ -242,6 +357,34 @@ impl Render for NowPlaying {
             .clamp(px(200.), px(640.));
         self.cover
             .update(cx, |cover, cx| cover.set_size(art_size, cx));
+        let column = (viewport.width - PANEL_WIDTH - spacing::X10 * 3.).max(art_size);
+        // Which cut plays, for a track that has both.
+        let playing = track.as_ref().and_then(Track::version);
+        let videos = self.store.features().music_videos;
+        let show_video = videos && playing == Some(PlaybackMode::Video);
+        let aspect = self.video.read(cx).aspect();
+        let stage = if show_video {
+            (art_size * aspect).min(column).max(art_size)
+        } else {
+            art_size
+        };
+        self.video.update(cx, |video, cx| {
+            video.set_size(size(stage, art_size), cx);
+            video.set_active(show_video, cx);
+        });
+        let showing = self.video.read(cx).showing();
+        if showing != self.video_showing {
+            self.video_showing = showing;
+            self.video_flips += 1;
+        }
+        self.cover
+            .update(cx, |cover, cx| cover.set_paused(showing, cx));
+        let loading = self.video.read(cx).loading();
+        self.video_loading.set(
+            loading.then_some(()),
+            |this: &mut Self| &mut this.video_loading,
+            cx,
+        );
         let tabs = [
             (Tab::UpNext, "Up next"),
             (Tab::Lyrics, "Lyrics"),
@@ -367,7 +510,7 @@ impl Render for NowPlaying {
                             .items_center()
                             .justify_center()
                             .when(track.is_some(), |el| {
-                                el.child(self.stage(art_size, palette))
+                                el.child(self.stage(stage, art_size, palette))
                             })
                             .children(caption),
                     )
@@ -388,6 +531,20 @@ impl Render for NowPlaying {
                             ),
                     ),
             )
+            .when_some(playing.filter(|_| videos), |el, playing| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left(spacing::X10)
+                        .w(column)
+                        .h(TITLEBAR_HEIGHT)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(self.mode_switch(playing, palette)),
+                )
+            })
             .child(
                 div()
                     .absolute()

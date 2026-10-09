@@ -76,6 +76,8 @@ pub enum ArtKind {
     Playlist,
     Catalog,
     Station,
+    /// The signed-in account's picture, by the source's id.
+    Account,
     /// Painted locally from `id` as a seed, for the demo set.
     Demo,
 }
@@ -130,6 +132,40 @@ pub struct Track {
     /// Rating, library state and history token, where the page said.
     #[serde(default)]
     pub actions: Actions,
+    /// The music video of an album track, or the album track of a music
+    /// video, which the Song and Video switch swaps the playing row for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counterpart: Option<Box<Counterpart>>,
+}
+
+/// The other cut of a [`Track`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Counterpart {
+    pub key: String,
+    /// The counterpart's own cut; the row carrying it is the other one.
+    pub version: PlaybackMode,
+    pub duration_ms: Option<u64>,
+}
+
+/// Which cut of a recording plays: the album track, or the music video with
+/// its own sound and picture. One choice for the whole queue, as in the web
+/// app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackMode {
+    #[default]
+    Song,
+    Video,
+}
+
+impl Track {
+    /// Which cut this row is, known only when it has a counterpart.
+    pub fn version(&self) -> Option<PlaybackMode> {
+        self.counterpart.as_ref().map(|other| match other.version {
+            PlaybackMode::Song => PlaybackMode::Video,
+            PlaybackMode::Video => PlaybackMode::Song,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -174,6 +210,9 @@ pub enum Item {
         art: Option<Art>,
         #[serde(default)]
         actions: Actions,
+        /// The web app's link to it, for Share.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        web_url: Option<String>,
     },
     Podcast {
         browse_id: String,
@@ -438,14 +477,8 @@ pub struct PlaylistDetails {
 pub enum PlaySource {
     /// Exactly these tracks, as on a page the client already has.
     Tracks { tracks: Vec<Track> },
-    /// A page's whole track list, an album or a playlist. Playback starts on
-    /// `tracks`, the top of the list as the page shows it, or on the first
-    /// page fetched, and the rest is queued behind while it plays.
-    Page {
-        target: BrowseTarget,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        tracks: Vec<Track>,
-    },
+    /// An album or a playlist whole, which kopuzd resolves by its id.
+    Page { target: BrowseTarget },
     /// Start radio from one track (the web app's "Start radio").
     Radio { key: String },
     /// A mix made from a playlist.
@@ -495,6 +528,12 @@ pub struct PlayerState {
     pub shuffle: bool,
     /// Bitrate actually playing, such as "160 kbps".
     pub stream: Option<String>,
+    /// The Song and Video switch, which the store holds for the queue.
+    #[serde(default)]
+    pub mode: PlaybackMode,
+    /// How far the sound runs behind the position, for a picture kept to it.
+    #[serde(default)]
+    pub output_latency_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -583,4 +622,58 @@ pub struct ScrobbleAccount {
     pub connected: bool,
     /// Waiting for the user to allow access in the browser.
     pub connecting: bool,
+}
+
+/// What the source can do past browsing and playing, which decides the
+/// settings and switches the window offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Features {
+    /// It picks among several formats per track by the audio quality.
+    pub stream_quality: bool,
+    /// Its rows say which are explicit, so explicit songs can be skipped.
+    pub explicit_flags: bool,
+    /// It keeps a watch history that plays are reported to.
+    pub watch_history: bool,
+    /// A row can have a music video cut, with a picture to show.
+    pub music_videos: bool,
+    /// It can start a radio from a track, which autoplay runs on.
+    pub track_radio: bool,
+}
+
+/// The web app's audio quality setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioQuality {
+    /// The smallest format, to save data.
+    Low,
+    /// Standard formats, never the ones Premium unlocks.
+    Normal,
+    /// The best format the account is offered; `auto` in an older
+    /// config.json reads as this.
+    #[default]
+    #[serde(alias = "auto")]
+    High,
+}
+
+/// A music video's picture for the expanded player, decoded muted beside
+/// kopuzd's sound.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoStream {
+    pub url: String,
+    /// Sent with every request to `url`.
+    pub headers: Vec<(String, String)>,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub codec: String,
+}
+
+/// A byte range of a queued music video's picture, as kopuzd serves it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VideoChunk {
+    pub content_type: String,
+    pub start: u64,
+    /// The whole stream's length, when known.
+    pub total: Option<u64>,
+    pub bytes: Vec<u8>,
 }

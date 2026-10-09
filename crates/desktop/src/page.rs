@@ -577,8 +577,11 @@ impl PageView {
                         };
                         let on_play = play_from(&content, route, section, item, &env.store);
                         let reorder = (section == 0
-                            && env.menu.editable_playlist.is_some()
-                            && env.store.playlists_reorder())
+                            && env
+                                .menu
+                                .editable_playlist
+                                .as_deref()
+                                .is_some_and(|id| env.store.playlist_reorders(id)))
                         .then_some(item);
                         shelves::track_row(
                             track,
@@ -705,9 +708,9 @@ fn chip_target(current: &BrowseTarget, chip: &Chip) -> BrowseTarget {
     }
 }
 
-/// A click on a list row: an album or playlist plays whole from that row, a
-/// list anywhere else plays its own tracks from it. The rows already loaded
-/// go along, so the daemon starts at once and fetches only the rest.
+/// A click on a list row: an album or playlist plays whole from that row,
+/// resolved by kopuzd from its id, and a list anywhere else plays its own
+/// tracks from it.
 fn play_from(
     content: &Content,
     route: &Route,
@@ -728,6 +731,16 @@ fn play_from(
     let content = content.clone();
     Rc::new(move |_| {
         let shelf = &content.sections()[section];
+        let start = shelf.items[..item]
+            .iter()
+            .filter(|item| matches!(item, Item::Track(_)))
+            .count();
+        if let Some(target) = &whole {
+            let source = PlaySource::Page {
+                target: target.clone(),
+            };
+            return store.play(source, start, false);
+        }
         let tracks: Vec<_> = shelf
             .items
             .iter()
@@ -739,18 +752,7 @@ fn play_from(
                 }
             })
             .collect();
-        let start = shelf.items[..item]
-            .iter()
-            .filter(|item| matches!(item, Item::Track(_)))
-            .count();
-        let source = match &whole {
-            Some(target) => PlaySource::Page {
-                target: target.clone(),
-                tracks,
-            },
-            None => PlaySource::Tracks { tracks },
-        };
-        store.play(source, start, false);
+        store.play(PlaySource::Tracks { tracks }, start, false);
     })
 }
 

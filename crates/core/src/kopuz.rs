@@ -7,7 +7,7 @@
 //! it sets up its source. Everything past that reads what the source says it
 //! can do, never which service it is.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -85,6 +85,9 @@ struct Known {
     /// buffered time the seek bar shows.
     duration_ms: Option<u64>,
     buffered_ms: u64,
+    /// What each of the account's playlists allows, by its id without `VL`,
+    /// for those the source tells apart.
+    playlists: HashMap<String, api::PlaylistCapability>,
 }
 
 impl Known {
@@ -103,8 +106,6 @@ struct Shared {
     settled: tokio::sync::watch::Sender<bool>,
     stopped: AtomicBool,
     task: Mutex<Option<AbortHandle>>,
-    /// The rest of a long list queued behind what started playing.
-    filling: Mutex<Option<AbortHandle>>,
     last_spawn: Mutex<Option<Instant>>,
 }
 
@@ -124,7 +125,6 @@ impl KopuzBackend {
                 settled: tokio::sync::watch::channel(false).0,
                 stopped: AtomicBool::new(false),
                 task: Mutex::new(None),
-                filling: Mutex::new(None),
                 last_spawn: Mutex::new(None),
             }),
         }
@@ -225,17 +225,24 @@ impl KopuzBackend {
     /// The session with the account it acts as, for a source with several
     /// under one sign-in.
     async fn with_account(&self, mut session: SessionInfo) -> SessionInfo {
-        let (id, several) = {
+        let (id, several, avatar) = {
             let known = self.shared.known.read();
             match &known.source {
-                Some(source) => (source.id.clone(), source.capabilities.accounts),
+                Some(source) => (
+                    source.id.clone(),
+                    source.capabilities.accounts,
+                    source.avatar.clone(),
+                ),
                 None => return session,
             }
         };
         if session.signed_in && several {
             match call(REQUEST_TIMEOUT, self.api().accounts(id)).await {
                 Ok(accounts) => {
-                    session.account = accounts.iter().find(|a| a.active).map(account);
+                    session.account = accounts
+                        .iter()
+                        .find(|a| a.active)
+                        .map(|a| account(a, avatar.as_ref()));
                 }
                 Err(error) => tracing::debug!("accounts: {error}"),
             }
@@ -277,108 +284,6 @@ impl KopuzBackend {
         .await
         .map(drop)
     }
-
-    /// Plays a page's tracks: those given at once, then the rest of the
-    /// list, page by page, appended behind them while they play.
-    async fn play_page(
-        &self,
-        target: BrowseTarget,
-        given: Vec<Track>,
-        start: usize,
-        shuffle: bool,
-    ) -> Result<()> {
-        let request = self.request(&target).await?;
-        let mut queued: Vec<String> = given.iter().map(|track| track.key.clone()).collect();
-        let first = if queued.is_empty() {
-            let detail = self.detail(request.clone()).await?;
-            queued = list_keys(&detail);
-            if queued.is_empty() {
-                return Err(ClientError::NotFound("nothing to play there".into()));
-            }
-            Some(detail)
-        } else {
-            None
-        };
-        self.queue(
-            QueueMode::Replace,
-            QueueContext::Tracks {
-                keys: queued.clone(),
-            },
-            Some(start),
-            Some(shuffle),
-        )
-        .await?;
-        let backend = KopuzBackend {
-            shared: self.shared.clone(),
-        };
-        let task = tokio::spawn(async move {
-            let detail = match first {
-                Some(detail) => detail,
-                None => match backend.detail(request.clone()).await {
-                    Ok(detail) => detail,
-                    Err(error) => return tracing::warn!("queue the rest: {error}"),
-                },
-            };
-            let mut keys = list_keys(&detail);
-            let mut continuation = detail.continuation;
-            let mut skip = queued.len().min(keys.len());
-            if keys[..skip] != queued[..skip] {
-                skip = 0;
-            }
-            loop {
-                let rest: Vec<String> = keys.drain(skip..).collect();
-                if !rest.is_empty()
-                    && let Err(error) = backend
-                        .queue(
-                            QueueMode::Append,
-                            QueueContext::Tracks { keys: rest },
-                            None,
-                            None,
-                        )
-                        .await
-                {
-                    return tracing::warn!("queue the rest: {error}");
-                }
-                skip = 0;
-                let Some(token) = continuation.take() else {
-                    return;
-                };
-                let more = api::CatalogDetailRequest {
-                    continuation: Some(token),
-                    ..request.clone()
-                };
-                match backend.detail(more).await {
-                    Ok(detail) => {
-                        keys = list_keys(&detail);
-                        continuation = detail.continuation;
-                    }
-                    Err(error) => return tracing::warn!("queue the rest: {error}"),
-                }
-            }
-        });
-        if let Some(previous) = self.shared.filling.lock().replace(task.abort_handle()) {
-            previous.abort();
-        }
-        Ok(())
-    }
-}
-
-/// The keys of a page's own list: its tracks, or the songs of its list shelves.
-fn list_keys(detail: &CatalogDetail) -> Vec<String> {
-    if !detail.tracks.is_empty() {
-        return detail
-            .tracks
-            .iter()
-            .map(|track| track.key.clone())
-            .collect();
-    }
-    detail
-        .shelves
-        .iter()
-        .filter(|shelf| shelf.layout == api::ShelfLayout::List)
-        .flat_map(|shelf| &shelf.items)
-        .filter_map(|item| item.track.as_ref().map(|track| track.key.clone()))
-        .collect()
 }
 
 fn draft(id: Option<String>, auth_method: &str) -> SourceDraft {
@@ -401,14 +306,21 @@ fn session_of(source: &SourceInfo) -> SessionInfo {
     }
 }
 
-fn account(account: &api::SourceAccount) -> Account {
+/// An account as the menu lists it; only the active one has a picture,
+/// the one the source is signed in as.
+fn account(account: &api::SourceAccount, avatar: Option<&api::ArtworkRef>) -> Account {
     Account {
         name: account.name.clone(),
         handle: account.handle.clone(),
-        art: None,
+        art: avatar.filter(|_| account.active).map(convert::art),
         page_id: account.id.clone(),
         selected: account.active,
     }
+}
+
+/// A playlist's id as the library lists it: a browse id without its `VL`.
+fn bare(playlist_id: &str) -> &str {
+    playlist_id.strip_prefix("VL").unwrap_or(playlist_id)
 }
 
 fn text(text: &api::Text) -> String {
@@ -462,6 +374,20 @@ impl Shared {
                 pages: known.pages(),
             },
         )
+    }
+
+    async fn refresh_playlists(&self) {
+        if let Ok(catalog) = call(REQUEST_TIMEOUT, self.api.playlists()).await {
+            self.learn_playlists(&catalog);
+        }
+    }
+
+    fn learn_playlists(&self, catalog: &api::PlaylistCatalog) {
+        self.known.write().playlists = catalog
+            .playlists
+            .iter()
+            .filter_map(|playlist| Some((bare(&playlist.id).to_owned(), playlist.capability?)))
+            .collect();
     }
 
     async fn queue_event(&self) -> Option<Event> {
@@ -519,6 +445,7 @@ impl Shared {
         let session = self.backend().with_account(session).await;
         let _ = events.send(Event::Session(session));
         self.refresh_favorites().await;
+        self.refresh_playlists().await;
         if let Ok(state) = call(REQUEST_TIMEOUT, self.api.player_state()).await {
             let _ = events.send(Event::Player(self.player(&state)));
         }
@@ -556,6 +483,9 @@ impl Shared {
             ApiEvent::LibraryInvalidated { table } => {
                 if table == Table::Favorites {
                     self.refresh_favorites().await;
+                }
+                if table == Table::Playlists {
+                    self.refresh_playlists().await;
                 }
                 if table == Table::Servers
                     && let Ok(session) = self.backend().refresh_source().await
@@ -615,6 +545,18 @@ impl Shared {
         let mut command = crate::process::command(&program);
         if std::env::var_os("FORMALMUSIC_SOCKET").is_some() {
             command.arg("--socket").arg(&self.socket);
+        }
+        // The media flyout names and badges the session by the process's
+        // AppUserModelID, which the installer registers for the app.
+        if cfg!(windows) {
+            command.args(["--app-id", crate::APP_ID, "--app-name", crate::APP_NAME]);
+            let icon = program
+                .parent()
+                .map(|dir| dir.join("formalmusic.ico"))
+                .filter(|icon| icon.is_file());
+            if let Some(icon) = icon {
+                command.arg("--app-icon").arg(icon);
+            }
         }
         command
             .stdin(std::process::Stdio::null())
@@ -733,9 +675,6 @@ impl Backend for KopuzBackend {
         if let Some(task) = self.shared.task.lock().take() {
             task.abort();
         }
-        if let Some(task) = self.shared.filling.lock().take() {
-            task.abort();
-        }
     }
 
     async fn session(&self) -> Result<SessionInfo> {
@@ -746,6 +685,7 @@ impl Backend for KopuzBackend {
         match target {
             BrowseTarget::Library(LibraryTab::Playlists) => {
                 let catalog = call(REQUEST_TIMEOUT, self.api().playlists()).await?;
+                self.shared.learn_playlists(&catalog);
                 let items = catalog
                     .playlists
                     .iter()
@@ -759,6 +699,7 @@ impl Backend for KopuzBackend {
                         },
                         art: playlist.artwork.as_ref().map(convert::art),
                         actions: Actions::default(),
+                        web_url: None,
                     })
                     .collect();
                 Ok(self.library_page(target, items))
@@ -893,15 +834,53 @@ impl Backend for KopuzBackend {
             Item::Album { browse_id, .. }
             | Item::Artist { browse_id, .. }
             | Item::Podcast { browse_id, .. } => self.api().album_web_url(browse_id.clone()).await,
+            Item::Playlist {
+                web_url: Some(url), ..
+            } => return Ok(Some(url.clone())),
+            // A library row carries no link; the playlist's page does.
+            Item::Playlist { playlist_id, .. } => {
+                let request = api::CatalogDetailRequest::new(
+                    api::CatalogItemKind::Playlist,
+                    playlist_id.clone(),
+                );
+                return Ok(self.detail(request).await?.web_url);
+            }
             _ => return Ok(None),
         };
         url.map_err(convert::error)
     }
 
-    async fn play(&self, source: PlaySource, start_index: usize, shuffle: bool) -> Result<()> {
-        if let Some(previous) = self.shared.filling.lock().take() {
-            previous.abort();
+    fn features(&self) -> Features {
+        let known = self.shared.known.read();
+        let Some(source) = &known.source else {
+            return Features::default();
+        };
+        let can = &source.capabilities;
+        Features {
+            stream_quality: can.stream_quality,
+            explicit_flags: can.explicit_flags,
+            watch_history: can.watch_history,
+            music_videos: can.music_videos,
+            track_radio: can.track_radio,
         }
+    }
+
+    async fn video(&self, key: &str, start: u64, length: Option<u64>) -> Result<VideoChunk> {
+        let request = api::VideoRequest {
+            key: key.to_owned(),
+            start,
+            length,
+        };
+        let chunk = call(SLOW_TIMEOUT, self.api().video(request)).await?;
+        Ok(VideoChunk {
+            content_type: chunk.content_type,
+            start: chunk.start,
+            total: chunk.total,
+            bytes: chunk.bytes,
+        })
+    }
+
+    async fn play(&self, source: PlaySource, start_index: usize, shuffle: bool) -> Result<()> {
         match source {
             PlaySource::Tracks { tracks } => {
                 self.queue(
@@ -914,8 +893,25 @@ impl Backend for KopuzBackend {
                 )
                 .await
             }
-            PlaySource::Page { target, tracks } => {
-                self.play_page(target, tracks, start_index, shuffle).await
+            // kopuzd resolves an album or a playlist by its id, saved or not,
+            // and answers NotFound for one it cannot.
+            PlaySource::Page { target } => {
+                let context = match target {
+                    BrowseTarget::Album(id) => QueueContext::Album { id },
+                    BrowseTarget::Playlist(id) => QueueContext::Playlist { id },
+                    other => {
+                        return Err(ClientError::Unsupported(format!(
+                            "{other:?} does not play whole"
+                        )));
+                    }
+                };
+                self.queue(
+                    QueueMode::Replace,
+                    context,
+                    Some(start_index),
+                    Some(shuffle),
+                )
+                .await
             }
             PlaySource::Radio { key } => {
                 self.queue(
@@ -1000,10 +996,10 @@ impl Backend for KopuzBackend {
                     .await
                     .map(drop);
             }
+            Control::Version(mode) => C::SetVersion {
+                version: convert::version(mode),
+            },
             Control::Clear => {
-                if let Some(previous) = self.shared.filling.lock().take() {
-                    previous.abort();
-                }
                 let empty = QueueContext::Tracks { keys: Vec::new() };
                 return self.queue(QueueMode::Replace, empty, None, None).await;
             }
@@ -1075,13 +1071,17 @@ impl Backend for KopuzBackend {
         .await
     }
 
-    fn playlists_reorder(&self) -> bool {
-        self.shared
-            .known
-            .read()
-            .source
-            .as_ref()
-            .is_some_and(|source| source.capabilities.playlists == api::PlaylistCapability::Reorder)
+    fn playlist_reorders(&self, playlist_id: &str) -> bool {
+        let known = self.shared.known.read();
+        let Some(source) = &known.source else {
+            return false;
+        };
+        let capability = known
+            .playlists
+            .get(bare(playlist_id))
+            .copied()
+            .unwrap_or(source.capabilities.playlists);
+        capability == api::PlaylistCapability::Reorder
     }
 
     async fn edit_playlist(&self, playlist_id: &str, details: PlaylistDetails) -> Result<()> {
@@ -1236,7 +1236,17 @@ impl Backend for KopuzBackend {
             return Ok(Vec::new());
         }
         let accounts = call(REQUEST_TIMEOUT, self.api().accounts(self.source_id()?)).await?;
-        Ok(accounts.iter().map(account).collect())
+        let avatar = self
+            .shared
+            .known
+            .read()
+            .source
+            .as_ref()
+            .and_then(|source| source.avatar.clone());
+        Ok(accounts
+            .iter()
+            .map(|a| account(a, avatar.as_ref()))
+            .collect())
     }
 
     async fn switch_account(&self, page_id: Option<String>) -> Result<SessionInfo> {
@@ -1300,6 +1310,14 @@ impl Backend for KopuzBackend {
         config.equalizer = settings.equalizer.settings();
         config.crossfade_seconds = settings.crossfade_seconds();
         config.replay_gain.normalize_loudness = settings.normalisation;
+        config.stream_quality = match settings.audio_quality {
+            AudioQuality::Low => config::StreamQuality::Low,
+            AudioQuality::Normal => config::StreamQuality::Normal,
+            AudioQuality::High => config::StreamQuality::High,
+        };
+        config.autoplay_radio = settings.autoplay;
+        config.skip_explicit = settings.restrict_explicit;
+        config.pause_watch_history = settings.pause_history;
         if config == view.config {
             return Ok(());
         }

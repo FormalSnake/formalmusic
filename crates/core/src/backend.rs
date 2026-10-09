@@ -89,8 +89,13 @@ pub enum Control {
     Shuffle(bool),
     Jump(usize),
     Remove(usize),
-    Move { from: usize, to: usize },
+    Move {
+        from: usize,
+        to: usize,
+    },
     Clear,
+    /// Swaps the playing track for its other cut, at the same place.
+    Version(PlaybackMode),
 }
 
 pub type Result<T> = std::result::Result<T, ClientError>;
@@ -133,6 +138,10 @@ pub trait Backend: Send + Sync {
     async fn artwork(&self, art: &Art, hq: bool) -> Result<Vec<u8>>;
     /// The web app's link for a track, an album or a page.
     async fn share_url(&self, item: &Item) -> Result<Option<String>>;
+    /// What the source can do past browsing and playing.
+    fn features(&self) -> Features;
+    /// A byte range of the picture of the queued music video `key`.
+    async fn video(&self, key: &str, start: u64, length: Option<u64>) -> Result<VideoChunk>;
 
     // Playback
     async fn play(&self, source: PlaySource, start_index: usize, shuffle: bool) -> Result<()>;
@@ -148,8 +157,8 @@ pub trait Backend: Send + Sync {
     async fn add_to_playlist(&self, playlist_id: &str, keys: Vec<String>) -> Result<()>;
     async fn remove_from_playlist(&self, playlist_id: &str, index: usize) -> Result<()>;
     async fn move_in_playlist(&self, playlist_id: &str, from: usize, to: usize) -> Result<()>;
-    /// Whether rows of an owned playlist can be moved at all.
-    fn playlists_reorder(&self) -> bool;
+    /// Whether rows of this playlist, one the account owns, can be moved.
+    fn playlist_reorders(&self, playlist_id: &str) -> bool;
     async fn edit_playlist(&self, playlist_id: &str, details: PlaylistDetails) -> Result<()>;
     async fn delete_playlist(&self, playlist_id: &str) -> Result<()>;
 

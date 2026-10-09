@@ -12,9 +12,15 @@ pub mod kopuz;
 pub mod model;
 pub mod paths;
 pub mod process;
+pub mod relay;
 pub mod settings;
 pub mod store;
 pub mod video;
+
+/// The app id the desktop entry, the Windows Start menu shortcut and the media
+/// session all carry.
+pub const APP_ID: &str = "es.canarycoders.formalmusic";
+pub const APP_NAME: &str = "FormalMusic";
 
 pub use backend::{Backend, BackendKind, ClientError, ConnectionStatus};
 pub use store::{AppState, MusicStore, Route, SearchKey, StoreEvent, StoreOptions};

@@ -36,7 +36,6 @@ pub fn play_source(item: &Item) -> Option<PlaySource> {
         }),
         Item::Album { .. } | Item::Playlist { .. } => Some(PlaySource::Page {
             target: target_of(item)?,
-            tracks: Vec::new(),
         }),
         _ => None,
     }
@@ -168,7 +167,11 @@ fn save_row(actions: &Actions, store: &MusicStore) -> Option<MenuItem> {
 fn shareable(item: &Item) -> bool {
     matches!(
         item,
-        Item::Track(_) | Item::Album { .. } | Item::Artist { .. } | Item::Podcast { .. }
+        Item::Track(_)
+            | Item::Album { .. }
+            | Item::Artist { .. }
+            | Item::Playlist { .. }
+            | Item::Podcast { .. }
     )
 }
 

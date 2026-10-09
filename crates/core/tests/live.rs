@@ -52,6 +52,21 @@ async fn queue_of(first: &str, len: usize, rx: &mut Events) -> QueueState {
     panic!("the queue never started with {first} and reached {len} tracks");
 }
 
+/// The first playing track that `want` picks.
+async fn playing(rx: &mut Events, want: impl Fn(&Track) -> bool) -> Track {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(Event::Player(player))) =
+            tokio::time::timeout(Duration::from_secs(5), rx.recv()).await
+            && let Some(track) = player.track
+            && want(&track)
+        {
+            return track;
+        }
+    }
+    panic!("the track asked for never played");
+}
+
 fn tracks(page: &Page) -> Vec<&Track> {
     page.sections
         .iter()
@@ -139,7 +154,10 @@ async fn album_artist_playlist_and_podcast_pages() {
     else {
         panic!("an album has a detail header");
     };
-    assert!(subtitle[0].target.is_some(), "the artist links");
+    assert!(
+        subtitle.iter().any(|link| link.target.is_some()),
+        "the artist links"
+    );
     assert!(second_subtitle.as_deref().unwrap().contains("songs"));
     assert!(play.is_some());
     assert_eq!(tracks(&album).len(), 13);
@@ -273,11 +291,12 @@ async fn the_library_of_a_signed_in_account() {
     assert!(!browsers.installed.is_empty());
 }
 
-/// Plays an album whole, then the rest of a long playlist behind its first
-/// page, leaving the player paused and muted as it was asked.
+/// Plays an album and a long playlist whole by their ids, from a row, and
+/// an id kopuzd cannot resolve fails as not found, leaving the queue as it
+/// was. Ends paused and muted.
 #[tokio::test]
 #[ignore = "needs a running kopuzd; plays audio, muted"]
-async fn playing_a_page_queues_all_of_it() {
+async fn playing_a_page_queues_all_of_it_by_id() {
     let (backend, _, mut rx) = listening().await;
     backend
         .control(formalmusic_core::backend::Control::Muted(true))
@@ -288,41 +307,321 @@ async fn playing_a_page_queues_all_of_it() {
         .key
         .clone();
     backend
-        .play(
-            PlaySource::Page {
-                target: album,
-                tracks: Vec::new(),
-            },
-            2,
-            false,
-        )
+        .play(PlaySource::Page { target: album }, 2, false)
         .await
         .unwrap();
     let queue = queue_of(&opening, 13, &mut rx).await;
     assert_eq!(queue.tracks.len(), 13);
+    assert_eq!(queue.current, Some(2));
 
-    let mix = BrowseTarget::Playlist("RDTMAK5uy_nilrsVWxrKskY0ZUpVZ3zpB0u4LwWTVJ4".into());
-    let first = backend.browse(&mix).await.unwrap();
-    let shown: Vec<Track> = tracks(&first).into_iter().cloned().collect();
-    assert!(first.sections[0].continuation.is_some(), "the mix pages on");
+    // A chart is longer than its first page, and still comes whole.
+    let chart = BrowseTarget::Playlist("VLPL4fGSI1pDJn6sMPCoD7PdSlEgyUylgxuT".into());
+    let first = backend.browse(&chart).await.unwrap();
+    let shown = tracks(&first)[0].key.clone();
     backend
+        .play(PlaySource::Page { target: chart }, 0, false)
+        .await
+        .unwrap();
+    let queue = queue_of(&shown, 100, &mut rx).await;
+    assert!(queue.tracks.len() >= 100, "{} tracks", queue.tracks.len());
+
+    let unknown = backend
         .play(
             PlaySource::Page {
-                target: mix,
-                tracks: shown.clone(),
+                target: BrowseTarget::Album("MPREunknown".into()),
             },
             0,
             false,
         )
-        .await
-        .unwrap();
-    let queue = queue_of(&shown[0].key, shown.len() + 1, &mut rx).await;
-    let keys = |tracks: &[Track]| tracks.iter().map(|t| t.key.clone()).collect::<Vec<_>>();
-    assert_eq!(keys(&queue.tracks[..shown.len()]), keys(&shown));
+        .await;
+    assert!(
+        matches!(unknown, Err(formalmusic_core::ClientError::NotFound(_))),
+        "{unknown:?}"
+    );
     backend
         .control(formalmusic_core::backend::Control::Pause)
         .await
         .unwrap();
+}
+
+/// The details a page header and its rows carry past the basics: explicit
+/// marks, play counts, an album's kind and notes, an artist's monthly
+/// audience, a playlist's owner and its link to share.
+#[tokio::test]
+#[ignore = "needs a running kopuzd"]
+async fn pages_carry_their_catalog_details() {
+    let (backend, _) = connected().await;
+    let album = backend
+        .browse(&BrowseTarget::Album("MPREb_K8qWMWVqXGi".into()))
+        .await
+        .unwrap();
+    let Some(Header::Detail {
+        subtitle,
+        description,
+        ..
+    }) = &album.header
+    else {
+        panic!("an album has a detail header");
+    };
+    assert_eq!(subtitle[0].text, "Album");
+    assert!(subtitle[1].target.is_some(), "the artist links");
+    assert!(description.as_deref().is_some_and(|d| d.len() > 100));
+    assert!(tracks(&album).iter().all(|t| t.plays.is_some()), "plays");
+
+    let damn = backend
+        .browse(&BrowseTarget::Album("MPREb_4bCz6FCRC8M".into()))
+        .await
+        .unwrap();
+    assert!(
+        tracks(&damn).iter().any(|t| t.explicit),
+        "DAMN. has explicit songs"
+    );
+    let search = backend
+        .search("kendrick lamar damn", Some(SearchFilter::Albums))
+        .await
+        .unwrap();
+    assert!(
+        search.sections.iter().flat_map(|s| &s.items).any(
+            |item| matches!(item, Item::Album { browse_id, explicit: true, .. } if browse_id == "MPREb_4bCz6FCRC8M")
+        ),
+        "the album card is marked explicit"
+    );
+
+    let artist = backend
+        .browse(&BrowseTarget::Artist("UCRr1xG_2WIDs18a6cIiCxeA".into()))
+        .await
+        .unwrap();
+    let Some(Header::Artist {
+        monthly_listeners, ..
+    }) = &artist.header
+    else {
+        panic!("an artist has a banner");
+    };
+    assert!(
+        monthly_listeners
+            .as_deref()
+            .is_some_and(|text| text.contains("monthly")),
+        "{monthly_listeners:?}"
+    );
+
+    let chart = backend
+        .browse(&BrowseTarget::Playlist(
+            "VLPL4fGSI1pDJn6sMPCoD7PdSlEgyUylgxuT".into(),
+        ))
+        .await
+        .unwrap();
+    let Some(Header::Detail { subtitle, .. }) = &chart.header else {
+        panic!("a playlist has a detail header");
+    };
+    assert!(
+        subtitle.iter().any(|link| link.text == "YouTube Charts"),
+        "{subtitle:?}"
+    );
+    let share = |playlist_id: &str, web_url: Option<String>| Item::Playlist {
+        playlist_id: playlist_id.into(),
+        title: String::new(),
+        subtitle: None,
+        art: None,
+        actions: Actions::default(),
+        web_url,
+    };
+    let url = "https://music.youtube.com/playlist?list=PL4fGSI1pDJn6sMPCoD7PdSlEgyUylgxuT";
+    // A row from a page carries its link; one from the library asks for it.
+    let carried = backend
+        .share_url(&share(
+            "VLPL4fGSI1pDJn6sMPCoD7PdSlEgyUylgxuT",
+            Some(url.into()),
+        ))
+        .await
+        .unwrap();
+    let asked = backend
+        .share_url(&share("VLPL4fGSI1pDJn6sMPCoD7PdSlEgyUylgxuT", None))
+        .await
+        .unwrap();
+    assert_eq!(carried.as_deref(), Some(url));
+    assert_eq!(asked.as_deref(), Some(url));
+}
+
+/// What the YouTube Music source says it can do, which decides the
+/// settings and the Song and Video switch the window shows.
+#[tokio::test]
+#[ignore = "needs a running kopuzd"]
+async fn the_source_offers_its_playback_settings() {
+    let (backend, _) = connected().await;
+    let features = backend.features();
+    assert!(features.stream_quality, "{features:?}");
+    assert!(features.explicit_flags, "{features:?}");
+    assert!(features.watch_history, "{features:?}");
+    assert!(features.music_videos, "{features:?}");
+    assert!(features.track_radio, "{features:?}");
+}
+
+/// Each playback setting lands on kopuzd's config key, and the config is
+/// put back as it was.
+#[tokio::test]
+#[ignore = "needs a running kopuzd; changes its config and puts it back"]
+async fn playback_settings_reach_kopuzd() {
+    use api::prelude::*;
+    let (backend, _) = connected().await;
+    let api = client::GrpcApi::new(socket_path()).unwrap();
+    let before = api.config().await.unwrap().config;
+    let settings = formalmusic_core::settings::Settings {
+        audio_quality: AudioQuality::Low,
+        autoplay: true,
+        restrict_explicit: true,
+        pause_history: true,
+        ..formalmusic_core::settings::Settings::default()
+    };
+    backend.apply_settings(&settings).await.unwrap();
+    let after = api.config().await.unwrap().config;
+    api.set_config(before.clone()).await.unwrap();
+    assert_eq!(after.stream_quality, config::StreamQuality::Low);
+    assert!(after.autoplay_radio && after.skip_explicit && after.pause_watch_history);
+    assert_eq!(api.config().await.unwrap().config, before);
+}
+
+/// A playlist made for the check takes a reorder, as its capability says,
+/// and is deleted again.
+#[tokio::test]
+#[ignore = "needs a running kopuzd; creates a playlist and deletes it"]
+async fn an_own_playlist_reorders_its_rows() {
+    let (backend, session) = connected().await;
+    if !session.signed_in {
+        eprintln!("skipped: the source is not signed in");
+        return;
+    }
+    let album = backend
+        .browse(&BrowseTarget::Album("MPREb_K8qWMWVqXGi".into()))
+        .await
+        .unwrap();
+    let keys: Vec<String> = tracks(&album)
+        .iter()
+        .take(3)
+        .map(|t| t.key.clone())
+        .collect();
+    let id = backend
+        .create_playlist("FormalMusic reorder check".into(), keys.clone())
+        .await
+        .unwrap();
+    let target = BrowseTarget::Playlist(id.clone());
+    let listed = |page: &Page| {
+        tracks(page)
+            .iter()
+            .map(|t| t.key.clone())
+            .collect::<Vec<_>>()
+    };
+    let result = async {
+        // YouTube takes a moment to list tracks just added.
+        let mut page = backend.browse(&target).await?;
+        for _ in 0..10 {
+            if listed(&page).len() == keys.len() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            page = backend.browse(&target).await?;
+        }
+        let reorders = backend.playlist_reorders(&id);
+        backend.move_in_playlist(&id, 0, 2).await?;
+        let mut moved = backend.browse(&target).await?;
+        for _ in 0..10 {
+            if listed(&moved).first() == keys.get(1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            moved = backend.browse(&target).await?;
+        }
+        Ok::<_, formalmusic_core::ClientError>((reorders, listed(&page), listed(&moved)))
+    }
+    .await;
+    backend.delete_playlist(&id).await.unwrap();
+    let (reorders, before, after) = result.unwrap();
+    assert!(reorders, "an own playlist reorders");
+    assert_eq!(before, keys);
+    assert_eq!(
+        after,
+        vec![keys[1].clone(), keys[2].clone(), keys[0].clone()]
+    );
+}
+
+/// The signed-in account's picture, as the account menu shows it.
+#[tokio::test]
+#[ignore = "needs a running kopuzd"]
+async fn the_account_has_its_picture() {
+    let (backend, session) = connected().await;
+    if !session.signed_in {
+        eprintln!("skipped: the source is not signed in");
+        return;
+    }
+    let account = session.account.expect("a signed-in account");
+    let art = account.art.expect("the account's picture");
+    assert_eq!(art.kind, ArtKind::Account);
+    let bytes = backend.artwork(&art, false).await.unwrap();
+    assert!(bytes.len() > 100, "{} bytes", bytes.len());
+}
+
+/// A song with a music video swaps to it and back at the same place, and
+/// the video's picture is served through the relay ffmpeg reads. Muted.
+#[tokio::test]
+#[ignore = "needs a running kopuzd; plays audio, muted"]
+async fn the_song_switches_to_its_music_video_and_back() {
+    use formalmusic_core::backend::Control;
+    let (backend, _, mut rx) = listening().await;
+    backend.control(Control::Muted(true)).await.unwrap();
+    // Get Lucky, whose radio queue carries both cuts of most rows.
+    let song = "5NV6Rdv1a3I";
+    backend
+        .play(PlaySource::Radio { key: song.into() }, 0, false)
+        .await
+        .unwrap();
+    // The radio may open on either cut; the video one is what serves a picture.
+    let first = playing(&mut rx, |track| {
+        track.version().is_some()
+            && (track.key == song || track.counterpart.as_ref().is_some_and(|c| c.key == song))
+    })
+    .await;
+    let video = if first.version() == Some(PlaybackMode::Video) {
+        first
+    } else {
+        backend
+            .control(Control::Version(PlaybackMode::Video))
+            .await
+            .unwrap();
+        let other = first.counterpart.as_ref().unwrap().key.clone();
+        playing(&mut rx, |track| track.key == other).await
+    };
+
+    let chunk = backend.video(&video.key, 0, Some(4096)).await.unwrap();
+    assert!(
+        chunk.content_type.starts_with("video/"),
+        "{}",
+        chunk.content_type
+    );
+    assert!(chunk.total.is_some_and(|total| total > 4096));
+    assert_eq!(chunk.bytes.len(), 4096);
+    let backend = std::sync::Arc::new(backend);
+    let relay = formalmusic_core::relay::Relay::start(backend.clone(), video.key.clone())
+        .await
+        .unwrap();
+    let info = formalmusic_core::video::probe(&relay.url)
+        .await
+        .expect("ffprobe reads the picture through the relay");
+    assert!(info.width >= 256 && info.height >= 144, "{info:?}");
+    drop(relay);
+
+    backend
+        .control(Control::Version(PlaybackMode::Song))
+        .await
+        .unwrap();
+    let other = video.counterpart.as_ref().unwrap().key.clone();
+    let cut = playing(&mut rx, |track| track.key == other).await;
+    assert_eq!(cut.version(), Some(PlaybackMode::Song));
+    backend
+        .control(Control::Version(PlaybackMode::Video))
+        .await
+        .unwrap();
+    let again = playing(&mut rx, |track| track.key == video.key).await;
+    assert_eq!(again.version(), Some(PlaybackMode::Video));
+    backend.control(Control::Pause).await.unwrap();
 }
 
 /// Likes, follows, saves and a playlist of its own, each undone again, so

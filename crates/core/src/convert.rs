@@ -101,6 +101,7 @@ pub fn art(art: &ArtworkRef) -> Art {
         ArtworkTarget::Playlist(id) => (ArtKind::Playlist, id),
         ArtworkTarget::Catalog(id) => (ArtKind::Catalog, id),
         ArtworkTarget::Station(id) => (ArtKind::Station, id),
+        ArtworkTarget::Account(id) => (ArtKind::Account, id),
     };
     Art {
         kind,
@@ -119,6 +120,7 @@ pub fn artwork_target(art: &Art) -> Option<ArtworkTarget> {
         ArtKind::Playlist => ArtworkTarget::Playlist(id),
         ArtKind::Catalog => ArtworkTarget::Catalog(id),
         ArtKind::Station => ArtworkTarget::Station(id),
+        ArtKind::Account => ArtworkTarget::Account(id),
         ArtKind::Demo => return None,
     })
 }
@@ -194,10 +196,31 @@ pub fn track(info: &TrackInfo, kind: TrackKind, actions: Actions, ctx: &Context)
         album,
         duration_ms: info.duration_ms.filter(|ms| *ms > 0),
         art: info.artwork.as_ref().map(art),
-        explicit: false,
+        explicit: info.explicit,
         kind,
-        plays: None,
+        plays: info.plays.as_deref().and_then(some_text),
         actions,
+        counterpart: info.counterpart.as_ref().map(|other| {
+            Box::new(Counterpart {
+                key: other.key.clone(),
+                version: mode(other.version),
+                duration_ms: other.duration_ms.filter(|ms| *ms > 0),
+            })
+        }),
+    }
+}
+
+pub fn mode(version: api::TrackVersion) -> PlaybackMode {
+    match version {
+        api::TrackVersion::Song => PlaybackMode::Song,
+        api::TrackVersion::Video => PlaybackMode::Video,
+    }
+}
+
+pub fn version(mode: PlaybackMode) -> api::TrackVersion {
+    match mode {
+        PlaybackMode::Song => api::TrackVersion::Song,
+        PlaybackMode::Video => api::TrackVersion::Video,
     }
 }
 
@@ -235,7 +258,7 @@ pub fn item(item: &CatalogItem, ctx: &Context) -> Option<Item> {
                 .unwrap_or_default(),
             year: None,
             art,
-            explicit: false,
+            explicit: item.explicit,
             actions: acts,
         },
         CatalogItemKind::Artist => Item::Artist {
@@ -251,6 +274,7 @@ pub fn item(item: &CatalogItem, ctx: &Context) -> Option<Item> {
             subtitle,
             art,
             actions: acts,
+            web_url: item.web_url.clone(),
         },
         CatalogItemKind::Podcast => Item::Podcast {
             browse_id: item.id.clone(),
@@ -402,14 +426,21 @@ fn header(target: &BrowseTarget, detail: &CatalogDetail, sections: &[Section]) -
             title: detail.title.clone(),
         },
         CatalogHeader::Detail => {
+            // "Album • Daft Punk • 2013", or "Playlist • YouTube Charts", as
+            // the web app's header reads.
+            let plain = |text: Option<&str>| {
+                text.and_then(some_text)
+                    .map(|text| Link { text, target: None })
+            };
             let byline = detail.subtitle.as_deref().and_then(some_text);
-            let subtitle = byline
-                .map(|text| Link {
+            let subtitle = plain(detail.album_type.as_deref())
+                .into_iter()
+                .chain(byline.map(|text| Link {
                     text,
                     target: detail.artist_key.clone().map(BrowseTarget::Artist),
-                })
-                .into_iter()
-                .chain(detail.year.clone().map(|text| Link { text, target: None }))
+                }))
+                .chain(plain(detail.owner.as_deref()))
+                .chain(plain(detail.year.as_deref()))
                 .collect();
             let rows: Vec<&Track> = sections
                 .iter()
@@ -424,11 +455,26 @@ fn header(target: &BrowseTarget, detail: &CatalogDetail, sections: &[Section]) -
             let complete = sections
                 .iter()
                 .all(|section| section.continuation.is_none());
-            let second_subtitle = (!rows.is_empty() && complete).then(|| {
+            let counted = (!rows.is_empty() && complete).then(|| {
                 length(
                     rows.len(),
                     rows.iter().filter_map(|track| track.duration_ms).sum(),
                 )
+            });
+            let plays = detail.plays.as_deref().and_then(some_text);
+            let second_subtitle = match (plays, counted) {
+                (Some(plays), Some(counted)) => Some(format!("{plays} \u{2022} {counted}")),
+                (plays, counted) => plays.or(counted),
+            };
+            // An album or a playlist plays by its id; any other list plays
+            // the rows it shows.
+            let play = (!rows.is_empty()).then(|| match target {
+                BrowseTarget::Album(_) | BrowseTarget::Playlist(_) => PlaySource::Page {
+                    target: target.clone(),
+                },
+                _ => PlaySource::Tracks {
+                    tracks: rows.iter().map(|track| (*track).clone()).collect(),
+                },
             });
             Header::Detail {
                 title: detail.title.clone(),
@@ -436,10 +482,7 @@ fn header(target: &BrowseTarget, detail: &CatalogDetail, sections: &[Section]) -
                 second_subtitle,
                 description,
                 art,
-                play: (!rows.is_empty()).then(|| PlaySource::Page {
-                    target: target.clone(),
-                    tracks: Vec::new(),
-                }),
+                play,
                 editable: detail.privacy.is_some(),
                 privacy: detail.privacy.map(privacy),
                 actions: actions(&detail.actions),
@@ -450,7 +493,7 @@ fn header(target: &BrowseTarget, detail: &CatalogDetail, sections: &[Section]) -
             description,
             art,
             subscribers: detail.subtitle.as_deref().and_then(some_text),
-            monthly_listeners: None,
+            monthly_listeners: detail.monthly_listeners.as_deref().and_then(some_text),
             shuffle: Some(PlaySource::Artist {
                 key: detail.id.clone(),
             }),
@@ -704,6 +747,8 @@ pub fn player(state: &api::PlayerState, ctx: &Context) -> PlayerState {
         muted: state.muted,
         repeat: repeat(state.queue.loop_mode),
         shuffle: state.queue.shuffle,
+        mode: PlaybackMode::default(),
+        output_latency_ms: state.output_latency_ms.unwrap_or(0),
     }
 }
 
@@ -888,6 +933,54 @@ mod tests {
             Some("2 songs \u{2022} 1 hour, 15 minutes")
         );
         assert!(matches!(play, Some(PlaySource::Page { .. })));
+    }
+
+    #[test]
+    fn a_header_reads_like_the_web_app_and_plays_by_id() {
+        let detail = CatalogDetail {
+            kind: CatalogItemKind::Playlist,
+            id: "VLPL1".into(),
+            title: "Top 100".into(),
+            header: CatalogHeader::Detail,
+            owner: Some("YouTube Charts".into()),
+            plays: Some("2.1M views".into()),
+            tracks: vec![TrackInfo {
+                duration_ms: Some(180_000),
+                explicit: true,
+                plays: Some("9M plays".into()),
+                counterpart: Some(api::TrackCounterpart {
+                    key: "video".into(),
+                    version: api::TrackVersion::Video,
+                    duration_ms: Some(200_000),
+                }),
+                ..info("a")
+            }],
+            ..CatalogDetail::default()
+        };
+        let target = BrowseTarget::Playlist("VLPL1".into());
+        let page = page(target.clone(), &detail, &Context::default());
+        let Some(Header::Detail {
+            subtitle,
+            second_subtitle,
+            play,
+            ..
+        }) = &page.header
+        else {
+            panic!("no detail header");
+        };
+        assert_eq!(subtitle[0].text, "YouTube Charts");
+        assert_eq!(
+            second_subtitle.as_deref(),
+            Some("2.1M views \u{2022} 1 song \u{2022} 3 minutes")
+        );
+        assert_eq!(play, &Some(PlaySource::Page { target }));
+        let Item::Track(row) = &page.sections[0].items[0] else {
+            panic!("no row");
+        };
+        assert!(row.explicit);
+        assert_eq!(row.plays.as_deref(), Some("9M plays"));
+        assert_eq!(row.version(), Some(PlaybackMode::Song));
+        assert_eq!(row.counterpart.as_ref().unwrap().key, "video");
     }
 
     #[test]

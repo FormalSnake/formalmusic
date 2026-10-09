@@ -18,10 +18,12 @@ dirs.workspace = true
 thiserror.workspace = true
 async-trait = "0.1"
 futures-util = "0.3"
+libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 
 [target.'cfg(windows)'.dependencies]
 kopuz-proto.workspace = true
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

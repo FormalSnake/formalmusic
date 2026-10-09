@@ -262,6 +262,7 @@ fn build_catalog() -> Catalog {
                         saved: Some(index % 3 == 0),
                         ..Actions::default()
                     },
+                    counterpart: None,
                 }
             })
             .collect();
@@ -408,6 +409,10 @@ fn playlist_item(playlist: &Playlist) -> Item {
             saved: (!playlist.owned).then_some(true),
             ..Actions::default()
         },
+        web_url: Some(format!(
+            "https://music.youtube.com/playlist?list={}",
+            playlist.playlist_id
+        )),
     }
 }
 
@@ -720,7 +725,6 @@ fn album_page(browse_id: &str) -> Option<Page> {
             art: art(&format!("album-{n}")),
             play: Some(PlaySource::Page {
                 target: BrowseTarget::Album(browse_id.into()),
-                tracks: Vec::new(),
             }),
             editable: false,
             privacy: None,
@@ -865,7 +869,6 @@ fn playlist_page(playlist_id: &str) -> Option<Page> {
             art: art(&format!("playlist-{playlist_id}")),
             play: Some(PlaySource::Page {
                 target: BrowseTarget::Playlist(playlist_id.into()),
-                tracks: Vec::new(),
             }),
             editable: playlist.owned,
             privacy: playlist.owned.then_some(Privacy::Private),
@@ -1692,8 +1695,23 @@ impl Backend for DemoBackend {
             Item::Album { browse_id, .. }
             | Item::Artist { browse_id, .. }
             | Item::Podcast { browse_id, .. } => Some(format!("{BASE}/browse/{browse_id}")),
+            Item::Playlist { web_url, .. } => web_url.clone(),
             _ => None,
         })
+    }
+
+    fn features(&self) -> Features {
+        Features {
+            stream_quality: true,
+            explicit_flags: true,
+            watch_history: true,
+            music_videos: false,
+            track_radio: true,
+        }
+    }
+
+    async fn video(&self, key: &str, _start: u64, _length: Option<u64>) -> Result<VideoChunk> {
+        Err(ClientError::NotFound(format!("no video for {key}")))
     }
 
     async fn play(&self, source: PlaySource, start_index: usize, shuffle: bool) -> Result<()> {
@@ -1800,6 +1818,7 @@ impl Backend for DemoBackend {
                 shared.emit_player();
                 shared.emit_queue();
             }
+            Control::Version(_) => {}
             Control::Toggle | Control::Pause => {
                 {
                     let mut state = shared.state.lock();
@@ -1904,7 +1923,7 @@ impl Backend for DemoBackend {
         Ok(())
     }
 
-    fn playlists_reorder(&self) -> bool {
+    fn playlist_reorders(&self, _playlist_id: &str) -> bool {
         true
     }
 

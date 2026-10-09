@@ -37,7 +37,9 @@ says it can do.
 - Queue with drag to reorder, play next, radio that keeps itself topped up,
   shuffle and repeat. Gapless playback, optional crossfade, loudness
   normalisation from YouTube's own values, a ten band equalizer.
-- Premium streams when the account has Premium.
+- Premium streams when the account has Premium, and the web app's audio
+  quality, autoplay, explicit and watch history settings.
+- The Song and Video switch, with the music video in the expanded player.
 - Word-synced lyrics from Apple Music, YouTube Music or LRCLIB, drawn in the
   Apple Music style.
 - Apple Music motion artwork for albums that have it.
@@ -45,7 +47,7 @@ says it can do.
   stay current.
 - Colours follow [matugen](https://github.com/InioX/matugen) live.
 
-Video playback and comments are not there yet.
+Comments are not there yet.
 
 ## Install
 

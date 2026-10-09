@@ -12,10 +12,10 @@ formalmusic-core = { path = "crates/core" }
 formalmusic-extras = { path = "crates/extras" }
 # Pinned to a rev of FormalSnake/kopuz `ytm/integration`, where the daemon
 # work FormalMusic needs is merged ahead of upstream.
-kopuz-api = { git = "https://github.com/FormalSnake/kopuz.git", rev = "2b9f8a657f8e8cc79e0a9144dd19464f6a304442" }
-kopuz-client = { git = "https://github.com/FormalSnake/kopuz.git", rev = "2b9f8a657f8e8cc79e0a9144dd19464f6a304442" }
-kopuz-config = { git = "https://github.com/FormalSnake/kopuz.git", rev = "2b9f8a657f8e8cc79e0a9144dd19464f6a304442" }
-kopuz-proto = { git = "https://github.com/FormalSnake/kopuz.git", rev = "2b9f8a657f8e8cc79e0a9144dd19464f6a304442" }
+kopuz-api = { git = "https://github.com/FormalSnake/kopuz.git", rev = "9f3f2b2a44096b214dfaeb01cc758840948e25e0" }
+kopuz-client = { git = "https://github.com/FormalSnake/kopuz.git", rev = "9f3f2b2a44096b214dfaeb01cc758840948e25e0" }
+kopuz-config = { git = "https://github.com/FormalSnake/kopuz.git", rev = "9f3f2b2a44096b214dfaeb01cc758840948e25e0" }
+kopuz-proto = { git = "https://github.com/FormalSnake/kopuz.git", rev = "9f3f2b2a44096b214dfaeb01cc758840948e25e0" }
 gpui-kit = "0.6.6"
 gpui-base = "0.6.6"
 anyhow = "1"

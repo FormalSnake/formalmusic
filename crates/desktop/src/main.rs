@@ -15,6 +15,7 @@ mod live_theme;
 mod lyrics;
 mod menus;
 mod motion;
+mod music_video;
 mod new_playlist;
 mod now_playing;
 mod page;
@@ -36,10 +37,9 @@ use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::*;
 
 use app::AppRoot;
-
-/// Wayland app id and X11 `WM_CLASS`; matches the `.desktop` file's name so
-/// the shell finds the app's icon by it.
-const APP_ID: &str = "es.canarycoders.formalmusic";
+// Wayland app id and X11 `WM_CLASS`; matches the `.desktop` file's name so
+// the shell finds the app's icon by it.
+use formalmusic_core::APP_ID;
 
 fn window_options(cx: &App) -> WindowOptions {
     let mut options = TitleBar::window_options();
@@ -155,7 +155,7 @@ fn main() {
     gpui_kit::application()
         .with_assets(icons::IconAssets)
         .run(move |cx| {
-            cx.set_app_identity(APP_ID, "FormalMusic");
+            cx.set_app_identity(APP_ID, formalmusic_core::APP_NAME);
             trace::log_if_enabled("platform up");
             fonts::install(cx);
             // gpui-component resolves ".SystemUIFont" and the platform monospace

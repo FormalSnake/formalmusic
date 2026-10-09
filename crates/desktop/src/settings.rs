@@ -1,13 +1,14 @@
-//! The Settings dialog. Playback and Equalizer hold the settings kept in
-//! `config.json`; the app hands the audio ones to kopuzd. Scrobbling
-//! connects Last.fm, with the user's own API account, and ListenBrainz.
+//! The Settings dialog. Playback, Equalizer and Privacy hold the settings
+//! kept in `config.json`; the app hands the audio ones to kopuzd, and shows
+//! only those the source says it acts on. Scrobbling connects Last.fm, with
+//! the user's own API account, and ListenBrainz.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use formalmusic_core::MusicStore;
 use formalmusic_core::equalizer::{EQ_BANDS_HZ, EQ_MAX_DB, EqPreset, Equalizer};
-use formalmusic_core::model::{LastFmApp, ScrobbleAccount, ScrobbleService};
+use formalmusic_core::model::{AudioQuality, LastFmApp, ScrobbleAccount, ScrobbleService};
 use formalmusic_core::settings::Settings as ClientSettings;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -98,6 +99,31 @@ impl Settings {
         cx: &mut Context<Self>,
     ) -> bool {
         self.save(key, on.into(), |client| apply(client, on), cx)
+    }
+
+    /// A switch kopuzd acts on: saved, then handed to it.
+    fn set_daemon(
+        &mut self,
+        key: &str,
+        on: bool,
+        apply: fn(&mut ClientSettings, bool),
+        cx: &mut Context<Self>,
+    ) {
+        if self.set_client(key, on, apply, cx) {
+            self.store.reload_settings();
+        }
+    }
+
+    fn set_quality(&mut self, quality: AudioQuality, cx: &mut Context<Self>) {
+        let value = serde_json::to_value(quality).unwrap_or_default();
+        if self.save(
+            "audioQuality",
+            value,
+            |client| client.audio_quality = quality,
+            cx,
+        ) {
+            self.store.reload_settings();
+        }
     }
 
     fn set_equalizer(&mut self, equalizer: Equalizer, cx: &mut Context<Self>) {
@@ -343,6 +369,8 @@ impl Settings {
     fn playback(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
         let keep = cx.entity().downgrade();
         let tray = keep.clone();
+        let (autoplay, explicit) = (keep.clone(), keep.clone());
+        let features = self.store.features();
         div()
             .flex()
             .flex_col()
@@ -356,6 +384,40 @@ impl Settings {
                     .p(spacing::X4)
                     .rounded(radius::CARD)
                     .bg(palette.press_wash)
+                    .when(features.stream_quality, |el| {
+                        el.child(self.quality_picker(palette, cx))
+                    })
+                    .when(features.track_radio, |el| {
+                        el.child(switch(
+                            "autoplay".into(),
+                            "Autoplay similar songs when the queue ends",
+                            self.client.autoplay,
+                            palette,
+                            move |on, cx| {
+                                let _ = autoplay.update(cx, |this, cx| {
+                                    this.set_daemon("autoplay", on, |c, on| c.autoplay = on, cx)
+                                });
+                            },
+                        ))
+                    })
+                    .when(features.explicit_flags, |el| {
+                        el.child(switch(
+                            "restrict-explicit".into(),
+                            "Skip explicit songs",
+                            self.client.restrict_explicit,
+                            palette,
+                            move |on, cx| {
+                                let _ = explicit.update(cx, |this, cx| {
+                                    this.set_daemon(
+                                        "restrictExplicit",
+                                        on,
+                                        |c, on| c.restrict_explicit = on,
+                                        cx,
+                                    )
+                                });
+                            },
+                        ))
+                    })
                     .child(switch(
                         "keep-playing-when-closed".into(),
                         "Keep playing after closing the window",
@@ -403,6 +465,105 @@ impl Settings {
                                 .child(error),
                         )
                     }),
+            )
+            .into_any_element()
+    }
+
+    /// Low, Normal and High, as the web app offers them.
+    fn quality_picker(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let options = [
+            (AudioQuality::Low, "Low"),
+            (AudioQuality::Normal, "Normal"),
+            (AudioQuality::High, "High"),
+        ];
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(spacing::X3)
+            .child(
+                div()
+                    .flex_grow(1.)
+                    .min_w(px(0.))
+                    .text_size(type_scale::BODY.font_size)
+                    .line_height(px(20.))
+                    .text_color(palette.text)
+                    .child("Audio quality"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_shrink_0()
+                    .p(px(2.))
+                    .gap(px(2.))
+                    .rounded(radius::CONTROL)
+                    .bg(palette.canvas)
+                    .children(options.into_iter().map(|(quality, label)| {
+                        let selected = self.client.audio_quality == quality;
+                        div()
+                            .id(SharedString::from(format!("quality-{label}")))
+                            .h(px(24.))
+                            .px(spacing::X2)
+                            .flex()
+                            .items_center()
+                            .rounded(radius::CONTROL - px(2.))
+                            .text_size(type_scale::CAPTION.font_size)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(if selected {
+                                palette.text
+                            } else {
+                                palette.secondary
+                            })
+                            .when(selected, |el| el.bg(palette.raised_hover))
+                            .when(!selected, |el| {
+                                el.cursor_pointer()
+                                    .hover(move |style| style.text_color(palette.text))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.set_quality(quality, cx)
+                                    }))
+                            })
+                            .child(label)
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn privacy(&self, palette: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let weak = cx.entity().downgrade();
+        div()
+            .flex()
+            .flex_col()
+            .gap(spacing::X2)
+            .child(heading("Privacy", palette))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(spacing::X3)
+                    .p(spacing::X4)
+                    .rounded(radius::CARD)
+                    .bg(palette.press_wash)
+                    .child(switch(
+                        "pause-history".into(),
+                        "Pause watch history",
+                        self.client.pause_history,
+                        palette,
+                        move |on, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.set_daemon(
+                                    "pauseHistory",
+                                    on,
+                                    |c, on| c.pause_history = on,
+                                    cx,
+                                )
+                            });
+                        },
+                    ))
+                    .child(caption(
+                        "Songs you play stay out of History and stop shaping your recommendations.",
+                        palette,
+                    )),
             )
             .into_any_element()
     }
@@ -690,6 +851,9 @@ impl Render for Settings {
                     )
                     .child(self.playback(palette, cx))
                     .child(self.equalizer(palette, cx))
+                    .when(self.store.features().watch_history, |el| {
+                        el.child(self.privacy(palette, cx))
+                    })
                     .child(
                         div()
                             .flex()

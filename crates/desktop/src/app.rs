@@ -1033,7 +1033,53 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
         let wait = |ms| executor.timer(std::time::Duration::from_millis(ms));
         wait(600).await;
         let catalog = formalmusic_core::demo::catalog();
+        // "album:<id>" and the like, for a page of a real kopuzd.
+        let page = scene
+            .split_once(':')
+            .map(|(kind, id)| (kind.to_owned(), id.to_owned()));
         let _ = this.update_in(cx, |this, window, cx| match scene.as_str() {
+            _ if page.is_some() => {
+                let (kind, id) = page.clone().unwrap_or_default();
+                let target = match kind.as_str() {
+                    "album" => BrowseTarget::Album(id.clone()),
+                    "artist" => BrowseTarget::Artist(id.clone()),
+                    _ => BrowseTarget::Playlist(id.clone()),
+                };
+                this.navigate(Route::Browse(target), false, cx);
+                if kind == "playlist-menu" {
+                    let item = formalmusic_core::model::Item::Playlist {
+                        playlist_id: id,
+                        title: String::new(),
+                        subtitle: None,
+                        art: None,
+                        actions: Default::default(),
+                        web_url: None,
+                    };
+                    let items = crate::actions::item_menu(
+                        &item,
+                        &crate::actions::MenuContext::default(),
+                        &this.store,
+                    );
+                    let weak = cx.entity().downgrade();
+                    let close = move |_: &mut Window, cx: &mut App| {
+                        let _ = weak.update(cx, |this, cx| {
+                            this.menu = None;
+                            cx.notify();
+                        });
+                    };
+                    this.menu = Some(ContextMenu::open(
+                        MenuRequest::at(point(px(700.), px(300.)), items),
+                        close,
+                        window,
+                        cx,
+                    ));
+                }
+            }
+            "video" => {
+                this.store
+                    .set_mode(formalmusic_core::model::PlaybackMode::Video);
+                this.set_expanded(Some(Tab::UpNext), cx)
+            }
             "album" => this.navigate(
                 Route::Browse(BrowseTarget::Album("MPREb_K8qWMWVqXGi".into())),
                 false,
@@ -1190,6 +1236,10 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
                 .update(cx, |topbar, cx| topbar.type_query("ha", window, cx)),
             _ => {}
         });
+        // The music video needs the relay, ffprobe and ffmpeg's first frame.
+        if scene == "video" {
+            wait(5000).await;
+        }
         // A window that macOS reports as covered gets no frames, so each
         // pass draws by hand rather than waiting for the display link.
         let draw = |window: &mut Window, cx: &mut App| {
