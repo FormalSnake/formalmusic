@@ -206,51 +206,77 @@ impl Render for ContextMenu {
         let close_for_outside = on_close.clone();
         let close_for_escape = on_close.clone();
 
-        anchored()
-            .position(self.request.position)
-            .anchor(self.request.anchor())
-            .snap_to_window_with_margin(spacing::X2)
-            .child(deferred(
-                div()
-                    .id("context-menu")
-                    .track_focus(&self.focus_handle)
-                    .flex()
-                    .flex_col()
-                    .min_w(px(196.))
-                    .p(spacing::X1)
-                    .rounded(radius::MENU)
-                    .bg(palette.overlay)
-                    .border_1()
-                    .border_color(palette.overlay_border)
-                    .shadow(crate::primitives::overlay_shadows(&palette))
-                    .on_mouse_down_out(move |_, window, cx| close_for_outside(window, cx))
-                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                        match event.keystroke.key.as_str() {
-                            "escape" => close_for_escape(window, cx),
-                            "down" => {
-                                this.step(1);
-                                cx.notify();
-                            }
-                            "up" => {
-                                this.step(-1);
-                                cx.notify();
-                            }
-                            "home" => {
-                                this.jump_start();
-                                cx.notify();
-                            }
-                            "end" => {
-                                this.jump_end();
-                                cx.notify();
-                            }
-                            "enter" | "space" => this.activate_highlighted(window, cx),
-                            _ => {}
-                        }
-                    }))
-                    .children((0..self.request.items.len()).map(|index| {
-                        render_item(index, &self.request.items[index], palette, highlighted, cx)
-                    })),
-            ))
+        // The full-window backdrop occludes everything under the menu, so a
+        // click on an item, or the click that dismisses the menu, never reaches
+        // the row beneath it.
+        deferred(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .occlude()
+                .child(
+                    anchored()
+                        .position(self.request.position)
+                        .anchor(self.request.anchor())
+                        .snap_to_window_with_margin(spacing::X2)
+                        .child(
+                            div()
+                                .id("context-menu")
+                                .track_focus(&self.focus_handle)
+                                .flex()
+                                .flex_col()
+                                .min_w(px(196.))
+                                .p(spacing::X1)
+                                .rounded(radius::MENU)
+                                .bg(palette.overlay)
+                                .border_1()
+                                .border_color(palette.overlay_border)
+                                .shadow(crate::primitives::overlay_shadows(&palette))
+                                .on_mouse_down_out(move |_, window, cx| {
+                                    close_for_outside(window, cx)
+                                })
+                                .on_key_down(cx.listener(
+                                    move |this, event: &KeyDownEvent, window, cx| {
+                                        match event.keystroke.key.as_str() {
+                                            "escape" => close_for_escape(window, cx),
+                                            "down" => {
+                                                this.step(1);
+                                                cx.notify();
+                                            }
+                                            "up" => {
+                                                this.step(-1);
+                                                cx.notify();
+                                            }
+                                            "home" => {
+                                                this.jump_start();
+                                                cx.notify();
+                                            }
+                                            "end" => {
+                                                this.jump_end();
+                                                cx.notify();
+                                            }
+                                            "enter" | "space" => {
+                                                this.activate_highlighted(window, cx)
+                                            }
+                                            _ => {}
+                                        }
+                                    },
+                                ))
+                                .children((0..self.request.items.len()).map(|index| {
+                                    render_item(
+                                        index,
+                                        &self.request.items[index],
+                                        palette,
+                                        highlighted,
+                                        cx,
+                                    )
+                                })),
+                        ),
+                ),
+        )
+        .with_priority(2)
     }
 }
 
