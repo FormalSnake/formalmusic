@@ -7,7 +7,6 @@ pub mod client;
 pub mod demo;
 pub mod format;
 pub mod paths;
-pub mod settings;
 pub mod store;
 pub mod transport;
 pub mod video;

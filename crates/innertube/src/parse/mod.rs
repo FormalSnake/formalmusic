@@ -255,6 +255,35 @@ pub fn parse_spoken_duration(text: &str) -> Option<u64> {
     found.then_some(total * 1000)
 }
 
+/// Whether YouTube served this response to a signed-out visitor
+/// (`responseContext` reports `logged_in` 0). Dead cookies get exactly that,
+/// with a 200, rather than a 401.
+pub fn logged_out(json: &Value) -> bool {
+    json["responseContext"]["serviceTrackingParams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|service| service["params"].as_array().into_iter().flatten())
+        .any(|p| p["key"] == "logged_in" && p["value"] == "0")
+}
+
+/// Whether a page is the "Sign in" prompt YouTube shows in place of a page
+/// that needs an account (the library tabs, History, Liked music).
+pub fn sign_in_prompt(json: &Value) -> bool {
+    fn walk(v: &Value) -> bool {
+        match v {
+            Value::Object(o) => {
+                o.get("messageRenderer").is_some_and(|m| {
+                    !m["button"]["buttonRenderer"]["navigationEndpoint"]["signInEndpoint"].is_null()
+                }) || o.values().any(walk)
+            }
+            Value::Array(a) => a.iter().any(walk),
+            _ => false,
+        }
+    }
+    logged_out(json) && walk(&json["contents"])
+}
+
 /// The token of `continuations[0]` or of a trailing `continuationItemRenderer`.
 pub fn continuation(v: &Value) -> Option<Continuation> {
     let from_list = v["continuations"].as_array().and_then(|list| {

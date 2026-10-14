@@ -2,6 +2,7 @@
 //! browse never holds up a Toggle behind it.
 
 use crate::daemon::Daemon;
+use formalmusic_api::local::{self, Listener, Stream};
 use formalmusic_api::{
     ApiError, Command, Event, PROTOCOL_VERSION, Reply, Request, Response, ResponseResult,
     ServerMessage, wire,
@@ -10,7 +11,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::BufReader;
-use formalmusic_api::local::{self, Listener, Stream};
 use tokio::sync::{broadcast, mpsc};
 
 /// Messages queued for one slow client before its events start being dropped.
@@ -185,10 +185,10 @@ async fn respond(outbox: &mpsc::Sender<ServerMessage>, id: u64, result: Result<R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Paths};
+    use crate::config::Paths;
+    use formalmusic_api::local::{ReadHalf, WriteHalf};
     use formalmusic_api::{PlaySource, Repeat, Status};
     use formalmusic_player::{OutputKind, Player};
-    use formalmusic_api::local::{ReadHalf, WriteHalf};
     use tokio::io::BufReader;
 
     struct Conn {
@@ -252,15 +252,13 @@ mod tests {
     async fn serve_in(dir: tempfile::TempDir) -> (tempfile::TempDir, std::path::PathBuf) {
         let paths = Paths {
             state: dir.path().join("state"),
-            config: dir.path().join("daemon.json"),
-            app_settings: dir.path().join("config.json"),
         };
         let player = Player::with_output(OutputKind::Null {
             sample_rate: 48_000,
             channels: 2,
         })
         .unwrap();
-        let daemon = Daemon::new(&paths, Config::default(), player).unwrap();
+        let daemon = Daemon::new(&paths, None, player).unwrap();
         let socket = dir.path().join("run/formalmusicd.sock");
         let listener = bind(&socket).await.unwrap();
         tokio::spawn(serve(listener, daemon));

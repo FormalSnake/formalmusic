@@ -230,12 +230,7 @@ fn is_executable(path: &Path) -> bool {
 }
 
 pub fn find(browser: Browser) -> Option<Launcher> {
-    find_in(
-        browser,
-        &search_dirs(),
-        &flatpak_export_dirs(),
-        &app_dirs(),
-    )
+    find_in(browser, &search_dirs(), &flatpak_export_dirs(), &app_dirs())
 }
 
 fn find_in(

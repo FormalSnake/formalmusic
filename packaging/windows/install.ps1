@@ -13,7 +13,7 @@ param([switch]$SkipBuild)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$appId = 'es.canarycoders.formalmusic'
+$appId = 'dev.formalsnake.formalmusic'
 $pythonVersion = '3.13.7'
 $repo = (Resolve-Path "$PSScriptRoot\..\..").Path
 $dir = "$env:LOCALAPPDATA\Programs\FormalMusic"
@@ -126,6 +126,8 @@ public static class FormalMusicLnk {
 $programs = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs"
 [FormalMusicLnk]::Create("$programs\FormalMusic.lnk", "$dir\formalmusic.exe", "$dir\formalmusic.ico", $appId)
 
+# Installs before the id moved to dev.formalsnake registered the old one.
+Remove-Item -Recurse -ErrorAction SilentlyContinue 'HKCU:\Software\Classes\AppUserModelId\es.canarycoders.formalmusic'
 $aumid = "HKCU:\Software\Classes\AppUserModelId\$appId"
 New-Item $aumid -Force | Out-Null
 Set-ItemProperty $aumid DisplayName 'FormalMusic'

@@ -8,7 +8,7 @@ version.workspace = true
 winresource = "0.1"
 
 [dependencies]
-formalmusic-api = { workspace = true, features = ["io"] }
+formalmusic-api = { workspace = true, features = ["io", "settings"] }
 formalmusic-innertube.workspace = true
 formalmusic-player.workspace = true
 formalmusic-extras.workspace = true
@@ -25,10 +25,12 @@ tracing-subscriber.workspace = true
 libc = "0.2"
 md-5 = "0.10"
 rusqlite = { version = "0.40", features = ["bundled"] }
+nd-settings = { path = "../../../nativedesktop/crates/nd-settings" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.9"
-ksni = "0.3"
+# The async-io executor: nd-system links ksni with it, and its tokio feature cannot coexist.
+ksni = { version = "0.3", default-features = false, features = ["async-io"] }
 
 [dev-dependencies]
 tempfile = "3"

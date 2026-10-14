@@ -155,7 +155,7 @@ impl RootInterface for Mpris {
     }
 
     async fn desktop_entry(&self) -> fdo::Result<String> {
-        Ok("es.canarycoders.formalmusic".into())
+        Ok("dev.formalsnake.formalmusic".into())
     }
 
     async fn supported_uri_schemes(&self) -> fdo::Result<Vec<String>> {

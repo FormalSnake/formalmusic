@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "nativedesktop": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791970512,
+        "narHash": "sha256-C/kp63XJCg/7GOqcFrheskG6L7kL7w3uYDX0vgMuhgE=",
+        "owner": "FormalSnake",
+        "repo": "NativeDesktop",
+        "rev": "94f2cbca1423a9bcc57c2f1b019b8542cf977ef3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "FormalSnake",
+        "repo": "NativeDesktop",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1791260994,
@@ -18,6 +34,7 @@
     },
     "root": {
       "inputs": {
+        "nativedesktop": "nativedesktop",
         "nixpkgs": "nixpkgs",
         "yt-dlp": "yt-dlp"
       }

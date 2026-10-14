@@ -10,9 +10,16 @@
       url = "github:yt-dlp/yt-dlp/2026.08.19";
       flake = false;
     };
+    # The UI toolkit, built from source beside this repo (the app depends on
+    # it by path). Its own flake also carries the home-manager module the
+    # settings options plug into.
+    nativedesktop = {
+      url = "github:FormalSnake/NativeDesktop";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, yt-dlp }:
+  outputs = { self, nixpkgs, yt-dlp, nativedesktop }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
@@ -21,7 +28,7 @@
           version = "${yt-dlp.lastModifiedDate}-${yt-dlp.shortRev}";
           src = yt-dlp;
         };
-        formalmusic = final.callPackage ./nix/package.nix { };
+        formalmusic = final.callPackage ./nix/package.nix { inherit nativedesktop; };
       };
       pkgsFor = system: import nixpkgs { inherit system; overlays = [ overlay ]; };
       forAll = f: nixpkgs.lib.genAttrs systems (system: f (pkgsFor system));
@@ -34,13 +41,14 @@
 
       overlays.default = overlay;
 
-      homeModules.default = import ./nix/hm-module.nix self;
+      homeModules.default = import ./nix/hm-module.nix { inherit self nativedesktop; };
       homeManagerModules.default = self.homeModules.default;
 
       devShells = forAll (pkgs:
         let
-          # gpui-pre links libxkbcommon and freetype at build time and dlopens
-          # wayland, vulkan, fontconfig and X11 at runtime; cpal needs alsa-lib.
+          # nd's GPUI backend links libxkbcommon and freetype at build time and
+          # dlopens wayland, vulkan, fontconfig and X11 at runtime; cpal needs
+          # alsa-lib.
           linuxLibs = with pkgs; [
             libxkbcommon
             wayland
@@ -54,6 +62,9 @@
             libxi
             libxrandr
             libglvnd
+            libxkbfile
+            libgbm
+            openssl
             alsa-lib
             libopus
           ];

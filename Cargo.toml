@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/api", "crates/innertube", "crates/player", "crates/daemon", "crates/core", "crates/desktop", "crates/extras"]
+members = ["crates/api", "crates/innertube", "crates/player", "crates/daemon", "crates/core", "crates/app", "crates/extras"]
 
 [workspace.package]
 edition = "2024"
@@ -36,8 +36,12 @@ strip = true
 [profile.dev.package."*"]
 opt-level = 2
 
-# Vulkan-only wgpu instance first, GL only as a fallback: creating the GL
-# backend maps Mesa's GL stack and LLVM (~59 MB RSS) even when Vulkan wins.
-# Same change as https://github.com/zed-industries/zed/pull/63313.
+# nd's GPUI patch queue (its vendored gpui-pre crates); an app outside nd's workspace has to
+# name it, or cargo resolves the unpatched crates.io releases.
 [patch.crates-io]
-gpui-pre-wgpu = { path = "patches/gpui-pre-wgpu-0.3.6" }
+gpui-pre = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-pre" }
+gpui-fast = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-fast" }
+gpui-pre-linux = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-pre-linux" }
+gpui-fast-linux = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-fast-linux" }
+gpui-pre-wgpu = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-pre-wgpu" }
+gpui-fast-wgpu = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-fast-wgpu" }

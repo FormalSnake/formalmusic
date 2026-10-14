@@ -13,6 +13,7 @@ pub const EQ_BANDS_HZ: [f32; 10] = [
 pub const EQ_MAX_DB: f32 = 12.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "settings", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EqPreset {
     #[default]
@@ -70,11 +71,13 @@ impl EqPreset {
     }
 }
 
-/// `config.json`'s `equalizer`: a preset, and the gains Custom plays.
+/// The equalizer setting: a preset, and the gains Custom plays.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[cfg_attr(feature = "settings", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields)]
 pub struct Equalizer {
     pub preset: EqPreset,
+    /// Gains in dB of the ten bands, 32 Hz to 16 kHz, that Custom plays.
     pub custom: [f32; 10],
 }
 

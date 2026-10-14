@@ -1,0 +1,4 @@
+# nd's AppKit backend links Swift; Nix's cc wrapper on PATH would pick Nix's SDK instead of
+# Xcode's, so macOS links with the system clang.
+[target.aarch64-apple-darwin]
+linker = "/usr/bin/clang"

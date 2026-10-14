@@ -158,6 +158,13 @@ anywhere before preflight passes.
 
 On a new branch in the clone (`git switch -c <branch>`):
 
+0. NativeDesktop: the window crate depends on `../nativedesktop` by path. Keep
+   a clone of `github.com/FormalSnake/NativeDesktop` beside this clone
+   (`../nativedesktop`, cloned the first time) checked out at the rev
+   `flake.lock` pins for `nativedesktop` (`git -C ../nativedesktop fetch &&
+   git -C ../nativedesktop checkout --detach <rev>`), so cargo and the Nix
+   package build the same toolkit. Bumping it is the owner's call, not this
+   run's.
 1. yt-dlp: the flake pins `github:yt-dlp/yt-dlp/<tag>`. Get the latest
    release tag with `gh release view -R yt-dlp/yt-dlp --json tagName -q
    .tagName`; if it is newer, change the tag in `flake.nix` (that url only).
@@ -166,7 +173,7 @@ On a new branch in the clone (`git switch -c <branch>`):
 3. `nix develop -c cargo update 2>&1 | tee "$logs/cargo-update.log"`.
 4. Note for the PR: old and new yt-dlp tag, old and new nixpkgs rev and date
    (from `flake.lock`), and how many crates `cargo update` changed, naming the
-   notable ones (major versions, gpui, symphonia, reqwest, tokio).
+   notable ones (major versions, symphonia, reqwest, tokio).
 5. Commit `flake.nix`, `flake.lock` and `Cargo.lock` by explicit path, for
    example `bump yt-dlp to 2026.09.30, nixpkgs and cargo dependencies`.
    If nothing changed, note it and run step 3 anyway (the checks still tell
@@ -287,7 +294,7 @@ rev-parse HEAD)`.
 Send exactly one desktop notification on the g815 and print the same text:
 
 ```
-notify-send -a FormalMusic -i es.canarycoders.formalmusic "<title>" "<body>"
+notify-send -a FormalMusic -i dev.formalsnake.formalmusic "<title>" "<body>"
 ```
 
 The title is `FormalMusic maintenance $date: ` plus the outcome: `merged

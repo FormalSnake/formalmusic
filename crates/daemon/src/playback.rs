@@ -7,7 +7,7 @@
 //! check [`State::generation`] when they finish, so a skip that happened in
 //! the meantime wins.
 
-use crate::config::{Config, Paths, Preferences, write_private};
+use crate::config::{Paths, Preferences, write_private};
 use crate::playlist::{self, Opened, Rest};
 use crate::queue::{Queue, RADIO_LOW_WATER, Removed};
 use crate::session::Session;
@@ -164,13 +164,12 @@ impl Playback {
     pub fn new(
         player: Player,
         session: Arc<Session>,
-        config: Config,
         prefs: Preferences,
         paths: &Paths,
         events: broadcast::Sender<Event>,
     ) -> anyhow::Result<Arc<Self>> {
-        player.set_normalisation(config.normalisation);
-        player.set_crossfade(config.crossfade_ms);
+        player.set_normalisation(prefs.normalisation);
+        player.set_crossfade(prefs.crossfade_ms);
         player.set_equalizer(prefs.equalizer.gains());
         let queue_path = paths.queue();
         let mut state = State {
@@ -1022,6 +1021,8 @@ impl Playback {
     pub fn set_preferences(&self, prefs: Preferences) {
         self.resolver.set_quality(prefs.quality);
         self.player.set_equalizer(prefs.equalizer.gains());
+        self.player.set_normalisation(prefs.normalisation);
+        self.player.set_crossfade(prefs.crossfade_ms);
         *self.prefs.lock() = prefs;
     }
 

@@ -1,9 +1,9 @@
 # FormalMusic: plan
 
 FormalMusic is a YouTube Music client. Binary `formalmusic`, daemon
-`formalmusicd`, repo `FormalSnake/formalmusic`, app id `es.canarycoders.formalmusic`.
+`formalmusicd`, repo `FormalSnake/formalmusic`, app id `dev.formalsnake.formalmusic`.
 
-A GPUI client at full parity with music.youtube.com, on top of our own daemon,
+A NativeDesktop client (AppKit on macOS, GPUI elsewhere) at full parity with music.youtube.com, on top of our own daemon,
 themed by matugen the same way `../messages` is, packaged as a flake with a Home
 Manager module, and kept working by a weekly Claude Code maintenance run.
 
@@ -15,7 +15,7 @@ Two binaries, one socket between them.
   (WEB_REMIX) for every page and mutation, stream resolution through yt-dlp,
   the audio engine, the queue and MPRIS. It runs as a systemd user service, so
   music keeps playing when the window closes, and media keys work without it.
-- **`formalmusic`**, the GPUI app. It's a pure frontend: a store, a bridge and
+- **`formalmusic`**, the window, on NativeDesktop. It's a pure frontend: a store, a bridge and
   screens. Its only I/O is the socket and artwork fetches.
 
 Why our own daemon and not Kopuz: Kopuz's API is generic (catalog, search,
@@ -87,7 +87,7 @@ crates/daemon        binary `formalmusicd`: session, streams, queue, MPRIS, sock
 crates/api           wire types and JSON-lines framing shared by both ends
 crates/player        streaming decode and audio output
 crates/core          app store, StoreEvent, StateCache, socket client
-crates/desktop       binary `formalmusic`, gpui-kit 0.6.6, one file per screen
+crates/app           binary `formalmusic` on NativeDesktop (../nativedesktop)
 nix/package.nix      both binaries
 nix/hm-module.nix    programs.formalmusic
 maintenance/         weekly run prompt and live checks
@@ -102,18 +102,10 @@ the daemon answers.
 
 ## Theming
 
-Copy `messages/crates/desktop/src/theme.rs` and keep the mechanism identical:
-a GPUI `Global` palette, `~/.config/formalmusic/theme.json` polled every second
-off the UI thread, and `refresh_windows()` on change. Add
-`~/.config/nix/users/kyandesutter/matugen-templates/formalmusic.json.tmpl`
-with the same Material keys as `messages.json.tmpl`, plus player tokens
-(`progress`, `progressTrack`, `nowPlaying`, `scrim`).
-
-Matugen is the only palette source. Album art may nudge the fullscreen player
-(a blurred art backdrop under the matugen `scrim`, or a slight hue pull on
-`nowPlaying`), kept only if it looks good next to the rest of the desktop;
-it never replaces the tokens. Once two apps share it,
-`theme.rs` moves into a shared crate.
+NativeDesktop's theme: its tokens, the OS appearance and accent, and on Linux
+the matugen `~/.config/formalmusic/theme.json` (nd's template, Material roles)
+reloaded live. The app sets no colours of its own; the appearance audit
+(`crates/app/tests/appearance.rs`) fails on any colour that is not a token.
 
 ## Nix
 
@@ -131,7 +123,7 @@ it never replaces the tokens. Once two apps share it,
   registers the matugen template, and never owns `config.json`.
 - **Dev shell:** messages' `linuxLibs` plus `socat` and the pinned
   yt-dlp.
-- **App id:** `es.canarycoders.formalmusic`, with the same single-instance
+- **App id:** `dev.formalsnake.formalmusic`, with the same single-instance
   handover as messages.
 
 ## Weekly maintenance run

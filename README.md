@@ -1,16 +1,18 @@
-<p align="center"><img src="packaging/linux/es.canarycoders.formalmusic.png" width="160" alt="FormalMusic icon"></p>
+<p align="center"><img src="packaging/linux/dev.formalsnake.formalmusic.png" width="160" alt="FormalMusic icon"></p>
 
 # FormalMusic
 
-YouTube Music on Linux and Windows. A native Rust client (GPUI) on top of its own playback
-daemon, with synced lyrics and Apple Music motion artwork.
+YouTube Music on Linux, macOS and Windows. A native Rust client on
+[NativeDesktop](https://github.com/FormalSnake/NativeDesktop) (AppKit on macOS, GPUI
+elsewhere) on top of its own playback daemon, with synced lyrics and Apple Music
+motion artwork.
 
 ![Home](docs/images/home.png)
 
 ```
 ┌──────────────────────┐  JSON lines   ┌────────────────────────────────┐
-│ formalmusic (GPUI)   │ ────────────▶ │ formalmusicd                   │
-│ window, Vulkan       │ ◀──────────── │ InnerTube client, yt-dlp,      │
+│ formalmusic (nd)     │ ────────────▶ │ formalmusicd                   │
+│ AppKit / GPUI window │ ◀──────────── │ InnerTube client, yt-dlp,      │
 └──────────────────────┘  unix socket  │ audio engine, queue, MPRIS     │
                                        └────────────────────────────────┘
 ```
@@ -37,12 +39,12 @@ at 0% CPU.
 - Premium streams (Opus up to 256 kbps) when the account has Premium.
 - Word-synced lyrics from Apple Music, LRCLIB or YouTube Music, whichever has
   the best timing, drawn in the Apple Music style.
-- Apple Music motion artwork for albums that have it.
 - Brand accounts, and plays reported to YouTube so History and recommendations
   stay current.
+- Apple Music motion artwork for albums that have it.
 - Colours follow [matugen](https://github.com/InioX/matugen) live.
 
-Video playback and comments are not there yet.
+Music videos play in the expanded player; comments are not there yet.
 
 ## Install
 
@@ -67,7 +69,7 @@ Home Manager:
   programs.formalmusic = {
     enable = true;
     daemon = true;                     # formalmusicd as a systemd user service
-    theme = { accent = "#6099c0"; };   # optional, writes theme.json
+    settings.playback.crossfade_ms = 3000;  # any key of config.toml, typed
   };
 }
 ```
@@ -152,22 +154,27 @@ keys, tokens and a pasted API account stay in
 
 ## Configuration
 
-`~/.config/formalmusic/daemon.json` (the daemon never writes it):
+`~/.config/formalmusic/config.toml` (`~/Library/Application Support/formalmusic`
+on macOS) holds every setting; the Settings window writes it, the daemon reads it
+and picks up changes as the file changes, and Home Manager can own any key
+(`programs.formalmusic.settings`, typed options generated from the schema in
+`crates/api/src/settings.rs`). A `config.json` and `daemon.json` from before are
+imported once.
 
-```json
-{ "reportHistory": true, "normalisation": true, "crossfadeMs": 0 }
+```toml
+[playback]
+quality = "high"
+crossfade_ms = 3000
+
+[privacy]
+report_history = false
 ```
 
-`~/.config/formalmusic/theme.json` overrides palette tokens (fields of
-`PaletteFile` in `crates/desktop/src/live_theme.rs`) and is reloaded live, so
-matugen can drive it:
-
-```json
-{ "canvas": "#1c1917", "text": "#b4bdc3", "accent": "#6099c0" }
-```
+`~/.config/formalmusic/theme.json` is NativeDesktop's matugen file (Material
+roles under `colors`, from nd's template) and is reloaded live.
 
 Environment overrides: `FORMALMUSIC_SOCKET`, `FORMALMUSIC_YTDLP`,
-`FORMALMUSIC_FONT`, `FORMALMUSIC_TRACE=1` (startup and navigation timings).
+`FORMALMUSIC_TRACE=1` (startup and navigation timings).
 
 The daemon speaks JSON lines on `$XDG_RUNTIME_DIR/formalmusic/formalmusicd.sock`,
 so a bar widget can drive it:
@@ -216,13 +223,13 @@ weekly systemd timer on the maintainer's machine runs Claude Code headless
 with `maintenance/weekly.md` as the prompt: it bumps yt-dlp, nixpkgs and the
 crates, runs the checks, repairs what broke and ships the result as a PR.
 
-`crates/api` is the socket contract, `crates/innertube` the YouTube Music
-client, `crates/player` the audio engine, `crates/extras` lyrics and motion
-artwork, `crates/daemon` ties them together, `crates/core` is the window's
-store and `crates/desktop` the window. `PLAN.md` has the architecture and the
+`crates/api` is the socket contract and the shared settings, `crates/innertube`
+the YouTube Music client, `crates/player` the audio engine, `crates/extras`
+lyrics and motion artwork, `crates/daemon` ties them together, `crates/core` is
+the window's store and `crates/app` the window, on NativeDesktop, which is
+expected as a sibling checkout (`../nativedesktop`). `PLAN.md` has the architecture and the
 speed budget.
 
 ## License
 
-[MIT](LICENSE). The fonts in `packaging/fonts` are under the
-[OFL](packaging/fonts/OFL.txt). Not affiliated with YouTube, Google or Apple.
+[MIT](LICENSE). Not affiliated with YouTube, Google or Apple.

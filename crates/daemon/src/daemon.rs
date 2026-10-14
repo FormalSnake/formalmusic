@@ -1,6 +1,6 @@
 //! Shared daemon state and the request dispatch.
 
-use crate::config::{AppSettings, Config, Paths, Preferences};
+use crate::config::{Paths, Preferences};
 use crate::extras::Extras;
 use crate::playback::Playback;
 use crate::scrobble::Scrobbler;
@@ -27,8 +27,7 @@ pub struct Daemon {
     pub events: broadcast::Sender<Event>,
     /// Whether the tray icon should show while a track is loaded.
     pub tray: watch::Sender<bool>,
-    config: Config,
-    app_settings: std::path::PathBuf,
+    settings: Option<nd_settings::SettingsHandle<formalmusic_api::settings::Settings>>,
     recovery: Recovery,
 }
 
@@ -79,20 +78,18 @@ where
 }
 
 impl Daemon {
-    pub fn new(paths: &Paths, config: Config, player: Player) -> anyhow::Result<Arc<Self>> {
+    pub fn new(
+        paths: &Paths,
+        settings: Option<nd_settings::SettingsHandle<formalmusic_api::settings::Settings>>,
+        player: Player,
+    ) -> anyhow::Result<Arc<Self>> {
         crate::config::create_private_dir(&paths.state)?;
         let session = Arc::new(Session::load(paths.session())?);
         let (events, _) = broadcast::channel(256);
-        let app = AppSettings::load(&paths.app_settings);
-        let prefs = Preferences::new(&config, &app);
-        let playback = Playback::new(
-            player,
-            session.clone(),
-            config.clone(),
-            prefs,
-            paths,
-            events.clone(),
-        )?;
+        let prefs = settings
+            .as_ref()
+            .map_or_else(Preferences::default, |s| Preferences::from(&*s.get()));
+        let playback = Playback::new(player, session.clone(), prefs, paths, events.clone())?;
         let extras = Arc::new(Extras::new()?);
         tokio::spawn(crate::extras::warm_on_track_change(
             extras.clone(),
@@ -101,7 +98,7 @@ impl Daemon {
             events.subscribe(),
         ));
         let scrobbler = Scrobbler::new(paths, session.clone(), events.clone())?;
-        let (tray, _) = watch::channel(app.show_in_tray);
+        let (tray, _) = watch::channel(prefs.show_in_tray);
         tokio::spawn(scrobbler.clone().run(playback.clone()));
         Ok(Arc::new(Self {
             session,
@@ -111,10 +108,18 @@ impl Daemon {
             scrobbler,
             events,
             tray,
-            config,
-            app_settings: paths.app_settings.clone(),
+            settings,
             recovery: Recovery::default(),
         }))
+    }
+
+    /// Puts `config.toml` as it is now into effect.
+    pub fn apply_settings(&self, settings: &formalmusic_api::settings::Settings) {
+        let prefs = Preferences::from(settings);
+        self.tray.send_if_modified(|shown| {
+            std::mem::replace(shown, prefs.show_in_tray) != prefs.show_in_tray
+        });
+        self.playback.set_preferences(prefs);
     }
 
     fn emit(&self, event: Event) {
@@ -418,9 +423,10 @@ impl Daemon {
                 Ok(Reply::Ok)
             }
             Command::ReloadSettings => {
-                let app = AppSettings::load(&self.app_settings);
-                self.playback
-                    .set_preferences(Preferences::new(&self.config, &app));
+                if let Some(settings) = &self.settings {
+                    settings.reload();
+                    self.apply_settings(&settings.get());
+                }
                 Ok(Reply::Ok)
             }
             Command::SetTray { shown } => {

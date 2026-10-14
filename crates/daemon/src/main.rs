@@ -23,7 +23,7 @@ mod tracking;
 mod tray;
 
 use anyhow::Context;
-use config::{Config, Paths};
+use config::Paths;
 use formalmusic_player::{OutputKind, Player};
 
 #[tokio::main]
@@ -35,7 +35,10 @@ async fn main() -> anyhow::Result<()> {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_env_filter(log_filter())
         .init();
-    let config = Config::load(&paths.config);
+    // config.toml, imported once from the old config.json and daemon.json.
+    let settings = formalmusic_api::settings::load()
+        .inspect_err(|e| tracing::warn!("settings: {e:?}; playing with the defaults"))
+        .ok();
     let socket = formalmusic_api::socket_path();
 
     // The lock settles two daemons starting at once; the Hello probe in
@@ -81,7 +84,26 @@ async fn main() -> anyhow::Result<()> {
         _ => Player::new(),
     }
     .context("starting the audio engine")?;
-    let daemon = daemon::Daemon::new(&paths, config, player)?;
+    let daemon = daemon::Daemon::new(&paths, settings.clone(), player)?;
+    // A save from the Settings window or a Home Manager switch applies at once.
+    let _watch = settings.as_ref().and_then(|settings| {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        settings.on_event(move |event| {
+            if let nd_settings::Event::Changed(change) = event {
+                let _ = tx.send(change.new.clone());
+            }
+        });
+        let daemon = daemon.clone();
+        tokio::spawn(async move {
+            while let Some(new) = rx.recv().await {
+                daemon.apply_settings(&new);
+            }
+        });
+        settings
+            .watch()
+            .inspect_err(|e| tracing::warn!("watching config.toml: {e}"))
+            .ok()
+    });
     tracing::info!(socket = %socket.display(), version = env!("CARGO_PKG_VERSION"), "formalmusicd listening");
 
     tokio::spawn({

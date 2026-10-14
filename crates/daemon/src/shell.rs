@@ -33,7 +33,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
 
-const APP_ID: &str = "es.canarycoders.formalmusic";
+const APP_ID: &str = "dev.formalsnake.formalmusic";
 /// Posted when `Update`s are waiting in the channel.
 const WM_WAKE: u32 = WM_APP;
 /// The notification area icon's mouse messages.
@@ -83,12 +83,7 @@ impl Drop for Shell {
 fn wake(hwnd: isize) {
     // SAFETY: posting to a window that may already be gone only fails.
     unsafe {
-        let _ = PostMessageW(
-            Some(HWND(hwnd as *mut _)),
-            WM_WAKE,
-            WPARAM(0),
-            LPARAM(0),
-        );
+        let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_WAKE, WPARAM(0), LPARAM(0));
     }
 }
 
@@ -433,16 +428,20 @@ fn drain(state: &mut State) {
     {
         tracing::debug!("media controls: {e}");
     }
-    let now = player.track.as_ref().filter(|_| tray).map(|track| NowPlaying {
-        title: track.title.clone(),
-        artist: track
-            .artists
-            .iter()
-            .map(|a| a.text.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-        playing: matches!(player.status, Status::Playing | Status::Loading),
-    });
+    let now = player
+        .track
+        .as_ref()
+        .filter(|_| tray)
+        .map(|track| NowPlaying {
+            title: track.title.clone(),
+            artist: track
+                .artists
+                .iter()
+                .map(|a| a.text.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            playing: matches!(player.status, Status::Playing | Status::Loading),
+        });
     match (&state.tray, now) {
         (Some(shown), Some(now)) if *shown != now => {
             tray_icon(state.hwnd, NIM_MODIFY, &now);

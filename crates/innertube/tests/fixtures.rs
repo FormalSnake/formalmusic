@@ -1059,3 +1059,46 @@ fn signed_in_player() {
     let tracking = parse::player::parse_player("IluRBvnYMoY", &json).unwrap();
     assert!(tracking.playback_url.starts_with("https://") && tracking.loudness_db.is_some());
 }
+
+// Dead cookies: YouTube answers the library with its "Sign in" prompt and a
+// 200, recorded on g815 on 2026-10-14 with the daemon's expired session.
+// It used to parse as a page with no sections, so the library showed empty
+// and the daemon never repaired the session.
+#[test]
+fn library_sign_in_prompt_is_signed_out() {
+    for (name, tab) in [
+        ("library_songs_signed_out", LibraryTab::Songs),
+        ("library_playlists_signed_out", LibraryTab::Playlists),
+    ] {
+        let json = load(name);
+        assert!(
+            parse::logged_out(&json) && parse::sign_in_prompt(&json),
+            "{name}"
+        );
+        let result = parse::page::parse_page(BrowseTarget::Library(tab), &json);
+        assert!(
+            matches!(result, Err(ApiError::SignedOut)),
+            "{name}: {result:?}"
+        );
+        // The same answer to a continuation stops the list with a session
+        // error instead of a parse error, so the daemon repairs and retries.
+        let more = parse::page::parse_continuation(&json);
+        assert!(matches!(more, Err(ApiError::SignedOut)), "{name}: {more:?}");
+    }
+}
+
+// Signed-out visitors still get public pages and their continuations.
+#[test]
+fn public_pages_and_continuations_are_not_signed_out() {
+    for name in ["home", "explore", "playlist", "album", "artist"] {
+        assert!(!parse::sign_in_prompt(&load(name)), "{name}");
+    }
+    for name in [
+        "home_continuation",
+        "playlist_continuation",
+        "search_continuation",
+    ] {
+        let more = parse::page::parse_continuation(&load(name));
+        assert!(more.is_ok(), "{name}: {more:?}");
+    }
+}

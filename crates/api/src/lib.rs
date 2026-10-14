@@ -8,6 +8,8 @@
 //! (`socat - UNIX-CONNECT:...`) and from bar widgets in any language.
 
 mod equalizer;
+#[cfg(feature = "settings")]
+pub mod settings;
 #[cfg(feature = "io")]
 pub mod local;
 mod model;

@@ -14,6 +14,11 @@ use formalmusic_api::{
 use serde_json::Value;
 
 pub fn parse_page(target: BrowseTarget, json: &Value) -> Result<Page> {
+    // Without this the prompt parses as a page with no sections: the library
+    // shows empty and the daemon never learns its cookies died.
+    if super::sign_in_prompt(json) {
+        return Err(formalmusic_api::ApiError::SignedOut);
+    }
     let contents = &json["contents"];
     let mut page_header = header(&json["header"]);
     let mut lead_sections = Vec::new();
@@ -143,9 +148,13 @@ pub fn parse_continuation(json: &Value) -> Result<ContinuationPage> {
         page.continuation = continuation(c);
         return Ok(page);
     }
-    let actions = json["onResponseReceivedActions"]
-        .as_array()
-        .ok_or_else(|| missing("continuationContents or onResponseReceivedActions"))?;
+    let Some(actions) = json["onResponseReceivedActions"].as_array() else {
+        // A continuation of a library page asked with dead cookies.
+        if super::logged_out(json) {
+            return Err(formalmusic_api::ApiError::SignedOut);
+        }
+        return Err(missing("continuationContents or onResponseReceivedActions"));
+    };
     for action in actions {
         let list = &action["appendContinuationItemsAction"]["continuationItems"];
         let list = if list.is_array() {

@@ -1,0 +1,12 @@
+#:schema ../../../nativedesktop/target/nd/nativedesktop.schema.json
+[app]
+id = "dev.formalsnake.formalmusic"
+display_name = "FormalMusic"
+icon = "../../packaging/icon.png"
+categories = ["AudioVideo", "Audio", "Player"]
+
+[macos]
+minimum_system_version = "14.0"
+
+[linux]
+formats = ["appimage"]

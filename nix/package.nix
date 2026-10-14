@@ -1,5 +1,6 @@
 {
   lib,
+  nativedesktop,
   rustPlatform,
   pkg-config,
   makeBinaryWrapper,
@@ -16,6 +17,9 @@
   libxcursor,
   libxi,
   libxrandr,
+  libxkbfile,
+  libgbm,
+  openssl,
   xdg-utils,
   ffmpeg-headless,
   yt-dlp,
@@ -24,7 +28,7 @@
 }:
 
 let
-  appId = "es.canarycoders.formalmusic";
+  appId = "dev.formalsnake.formalmusic";
   # The daemon keeps yt-dlp loaded in one Python process instead of running
   # the CLI per track. This interpreter imports the pinned yt-dlp, whose
   # deno path is already patched into its source.
@@ -40,18 +44,31 @@ rustPlatform.buildRustPackage (finalAttrs: {
   pname = "formalmusic";
   version = (lib.importTOML ../Cargo.toml).workspace.package.version;
 
-  src = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.unions [
-      ../Cargo.toml
-      ../Cargo.lock
-      ../crates
-      ../packaging
-      ../patches
-    ];
-  };
+  # The app depends on nativedesktop by path (`../nativedesktop`), so the
+  # build tree holds both checkouts side by side.
+  src = runCommand "formalmusic-src" { } ''
+    mkdir -p $out
+    cp -r ${
+      lib.fileset.toSource {
+        root = ../.;
+        fileset = lib.fileset.unions [
+          ../Cargo.toml
+          ../Cargo.lock
+          ../.cargo
+          ../crates
+          ../packaging
+        ];
+      }
+    } $out/youtubemusic
+    cp -r ${nativedesktop} $out/nativedesktop
+    chmod -R u+w $out
+  '';
+  sourceRoot = "formalmusic-src/youtubemusic";
 
-  cargoLock.lockFile = ../Cargo.lock;
+  cargoLock = {
+    lockFile = ../Cargo.lock;
+    outputHashes."libghostty-vt-0.2.1" = lib.fakeHash;
+  };
   cargoBuildFlags = [
     "--package=formalmusic"
     "--package=formalmusicd"
@@ -70,14 +87,15 @@ rustPlatform.buildRustPackage (finalAttrs: {
     libxkbcommon
     wayland
     libxcb
+    libxkbfile
+    openssl
   ];
 
   env = {
     CARGO_PROFILE_RELEASE_DEBUG = "false";
-    FORMALMUSIC_ICON_PATH = "${placeholder "out"}/share/icons/hicolor/512x512/apps/${appId}.png";
   };
 
-  # The GPUI tests need a window server, and the live tests need the network.
+  # The window tests need a window server, and the live tests need the network.
   doCheck = false;
 
   postInstall = ''
@@ -85,11 +103,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
     install -Dm644 packaging/linux/${appId}.desktop -t $out/share/applications
   '';
 
-  # GPUI dlopens the windowing and GPU libraries at runtime. The daemon
+  # nd's GPUI backend dlopens the windowing and GPU libraries at runtime. The daemon
   # resolves streams with the pinned yt-dlp, not whatever is on the user's
-  # PATH, and runs the CLI to read cookies out of browser profiles. The app decodes animated covers with ffmpeg and
-  # ffprobe; the headless build has the native H.264 decoder they need. The
-  # daemon asks xdg-settings which browser to open for sign-in.
+  # PATH, and runs the CLI to read cookies out of browser profiles. The demo
+  # paints its animated cover with ffmpeg. The daemon asks xdg-settings which
+  # browser to open for sign-in.
   postFixup = ''
     patchelf $out/bin/formalmusic --add-rpath ${
       lib.makeLibraryPath [
@@ -102,6 +120,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
         libxcursor
         libxi
         libxrandr
+        libxkbfile
+        libgbm
+        fontconfig
+        freetype
       ]
     }
     wrapProgram $out/bin/formalmusic --suffix PATH : ${

@@ -10,7 +10,15 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
 dirs.workspace = true
+nd-settings = { path = "../../../nativedesktop/crates/nd-settings", optional = true }
+schemars = { version = "1.2.3", optional = true }
+toml = { version = "0.9", optional = true }
 
 [features]
 default = []
 io = ["dep:tokio"]
+# The settings both binaries read (`config.toml` through nd-settings).
+settings = ["dep:nd-settings", "dep:schemars", "dep:toml"]
+
+[dev-dependencies]
+tempfile = "3"

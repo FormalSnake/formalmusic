@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Notify, broadcast, watch};
 
-const APP_ID: &str = "es.canarycoders.formalmusic";
+const APP_ID: &str = "dev.formalsnake.formalmusic";
 
 #[derive(Debug, Clone, PartialEq, Default)]
 struct NowPlaying {
