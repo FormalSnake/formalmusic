@@ -79,7 +79,11 @@ in
     systemd.user.services.formalmusicd = lib.mkIf cfg.daemon {
       Unit = {
         Description = "FormalMusic playback daemon";
-        After = [ "pipewire.service" ];
+        After = [
+          "pipewire.service"
+          "graphical-session.target"
+        ];
+        PartOf = [ "graphical-session.target" ];
       };
       Service = {
         ExecStart = lib.getExe' cfg.package "formalmusicd";
@@ -92,7 +96,7 @@ in
             cfg.lastfm.sharedSecretFile != null
           ) "FORMALMUSIC_LASTFM_SECRET_FILE=${cfg.lastfm.sharedSecretFile}";
       };
-      Install.WantedBy = [ "default.target" ];
+      Install.WantedBy = [ "graphical-session.target" ];
     };
   };
 }

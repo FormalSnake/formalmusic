@@ -127,8 +127,10 @@ pub async fn run(
 ) {
     let mut handle: Option<ksni::Handle<Tray>> = None;
     let mut last: Option<NowPlaying> = None;
-    // A failed spawn (no session bus, no watcher) waits for the setting to
-    // change instead of retrying on every event.
+    // A failed spawn (no session bus) waits for the setting to change instead
+    // of retrying on every event. A missing watcher is not a failure: the
+    // daemon can start before the shell's tray, and ksni registers once the
+    // watcher appears.
     let mut failed = false;
     loop {
         let now = NowPlaying::of(&playback).filter(|_| *shown.borrow());
@@ -147,7 +149,7 @@ pub async fn run(
                     now,
                     quit: quit.clone(),
                 };
-                match tray.spawn().await {
+                match tray.assume_sni_available(true).spawn().await {
                     Ok(tray) => handle = Some(tray),
                     Err(e) => {
                         tracing::warn!("tray unavailable: {e}");
