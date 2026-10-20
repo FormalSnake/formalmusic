@@ -1,4 +1,4 @@
-{ self, nativedesktop }:
+{ self, nativedesktop, kopuz }:
 {
   config,
   lib,
@@ -13,7 +13,8 @@ in
   # nativedesktop's module: `enable`, `package`, `theme` (written to theme.json; matugen
   # can own it instead) and `settings`, the typed options generated from the settings
   # schema (nix/settings-options.nix), rendered to config.toml. Keys set there show
-  # read-only in the app's Settings window, and the daemon plays by the same file.
+  # read-only in the app's Settings window, and the window pushes the playback keys into
+  # Kopuz's own settings.
   imports = [
     (import "${nativedesktop}/nix/hm-module.nix" {
       pname = "formalmusic";
@@ -22,58 +23,37 @@ in
     })
   ];
 
-  options.programs.formalmusic = {
-    daemon = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = ''
-        Run `formalmusicd` as a systemd user service, so playback, media keys
-        and MPRIS keep working with the window closed. Without it the app
-        starts the daemon itself and it exits with the session.
-      '';
-    };
+  options.programs.formalmusic.daemon = lib.mkOption {
+    type = lib.types.bool;
+    default = true;
+    description = ''
+      Run Kopuz's `kopuzd` as a systemd user service, so playback, media keys
+      and MPRIS keep working with the window closed. Without it the window
+      starts kopuzd itself when nothing answers on the socket.
 
-    lastfm = {
-      apiKeyFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "/run/agenix/lastfm-api-key";
-        description = ''
-          File holding the API key of your Last.fm API account
-          (last.fm/api/account/create), read by `formalmusicd` at start. A
-          path string rather than a Nix path, so the secret stays out of the
-          store. Set it with `sharedSecretFile`; without both, Settings asks
-          for the pair.
-        '';
-      };
-
-      sharedSecretFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "/run/agenix/lastfm-shared-secret";
-        description = "File holding the shared secret of the same Last.fm API account.";
-      };
-    };
+      kopuzd and the Kopuz desktop app own the same library and only one of
+      them can run at a time; FormalMusic attaches to whichever is up. Turn
+      this off if you use the Kopuz app.
+    '';
   };
 
   config = lib.mkIf cfg.enable {
-    systemd.user.services.formalmusicd = lib.mkIf (cfg.daemon && pkgs.stdenv.hostPlatform.isLinux) {
+    systemd.user.services.kopuzd = lib.mkIf (cfg.daemon && pkgs.stdenv.hostPlatform.isLinux) {
       Unit = {
-        Description = "FormalMusic playback daemon";
-        After = [ "pipewire.service" ];
+        Description = "Kopuz music daemon";
+        # MPRIS and media keys need the session's bus and display.
+        After = [
+          "pipewire.service"
+          "graphical-session.target"
+        ];
+        PartOf = [ "graphical-session.target" ];
       };
       Service = {
-        ExecStart = lib.getExe' cfg.package "formalmusicd";
+        ExecStart = lib.getExe' kopuz.packages.${pkgs.stdenv.hostPlatform.system}.default "kopuzd";
         Restart = "on-failure";
-        Environment =
-          lib.optional (
-            cfg.lastfm.apiKeyFile != null
-          ) "FORMALMUSIC_LASTFM_API_KEY_FILE=${cfg.lastfm.apiKeyFile}"
-          ++ lib.optional (
-            cfg.lastfm.sharedSecretFile != null
-          ) "FORMALMUSIC_LASTFM_SECRET_FILE=${cfg.lastfm.sharedSecretFile}";
+        RestartSec = 5;
       };
-      Install.WantedBy = [ "default.target" ];
+      Install.WantedBy = [ "graphical-session.target" ];
     };
   };
 }

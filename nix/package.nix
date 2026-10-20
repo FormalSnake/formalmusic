@@ -4,8 +4,6 @@
   rustPlatform,
   pkg-config,
   makeBinaryWrapper,
-  alsa-lib,
-  libopus,
   fontconfig,
   freetype,
   libxkbcommon,
@@ -22,23 +20,12 @@
   openssl,
   xdg-utils,
   ffmpeg-headless,
-  yt-dlp,
-  python3Packages,
+  kopuz,
   runCommand,
 }:
 
 let
   appId = "dev.formalsnake.formalmusic";
-  # The daemon keeps yt-dlp loaded in one Python process instead of running
-  # the CLI per track. This interpreter imports the pinned yt-dlp, whose
-  # deno path is already patched into its source.
-  ytdlpPython =
-    runCommand "formalmusic-ytdlp-python" { nativeBuildInputs = [ makeBinaryWrapper ]; }
-      ''
-        makeWrapper ${python3Packages.python.withPackages (_: yt-dlp.dependencies)}/bin/python3 \
-          $out/bin/formalmusic-ytdlp-python \
-          --prefix PYTHONPATH : ${yt-dlp}/${python3Packages.python.sitePackages}
-      '';
 in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "formalmusic";
@@ -65,14 +52,13 @@ rustPlatform.buildRustPackage (finalAttrs: {
   '';
   sourceRoot = "formalmusic-src/youtubemusic";
 
+  # The git dependencies (kopuz's client crates, libghostty-vt) are pinned by rev in
+  # Cargo.lock, which builtins.fetchGit takes without a separate hash.
   cargoLock = {
     lockFile = ../Cargo.lock;
-    outputHashes."libghostty-vt-0.2.1" = lib.fakeHash;
+    allowBuiltinFetchGit = true;
   };
-  cargoBuildFlags = [
-    "--package=formalmusic"
-    "--package=formalmusicd"
-  ];
+  cargoBuildFlags = [ "--package=formalmusic" ];
 
   nativeBuildInputs = [
     pkg-config
@@ -80,8 +66,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
   ];
 
   buildInputs = [
-    alsa-lib
-    libopus
     fontconfig
     freetype
     libxkbcommon
@@ -103,11 +87,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
     install -Dm644 packaging/linux/${appId}.desktop -t $out/share/applications
   '';
 
-  # nd's GPUI backend dlopens the windowing and GPU libraries at runtime. The daemon
-  # resolves streams with the pinned yt-dlp, not whatever is on the user's
-  # PATH, and runs the CLI to read cookies out of browser profiles. The demo
-  # paints its animated cover with ffmpeg. The daemon asks xdg-settings which
-  # browser to open for sign-in.
+  # nd's GPUI backend dlopens the windowing and GPU libraries at runtime. Animated
+  # covers and music videos decode with ffmpeg. With no daemon on the socket the
+  # window starts kopuzd, the same Kopuz build its client crates come from.
   postFixup = ''
     patchelf $out/bin/formalmusic --add-rpath ${
       lib.makeLibraryPath [
@@ -130,14 +112,12 @@ rustPlatform.buildRustPackage (finalAttrs: {
       lib.makeBinPath [
         xdg-utils
         ffmpeg-headless
+        kopuz
       ]
     }
-    wrapProgram $out/bin/formalmusicd --prefix PATH : ${lib.makeBinPath [ yt-dlp ]} \
-      --suffix PATH : ${lib.makeBinPath [ xdg-utils ]} \
-      --set FORMALMUSIC_YTDLP_PYTHON ${lib.getExe' ytdlpPython "formalmusic-ytdlp-python"}
   '';
 
-  passthru = { inherit ytdlpPython; };
+  passthru = { inherit kopuz; };
 
   meta = {
     description = "YouTube Music client for Linux";

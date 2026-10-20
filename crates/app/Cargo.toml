@@ -4,13 +4,10 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
-[features]
-# Demo pages from innertube's recorded responses; dev builds only.
-demo-fixtures = ["formalmusic-core/demo-fixtures"]
-
 [dependencies]
 formalmusic-api = { workspace = true, features = ["settings"] }
 formalmusic-core.workspace = true
+kopuz-client.workspace = true
 nd = { path = "../../../nativedesktop/crates/nd", features = ["settings-ui"] }
 nd-ipc = { path = "../../../nativedesktop/crates/nd-ipc" }
 nd-settings = { path = "../../../nativedesktop/crates/nd-settings" }
@@ -43,4 +40,8 @@ harness = false
 # Tier 3: the built app as its own process, driven over its automation socket.
 [[test]]
 name = "real"
+harness = false
+
+[[test]]
+name = "kopuz"
 harness = false

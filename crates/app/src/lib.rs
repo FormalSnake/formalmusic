@@ -1,5 +1,5 @@
 //! FormalMusic's window on NativeDesktop. `formalmusic_core::MusicStore` holds every byte of
-//! state and talks to the daemon; this crate is views over it. `bridge` turns the store's
+//! state and talks to the Kopuz daemon; this crate is views over it. `bridge` turns the store's
 //! events into view notifications, `root` is the window, `page` renders any page or search,
 //! `now_playing` the expanded player with the queue, lyrics and related tabs.
 
@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use formalmusic_core::art::ArtCache;
 use formalmusic_core::cache::{CachedState, StateCache};
-use formalmusic_core::{MusicStore, StoreOptions, paths};
+use formalmusic_core::{MusicStore, StoreOptions, kopuz, paths};
+use kopuz_client::GrpcApi;
 use nd::prelude::*;
 
 pub use root::Root;
@@ -71,14 +72,22 @@ pub fn build_store(runtime: &tokio::runtime::Handle, preloaded: Option<CachedSta
         .user_agent(concat!("formalmusic/", env!("CARGO_PKG_VERSION")))
         .build()
         .unwrap_or_default();
-    let art = Arc::new(ArtCache::new(paths::art_dir(), http));
-    let transport: Arc<dyn formalmusic_core::Transport> = if demo() {
-        Arc::new(formalmusic_core::demo::DemoTransport::new())
+    let art = ArtCache::new(paths::art_dir(), http);
+    let (transport, art): (Arc<dyn formalmusic_core::Transport>, _) = if demo() {
+        (Arc::new(formalmusic_core::demo::DemoTransport::new()), art)
     } else {
-        Arc::new(formalmusic_core::client::DaemonClient::new(
-            formalmusic_api::socket_path(),
-        ))
+        let socket = kopuz::socket_path();
+        // tonic's lazy channel spawns its connector on the current runtime.
+        let _entered = runtime.enter();
+        let daemon = Arc::new(
+            GrpcApi::new(socket.clone()).expect("a socket path is a valid daemon address"),
+        );
+        (
+            Arc::new(kopuz::KopuzTransport::new(daemon.clone(), socket)),
+            art.with_daemon(daemon),
+        )
     };
+    let art = Arc::new(art);
     let cache = Some(Arc::new(StateCache::new(&state_dir())));
     MusicStore::new(
         transport,
@@ -106,11 +115,16 @@ pub fn init(cx: &mut App, music: Music) -> WindowHandle<Root> {
         settings.on_event(move |_| {
             let _ = tx.send(());
         });
-        bridge::on_main(rx, |(), cx| cx.refresh_windows());
+        let reload = store.clone();
+        bridge::on_main(rx, move |(), cx| {
+            reload.reload_settings();
+            cx.refresh_windows();
+        });
         if let Ok(guard) = settings.watch() {
             std::mem::forget(guard);
         }
     }
+    art::install(cx, store.art().clone(), runtime.clone());
     cx.set_global(music);
     bridge::install(cx, &store);
     root::bind_keys(cx);

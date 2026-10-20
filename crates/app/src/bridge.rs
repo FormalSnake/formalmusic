@@ -66,12 +66,6 @@ pub fn install(cx: &mut App, store: &MusicStore) {
     });
     on_main(rx, |delivery, cx| {
         let ids: Vec<EntityId> = match delivery {
-            Delivery::One(StoreEvent::Quit) => {
-                for window in cx.window_ids().collect::<Vec<_>>() {
-                    cx.close_window(window);
-                }
-                return;
-            }
             Delivery::One(event) => watchers(cx)
                 .borrow()
                 .by_topic

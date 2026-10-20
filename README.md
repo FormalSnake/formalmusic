@@ -4,15 +4,15 @@
 
 YouTube Music on Linux, macOS and Windows. A native Rust client on
 [NativeDesktop](https://github.com/FormalSnake/NativeDesktop) (AppKit on macOS, GPUI
-elsewhere) on top of its own playback daemon, with synced lyrics and Apple Music
-motion artwork.
+elsewhere) on top of the [Kopuz](https://github.com/Kopuz-org/kopuz) daemon, with
+synced lyrics and Apple Music motion artwork.
 
 ![Home](docs/images/home.png)
 
 ```
-┌──────────────────────┐  JSON lines   ┌────────────────────────────────┐
-│ formalmusic (nd)     │ ────────────▶ │ formalmusicd                   │
-│ AppKit / GPUI window │ ◀──────────── │ InnerTube client, yt-dlp,      │
+┌──────────────────────┐     gRPC      ┌────────────────────────────────┐
+│ formalmusic (nd)     │ ────────────▶ │ kopuzd, or the Kopuz app       │
+│ AppKit / GPUI window │ ◀──────────── │ YouTube Music source, streams, │
 └──────────────────────┘  unix socket  │ audio engine, queue, MPRIS     │
                                        └────────────────────────────────┘
 ```
@@ -44,7 +44,8 @@ at 0% CPU.
 - Apple Music motion artwork for albums that have it.
 - Colours follow [matugen](https://github.com/InioX/matugen) live.
 
-Music videos play in the expanded player; comments are not there yet.
+Not yet on Kopuz: the music video picture, Premium detection and per-service
+scrobbling switches (`PLAN.md` lists what Kopuz still lacks).
 
 ## Install
 
@@ -68,95 +69,57 @@ Home Manager:
 
   programs.formalmusic = {
     enable = true;
-    daemon = true;                     # formalmusicd as a systemd user service
+    daemon = true;                     # kopuzd as a systemd user service
     settings.playback.crossfade_ms = 3000;  # any key of config.toml, typed
   };
 }
 ```
 
-This installs the app, the daemon, the desktop entry and icon. The package
-pins its own yt-dlp release rather than nixpkgs' copy, which trails YouTube's
-changes by days. `overlays.default` adds `pkgs.formalmusic`.
+This installs the app, the desktop entry and icon, and runs Kopuz's daemon,
+pinned to the release the app's Kopuz client crates come from (v0.22.0). kopuzd and the
+Kopuz desktop app own one library and cannot run at the same time: if you use
+the Kopuz app, set `daemon = false` and FormalMusic attaches to the app.
+`overlays.default` adds `pkgs.formalmusic` and `pkgs.kopuz`.
 
-### Other Linux
+### From source
 
-Needs a recent stable Rust, Vulkan, `yt-dlp` and `ffmpeg` on `PATH`, a `python3` that
-can `import yt_dlp` (or `FORMALMUSIC_YTDLP_PYTHON` naming one), and `libxkbcommon`,
-`wayland`, `vulkan-loader`, `fontconfig`, `freetype`, `alsa-lib`, `libopus`.
+Needs a recent stable Rust, `ffmpeg` on `PATH`, Kopuz's `kopuzd` (v0.22.0, the
+release `Cargo.toml` pins, or the Kopuz app running), and on Linux Vulkan,
+`libxkbcommon`, `wayland`, `vulkan-loader`, `fontconfig` and `freetype`.
 
 ```
 git clone https://github.com/FormalSnake/formalmusic
 cd formalmusic
-cargo build --release -p formalmusic -p formalmusicd
+cargo build --release -p formalmusic
 ```
 
-Put both binaries on `PATH`. The app starts the daemon itself when no service
-is running.
-
-### Windows
-
-Needs Rust (MSVC) and the Visual Studio C++ build tools. From the checkout:
-
-```
-powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
-```
-
-This builds both binaries and installs them for the current user in
-`%LOCALAPPDATA%\Programs\FormalMusic`, with an embeddable Python carrying
-the yt-dlp release `flake.nix` pins, deno, a Start menu entry and an entry in
-Installed apps. ffmpeg comes from winget when it is not on `PATH`. The daemon
-shows up in the media flyout and on media keys, keeps a notification area
-icon while a track is loaded, talks over the named pipe
-`\\.\pipe\formalmusicd-%USERNAME%`, and logs to
-`%LOCALAPPDATA%\formalmusic\formalmusicd.log`.
+The app starts `kopuzd` from `PATH` when nothing answers on Kopuz's socket.
 
 ## Signing in
 
-On first launch, pick a browser profile that is already signed in to YouTube
-Music and the daemon copies its session with yt-dlp, which works while the
-browser is open. Otherwise it opens your browser in a throwaway profile at
-Google's sign-in page and keeps the cookies once you are in. Pasting the
-`Cookie` request header of a signed-in music.youtube.com tab still works as a
-last resort. The daemon keeps the session in
-`$XDG_STATE_HOME/formalmusic/session.json` (mode 0600). Without signing in,
-everything that doesn't need an account works.
+Kopuz signs in: pick a browser profile that is already signed in to YouTube
+Music, let it open your browser at Google's sign-in page, or paste the
+`Cookie` request header of a signed-in music.youtube.com tab. Kopuz keeps the
+session. Without signing in, everything that doesn't need an account works.
 
-`FORMALMUSIC_DEMO=1 formalmusic` runs on recorded responses with no daemon.
+`FORMALMUSIC_DEMO=1 formalmusic` runs on a made-up catalog with no daemon.
 
 ## Scrobbling
 
-Settings (`Ctrl+,`, or the account menu) connects Last.fm and ListenBrainz.
-Each play goes out as now playing when it starts and again on resume, and
-counts once it has played for half its length or four minutes, whichever
-comes first (tracks of 30 seconds or less never count). Videos are reported
-with cleaned titles and the album of the matching album track. Plays wait in
-`$XDG_STATE_HOME/formalmusic/scrobble-queue.json` while offline and go out in
-batches later.
-
-Last.fm signs every call with an API account, so you need your own: create
-one at [last.fm/api/account/create](https://www.last.fm/api/account/create)
-(no callback URL), paste its API key and shared secret into Settings, then
-allow access in the browser. With Home Manager the pair can come from files
-instead, such as agenix secrets:
-
-```nix
-programs.formalmusic.lastfm = {
-  apiKeyFile = "/run/agenix/lastfm-api-key";
-  sharedSecretFile = "/run/agenix/lastfm-shared-secret";
-};
-```
-
-ListenBrainz connects from a browser profile signed in to listenbrainz.org,
-or from the user token on
-[listenbrainz.org/settings](https://listenbrainz.org/settings/). Session
-keys, tokens and a pasted API account stay in
-`$XDG_STATE_HOME/formalmusic/scrobble.json` (mode 0600).
+Settings (`Ctrl+,`, or the account menu) connects Last.fm and ListenBrainz
+through Kopuz, which scrobbles. Last.fm signs every call with an API account,
+so you need your own: create one at
+[last.fm/api/account/create](https://www.last.fm/api/account/create) (no
+callback URL), paste its API key and shared secret into Settings, then allow
+access in the browser. ListenBrainz connects from a browser profile or the
+user token on [listenbrainz.org/settings](https://listenbrainz.org/settings/).
 
 ## Configuration
 
 `~/.config/formalmusic/config.toml` (`~/Library/Application Support/formalmusic`
-on macOS) holds every setting; the Settings window writes it, the daemon reads it
-and picks up changes as the file changes, and Home Manager can own any key
+on macOS) holds every setting; the Settings window writes it, the window pushes
+the playback keys into Kopuz's settings on connect and on every change, and
+Home Manager can own any key
 (`programs.formalmusic.settings`, typed options generated from the schema in
 `crates/api/src/settings.rs`). A `config.json` and `daemon.json` from before are
 imported once.
@@ -173,15 +136,9 @@ report_history = false
 `~/.config/formalmusic/theme.json` is NativeDesktop's matugen file (Material
 roles under `colors`, from nd's template) and is reloaded live.
 
-Environment overrides: `FORMALMUSIC_SOCKET`, `FORMALMUSIC_YTDLP`,
-`FORMALMUSIC_TRACE=1` (startup and navigation timings).
-
-The daemon speaks JSON lines on `$XDG_RUNTIME_DIR/formalmusic/formalmusicd.sock`,
-so a bar widget can drive it:
-
-```
-echo '{"id":1,"cmd":"toggle"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/formalmusic/formalmusicd.sock
-```
+Environment overrides: `FORMALMUSIC_KOPUZ_SOCKET`, `FORMALMUSIC_TRACE=1`
+(startup and navigation timings). A bar widget drives playback through Kopuz
+itself, with `kopuzctl toggle` or `grpcurl`.
 
 ## Keyboard
 
@@ -209,25 +166,19 @@ echo '{"id":1,"cmd":"toggle"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/formalmus
 
 ```
 nix develop
-FORMALMUSIC_DEMO=1 cargo run --release -p formalmusic   # recorded responses
+FORMALMUSIC_DEMO=1 cargo run --release -p formalmusic   # made-up catalog
 cargo test --workspace
-cargo test -p formalmusic-innertube -- --ignored        # live checks against YouTube
 nix build .#formalmusic                                 # Linux package
 ```
 
-`maintenance/live-check.sh` runs the live checks against an isolated daemon
-of the checkout: it plays 10 seconds of a fixed track into a null sink,
-fetches Home, Search and an album over the socket, runs the live innertube
-tests and diffs the renderer keys YouTube sends against the fixtures. A
-weekly systemd timer on the maintainer's machine runs Claude Code headless
-with `maintenance/weekly.md` as the prompt: it bumps yt-dlp, nixpkgs and the
-crates, runs the checks, repairs what broke and ships the result as a PR.
+A weekly systemd timer on the maintainer's machine runs Claude Code headless
+with `maintenance/weekly.md` as the prompt: it moves the Kopuz pin, nixpkgs and
+the crates, runs the checks, repairs what broke and ships the result as a PR.
 
-`crates/api` is the socket contract and the shared settings, `crates/innertube`
-the YouTube Music client, `crates/player` the audio engine, `crates/extras`
-lyrics and motion artwork, `crates/daemon` ties them together, `crates/core` is
-the window's store and `crates/app` the window, on NativeDesktop, which is
-expected as a sibling checkout (`../nativedesktop`). `PLAN.md` has the architecture and the
+`crates/api` is the app's model and settings, `crates/core` the window's store
+and its bridge to Kopuz (`src/kopuz`), `crates/extras` Apple Music motion
+artwork, and `crates/app` the window, on NativeDesktop, which is expected as a
+sibling checkout (`../nativedesktop`). `PLAN.md` has the architecture and the
 speed budget.
 
 ## License

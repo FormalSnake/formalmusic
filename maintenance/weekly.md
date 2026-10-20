@@ -86,22 +86,19 @@ reason to reset.
 * Never build on the e1504g. No `nixos-rebuild`, `nix build`, `nix develop`,
   `cargo` or `just` there, and no `--build-host e1504g`. The e1504g only ever
   receives a closure built on the g815 through `--target-host e1504g`.
-* Never touch the owner's live daemon or window: not the `formalmusicd` user
-  service, not `$XDG_RUNTIME_DIR/formalmusic/formalmusicd.sock`, not
-  `~/.local/state/formalmusic`, `~/.config/formalmusic` or
-  `~/.cache/formalmusic`, not a running `formalmusic` window. No
-  `systemctl --user restart|stop formalmusicd`, no `pkill formalmusic`. The
-  g815 rebuild in step 5 may restart `formalmusicd` through home-manager;
-  that is expected and the only way the run changes it.
+* Never touch the owner's live daemon or window: not the `kopuzd` user
+  service, not Kopuz's socket (`$XDG_RUNTIME_DIR/kopuz/kopuzd.sock`) or its
+  library and settings under `~/.local/share` and `~/.config`, not
+  `~/.config/formalmusic` or `~/.cache/formalmusic`, not a running
+  `formalmusic` window or Kopuz app. No `systemctl --user restart|stop
+  kopuzd`, no `pkill`. The g815 rebuild in step 5 may restart `kopuzd`
+  through home-manager; that is expected and the only way the run changes it.
 * Every test daemon runs isolated, the way `maintenance/live-check.sh` does
-  it: private `XDG_RUNTIME_DIR`, `FORMALMUSIC_SOCKET`, `XDG_STATE_HOME`,
-  `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` under a `mktemp -d`, under
-  `dbus-run-session`, with `FORMALMUSIC_AUDIO=null`. Never start the app
+  it: a scratch `kopuzd --db-path <tmp> --socket <tmp>` with an anonymous
+  YouTube Music source, under `dbus-run-session`. Never start the app
   window; it would open on the owner's desktop.
-* Never use the owner's YouTube session (`session.json`, browser cookies)
-  for tests or fixtures. A second client of that session rotates its cookies
-  and signs the owner's daemon out. Signed-in checks and
-  `fixtures/private/` stay out of this run.
+* Never use the owner's YouTube session for tests. A second client of that
+  session rotates its cookies and signs the owner's Kopuz out.
 * Never write to the owner's working copies of FormalMusic
   (`~/Developer/formalmusic` and the other `~/Developer/formalmusic-*` on the
   g815, the macbook's `~/Developer/youtubemusic` and
@@ -165,20 +162,22 @@ On a new branch in the clone (`git switch -c <branch>`):
    git -C ../nativedesktop checkout --detach <rev>`), so cargo and the Nix
    package build the same toolkit. Bumping it is the owner's call, not this
    run's.
-1. yt-dlp: the flake pins `github:yt-dlp/yt-dlp/<tag>`. Get the latest
-   release tag with `gh release view -R yt-dlp/yt-dlp --json tagName -q
-   .tagName`; if it is newer, change the tag in `flake.nix` (that url only).
-2. `nix flake update yt-dlp nixpkgs --option access-tokens "github.com=$(gh
+1. Kopuz: the `kopuz` flake input and the three `kopuz-*` dependencies in
+   `Cargo.toml` pin one release tag of `Kopuz-org/kopuz`. Get the newest with
+   `gh release view -R Kopuz-org/kopuz --json tagName -q .tagName`; if it is
+   newer, put it in `flake.nix` (that url only) and in the three `tag = "..."`
+   in `Cargo.toml`. They move together or not at all.
+2. `nix flake update kopuz nixpkgs --option access-tokens "github.com=$(gh
    auth token)"`.
 3. `nix develop -c cargo update 2>&1 | tee "$logs/cargo-update.log"`.
-4. Note for the PR: old and new yt-dlp tag, old and new nixpkgs rev and date
-   (from `flake.lock`), and how many crates `cargo update` changed, naming the
-   notable ones (major versions, symphonia, reqwest, tokio).
-5. Commit `flake.nix`, `flake.lock` and `Cargo.lock` by explicit path, for
-   example `bump yt-dlp to 2026.09.30, nixpkgs and cargo dependencies`.
-   If nothing changed, note it and run step 3 anyway (the checks still tell
-   whether YouTube broke something); with nothing changed and the checks
-   passing there is no PR, and the outcome is `nothing to update`.
+4. Note for the PR: old and new Kopuz release, old and
+   new nixpkgs rev and date (from `flake.lock`), and how many crates `cargo
+   update` changed, naming the notable ones.
+5. Commit `flake.nix`, `flake.lock`, `Cargo.toml` and `Cargo.lock` by explicit
+   path, for example `bump kopuz to v0.23.0, nixpkgs and cargo dependencies`.
+   If nothing changed, note it and run step 3 anyway; with nothing changed
+   and the checks passing there is no PR, and the outcome is `nothing to
+   update`.
 
 ## 3. Check
 
@@ -192,13 +191,11 @@ nix build .#formalmusic --no-link -L 2>&1 | tail -n 200 > "$logs/nix-build.log"
 
 Take each exit status from `${PIPESTATUS[0]}`, not from `tee`.
 
-`live-check.sh` builds and runs an isolated anonymous daemon of this checkout
-(10 s of a fixed track into the null sink; Home, Search and an album over the
-socket), then `cargo test -p formalmusic-innertube -- --ignored`, whose
-`live_renderer_keys_match_fixtures` diffs the renderer keys YouTube sends
-today against the fixtures. Its last block is a short summary; quote that
-block in the PR. `nix build` proves the package still builds with the new
-lock and yt-dlp; it runs on the g815, which is allowed.
+`live-check.sh` runs the pinned kopuzd isolated with an anonymous YouTube
+Music source and asks it, over the socket, for Home, a search, an album and
+ten seconds of playback into the null sink. Its last block is a short
+summary; quote that block in the PR. `nix build` proves the package still
+builds; it runs on the g815, which is allowed.
 
 The checks pass only when all three exit 0.
 
@@ -208,18 +205,12 @@ Skip this step in a dry run (`dry=1`): go to step 5 with the failure as it is.
 
 Otherwise fix what failed, at the real cause, in the clone:
 
-* A changed YouTube response: re-record the affected fixture in
-  `crates/innertube/fixtures/` anonymously, with the request the parser test
-  uses (hl=en, gl=US, through `Client::raw`, `responseContext` removed, the way
-  `record_counterpart_fixture` in `crates/innertube/tests/live.rs` does it),
-  then fix the parser in `crates/innertube/src/parse/` until
-  `cargo test -p formalmusic-innertube` and the live tests pass. A renderer
-  that `live_renderer_keys_match_fixtures` reports as new means a fixture is
-  out of date: re-record it, then make the parser handle it.
-* Stream resolution or playback: read the yt-dlp worker
-  (`crates/daemon/src/streams/`) and the daemon log `live-check.sh` prints.
-  A yt-dlp release that is broken for us is a reason to pin the previous
-  tag, and the PR says so.
+* A Kopuz schema change that breaks the build or the bridge: fix
+  `crates/core/src/kopuz/` (the transport and `convert.rs`) to the new
+  `kopuz-api` types, until `cargo test --workspace` passes.
+* YouTube breaking Kopuz itself (streams, a page that no longer parses):
+  that is Kopuz's to fix, not this repo's. Pin the previous Kopuz release in
+  both places, and say in the PR which check failed on the new one.
 * A crate update that breaks the build: fix the call sites, or hold that one
   crate back with `cargo update -p <crate> --precise <old>` and say why.
 
@@ -236,8 +227,8 @@ checks failing.
 
 Push the branch (`git push -u origin <branch>`) and open the PR:
 `gh pr create --base main --head <branch> --title <title> --body-file <file>`.
-The title is lowercase like the commits (`weekly maintenance $date: yt-dlp
-2026.09.30, nixpkgs, cargo update`; prefix `dry run:` when `dry=1`). The body
+The title is lowercase like the commits (`weekly maintenance $date: kopuz
+v0.23.0, nixpkgs, cargo update`; prefix `dry run:` when `dry=1`). The body
 is one or two short paragraphs, what changed and why (from step 2 and any
 repair), then the check output in a fenced block: the `live-check.sh` summary
 block, the `test result:` lines of `cargo test --workspace`, and the last

@@ -602,7 +602,7 @@ pub struct VideoStream {
     pub width: u32,
     pub height: u32,
     pub fps: f64,
-    /// As yt-dlp names it, such as `avc1.4D401F`.
+    /// The RFC 6381 codec string, such as `avc1.4D401F`.
     pub codec: String,
 }
 

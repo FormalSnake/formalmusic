@@ -1,77 +1,17 @@
-//! The contract between `formalmusicd` and its clients.
-//!
-//! Wire format: one JSON object per line over a Unix socket (a named pipe on
-//! Windows) at [`socket_path`]. A client writes [`Request`]s; the daemon writes
-//! [`ServerMessage`]s, which are either the [`Response`] to a request (matched
-//! by `id`) or an unsolicited [`Event`] once the client has sent
-//! [`Command::Subscribe`]. JSON lines keep the daemon scriptable from a shell
-//! (`socat - UNIX-CONNECT:...`) and from bar widgets in any language.
+//! The app's model and the commands its store sends to the transport. The transport
+//! answers them from the Kopuz daemon (`formalmusic-core`'s `kopuz` module) or from the
+//! demo set; nothing here crosses a wire.
 
 mod equalizer;
 #[cfg(feature = "settings")]
 pub mod settings;
-#[cfg(feature = "io")]
-pub mod local;
 mod model;
 pub mod process;
-#[cfg(feature = "io")]
-pub mod wire;
 
 pub use equalizer::*;
 pub use model::*;
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
-/// Bumped on any breaking change to the types in this crate. The client
-/// refuses to talk to a daemon with a different number, since both ship in
-/// the same package and a mismatch means a stale daemon is still running.
-pub const PROTOCOL_VERSION: u32 = 2;
-
-/// `$XDG_RUNTIME_DIR/formalmusic/formalmusicd.sock`, or the cache dir on macOS
-/// where there is no runtime dir. On Windows a named pipe per user.
-pub fn socket_path() -> PathBuf {
-    if let Ok(path) = std::env::var("FORMALMUSIC_SOCKET") {
-        return path.into();
-    }
-    if cfg!(windows) {
-        let user = std::env::var("USERNAME").unwrap_or_default();
-        return format!(r"\\.\pipe\formalmusicd-{user}").into();
-    }
-    dirs::runtime_dir()
-        .or_else(dirs::cache_dir)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("formalmusic")
-        .join("formalmusicd.sock")
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Request {
-    pub id: u64,
-    #[serde(flatten)]
-    pub command: Command,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ServerMessage {
-    Response(Response),
-    Event(Event),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Response {
-    pub id: u64,
-    #[serde(flatten)]
-    pub result: ResponseResult,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResponseResult {
-    Ok(Reply),
-    Err(ApiError),
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
 #[serde(tag = "kind", content = "message", rename_all = "snake_case")]
@@ -81,8 +21,7 @@ pub enum ApiError {
     SignedOut,
     #[error("not found: {0}")]
     NotFound(String),
-    /// YouTube answered with something the parser does not understand. The
-    /// weekly maintenance run looks for these in the journal.
+    /// The daemon failed and named no cause the app can act on.
     #[error("unexpected response: {0}")]
     Parse(String),
     #[error("network: {0}")]
@@ -96,13 +35,6 @@ pub enum ApiError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
 pub enum Command {
-    Hello {
-        protocol: u32,
-    },
-    /// Start receiving [`Event`]s on this connection. The daemon answers with
-    /// a full [`PlayerState`] and [`QueueState`] snapshot first.
-    Subscribe,
-
     // Session
     Session,
     /// A `Cookie` header copied from a signed-in music.youtube.com tab, or
@@ -176,14 +108,14 @@ pub enum Command {
     Lyrics {
         video_id: String,
     },
-    /// Apple Music's looping album video, downloaded by the daemon.
+    /// Apple Music's looping album video, which the window downloads itself.
     AnimatedCover {
         artist: String,
         album: String,
     },
-    /// A video-only stream of `video_id` no taller than `max_height`, from
-    /// the same yt-dlp run as its audio. `refresh` resolves it again, after
-    /// googlevideo refused the last URL.
+    /// A video-only stream of `video_id` no taller than `max_height`.
+    /// `refresh` resolves it again, after googlevideo refused the last URL.
+    /// Kopuz has no URL to hand out yet, so the bridge refuses it.
     VideoStream {
         video_id: String,
         max_height: u32,
@@ -285,24 +217,15 @@ pub enum Command {
     QueueState,
 
     // Desktop
-    /// Read the playback settings again from the app's `config.json`, which
-    /// the Settings dialog just wrote.
+    /// Push the playback settings in `config.toml`, which Settings just wrote,
+    /// into the daemon's own.
     ReloadSettings,
-    /// Show or hide the tray icon, which the daemon owns so it outlives the
-    /// window. Linux only; elsewhere the daemon takes it and does nothing.
-    SetTray {
-        shown: bool,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "reply", content = "data", rename_all = "snake_case")]
 pub enum Reply {
     Ok,
-    Hello {
-        protocol: u32,
-        version: String,
-    },
     Session(SessionInfo),
     Browsers(Browsers),
     BrowserProfiles(Vec<ProfileBrowser>),
@@ -347,38 +270,11 @@ pub enum Event {
     Notice {
         message: String,
     },
-    /// The daemon is exiting because the user quit FormalMusic (the tray's
-    /// Quit). Windows close instead of reconnecting or starting a new one.
-    Quit,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn request_shape_is_stable() {
-        let req = Request {
-            id: 7,
-            command: Command::SeekTo { position_ms: 1500 },
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert_eq!(
-            json,
-            r#"{"id":7,"cmd":"seek_to","args":{"position_ms":1500}}"#
-        );
-        let back: Request = serde_json::from_str(&json).unwrap();
-        assert!(matches!(
-            back.command,
-            Command::SeekTo { position_ms: 1500 }
-        ));
-    }
-
-    #[test]
-    fn unit_commands_need_no_args() {
-        let req: Request = serde_json::from_str(r#"{"id":1,"cmd":"toggle"}"#).unwrap();
-        assert!(matches!(req.command, Command::Toggle));
-    }
 
     #[test]
     fn items_and_suggestions_round_trip() {
@@ -476,22 +372,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!((state.mode, state.playing_id), (PlaybackMode::Song, None));
-    }
-
-    #[test]
-    fn response_round_trips() {
-        let msg = ServerMessage::Response(Response {
-            id: 3,
-            result: ResponseResult::Err(ApiError::SignedOut),
-        });
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ServerMessage = serde_json::from_str(&json).unwrap();
-        assert!(matches!(
-            back,
-            ServerMessage::Response(Response {
-                id: 3,
-                result: ResponseResult::Err(ApiError::SignedOut)
-            })
-        ));
     }
 }

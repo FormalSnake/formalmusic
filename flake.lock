@@ -1,5 +1,41 @@
 {
   "nodes": {
+    "crane": {
+      "locked": {
+        "lastModified": 1783203018,
+        "narHash": "sha256-G6R9IT/xwFuu+CYBWDUAok6AdC4ERC4ZfPPFtEpxnZE=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "80db5bdc391be8a1794f6d8a2d56e3a84ebcede2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
+    "kopuz": {
+      "inputs": {
+        "crane": "crane",
+        "nixpkgs": "nixpkgs",
+        "rust-overlay": "rust-overlay"
+      },
+      "locked": {
+        "lastModified": 1792507774,
+        "narHash": "sha256-ZyZt6yThD+uTiggW4tcf2NggADq1ivHtqrUIgTN8ZJA=",
+        "owner": "Kopuz-org",
+        "repo": "kopuz",
+        "rev": "23db9b35fe45bd773e3cdcdf0d6584b13ae5b8cc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Kopuz-org",
+        "ref": "v0.22.0",
+        "repo": "kopuz",
+        "type": "github"
+      }
+    },
     "nativedesktop": {
       "flake": false,
       "locked": {
@@ -18,6 +54,19 @@
     },
     "nixpkgs": {
       "locked": {
+        "lastModified": 1791179034,
+        "narHash": "sha256-C9upu7DiyqMGzdnVbapqVYx2QvBXubxyrhSKV3C+Ngo=",
+        "rev": "494ce7fd23ff6a5dff39e1fb11e9b6f2ac74bf25",
+        "type": "tarball",
+        "url": "https://releases.nixos.org/nixos/unstable/nixos-26.11pre1085777.494ce7fd23ff/nixexprs.tar.xz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
         "lastModified": 1791260994,
         "narHash": "sha256-Miqqk/ammqnTUxaoCyvtwoPeLbI1ksFyLxi/CazZpWY=",
         "owner": "NixOS",
@@ -34,25 +83,29 @@
     },
     "root": {
       "inputs": {
+        "kopuz": "kopuz",
         "nativedesktop": "nativedesktop",
-        "nixpkgs": "nixpkgs",
-        "yt-dlp": "yt-dlp"
+        "nixpkgs": "nixpkgs_2"
       }
     },
-    "yt-dlp": {
-      "flake": false,
+    "rust-overlay": {
+      "inputs": {
+        "nixpkgs": [
+          "kopuz",
+          "nixpkgs"
+        ]
+      },
       "locked": {
-        "lastModified": 1787182285,
-        "narHash": "sha256-BM5ZeGTmHq+1xH6G/zsuCtjLgYgfRA11ya0zIHK5p4g=",
-        "owner": "yt-dlp",
-        "repo": "yt-dlp",
-        "rev": "3a08beaf031ab68f966401ead017ac81fe8486cf",
+        "lastModified": 1783921439,
+        "narHash": "sha256-DsSIQSRMrLOz40LrGZ03sp2RlJ9sz3wKpd8XPTOzXnw=",
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "rev": "e013376c32a8fcf07ddb6ec71739552bc118b7bd",
         "type": "github"
       },
       "original": {
-        "owner": "yt-dlp",
-        "ref": "2026.08.19",
-        "repo": "yt-dlp",
+        "owner": "oxalica",
+        "repo": "rust-overlay",
         "type": "github"
       }
     }

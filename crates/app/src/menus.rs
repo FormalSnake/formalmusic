@@ -156,7 +156,9 @@ pub fn share_url(item: &Item) -> Option<String> {
             ..
         }
         | Item::Playlist { playlist_id, .. } => {
-            format!("{BASE}/playlist?list={playlist_id}")
+            // A playlist's browse id, as Kopuz hands it out, is its list id behind `VL`.
+            let list = playlist_id.strip_prefix("VL").unwrap_or(playlist_id);
+            format!("{BASE}/playlist?list={list}")
         }
         Item::Album { browse_id, .. } => format!("{BASE}/browse/{browse_id}"),
         Item::Artist { browse_id, .. } => format!("{BASE}/channel/{browse_id}"),

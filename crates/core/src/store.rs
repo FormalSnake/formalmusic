@@ -262,8 +262,6 @@ pub enum StoreEvent {
     Ratings,
     Notice,
     Scrobbling,
-    /// The daemon quit at the user's request; the app exits with it.
-    Quit,
 }
 
 impl StoreEvent {
@@ -728,9 +726,6 @@ impl MusicStore {
                 }
             }
             Event::Notice { message } => self.notice(message),
-            Event::Quit => {
-                let _ = self.inner.events.send(StoreEvent::Quit);
-            }
         }
     }
 
@@ -1267,10 +1262,6 @@ impl MusicStore {
         self.send(Command::Next);
     }
 
-    pub fn set_tray(&self, shown: bool) {
-        self.send(Command::SetTray { shown });
-    }
-
     /// After Settings wrote a playback key the daemon reads.
     pub fn reload_settings(&self) {
         self.send(Command::ReloadSettings);
@@ -1362,7 +1353,7 @@ impl MusicStore {
     }
 
     /// A video-only stream of `video_id` for the player to decode beside
-    /// the daemon's audio. `refresh` asks yt-dlp again after a refused URL.
+    /// the daemon's audio. `refresh` resolves it again after a refused URL.
     pub async fn video_stream(
         &self,
         video_id: String,

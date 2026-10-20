@@ -269,14 +269,6 @@ impl Render for SettingsWindow {
                 s.window.keep_playing_when_closed,
                 cx,
             ))
-            .when(!cfg!(target_os = "macos"), |group| {
-                group.child(self.switch(
-                    "window.show_in_tray",
-                    "Show in the system tray",
-                    s.window.show_in_tray,
-                    cx,
-                ))
-            })
             .child(self.switch(
                 "window.animated_cover_in_bar",
                 "Animated cover in the player bar",

@@ -47,7 +47,6 @@ in
     type = t.submodule {
       options = {
         keep_playing_when_closed = opt t.bool "Keep playing after the window closes, instead of pausing.\n\nThe app's default is `false`; leave unset to keep it.";
-        show_in_tray = opt t.bool "Show the daemon's tray icon while a track is loaded (Linux and Windows).\n\nThe app's default is `true`; leave unset to keep it.";
         animated_cover_in_bar = opt t.bool "Play the album's motion artwork in the player bar too, not only in the expanded player.\n\nThe app's default is `true`; leave unset to keep it.";
       };
     };

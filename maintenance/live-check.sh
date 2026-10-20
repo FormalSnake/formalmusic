@@ -1,141 +1,84 @@
 #!/usr/bin/env bash
-# Checks against the real YouTube Music, for the weekly maintenance run:
-# a daemon of this checkout plays 10 s of a fixed track into the null sink
-# and fetches Home, Search and an album over its socket, then the innertube
-# live tests run, renderer keys against the fixtures included.
+# The pinned kopuzd against live YouTube Music, isolated from the owner's: its own
+# database, settings, caches and socket under a temp dir, an anonymous YouTube Music source.
+# Asks over the socket for Home, a search, an album and ten seconds of playback.
 #
-#   maintenance/live-check.sh
+#   maintenance/live-check.sh              # kopuzd from PATH (nix develop has it)
+#   KOPUZD=/path/to/kopuzd maintenance/live-check.sh
 #
-# The daemon runs anonymous on its own socket, runtime, state, config and
-# cache dirs under dbus-run-session, so it never meets the user's daemon,
-# session, MPRIS name or scrobblers. Linux only. Exits non-zero when any
-# check fails; FORMALMUSIC_MAINTENANCE_FORCE_FAIL=1 fails it on purpose after
-# the real checks, for dry runs of the maintenance flow.
+# FORMALMUSIC_MAINTENANCE_FORCE_FAIL=1 fails the playback check on purpose, for the
+# weekly run's dry run.
 set -uo pipefail
 
-root=$(cd "$(dirname "$0")/.." && pwd)
-if [ -z "${IN_NIX_SHELL:-}" ]; then
-  exec nix develop "$root" -c "$0" "$@"
-fi
-[ "$(uname)" = Linux ] || { echo "live-check: Linux only" >&2; exit 2; }
-
-track=IluRBvnYMoY
-album=MPREb_K8qWMWVqXGi
-failed=0
-summary=()
-pass() { summary+=("ok    $1"); }
-fail() { summary+=("FAIL  $1"); failed=1; }
-
-dir=$(mktemp -d -t formalmusic-live-check.XXXXXX)
-mkdir -p "$dir"/{runtime,state,config/formalmusic,cache}
-chmod 700 "$dir/runtime"
-# History reports are off even though the daemon is anonymous, so nothing
-# this run plays could land in an account.
-printf '{ "reportHistory": false }\n' > "$dir/config/formalmusic/daemon.json"
-sock=$dir/runtime/formalmusicd.sock
+kopuzd=${KOPUZD:-kopuzd}
+command -v grpcurl >/dev/null || { echo "grpcurl is not on PATH"; exit 2; }
+work=$(mktemp -d)
+sock=$work/kopuzd.sock
+log=$work/kopuzd.log
+pid=
 
 cleanup() {
-  [ -n "${SOCK_PID:-}" ] && kill "$SOCK_PID" 2>/dev/null
-  [ -n "${daemon_pid:-}" ] && kill "$daemon_pid" 2>/dev/null && wait "$daemon_pid" 2>/dev/null
-  rm -rf "$dir"
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null
+  wait 2>/dev/null
+  rm -rf -- "$work"
 }
 trap cleanup EXIT
 
-if ! (cd "$root" && cargo build -q -p formalmusicd); then
-  fail "build formalmusicd"
-else
-  env -u DISPLAY -u WAYLAND_DISPLAY \
-    XDG_RUNTIME_DIR="$dir/runtime" FORMALMUSIC_SOCKET="$sock" \
-    XDG_STATE_HOME="$dir/state" XDG_CONFIG_HOME="$dir/config" XDG_CACHE_HOME="$dir/cache" \
-    FORMALMUSIC_AUDIO=null \
-    dbus-run-session -- "$root/target/debug/formalmusicd" > "$dir/daemon.log" 2>&1 &
-  daemon_pid=$!
-  for _ in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.2; done
-fi
+# Kopuz keeps settings, credentials and caches under HOME and the XDG dirs besides the database.
+mkdir -p "$work/home"
+HOME=$work/home XDG_DATA_HOME=$work/home/data XDG_CONFIG_HOME=$work/home/config \
+  XDG_CACHE_HOME=$work/home/cache XDG_STATE_HOME=$work/home/state \
+  "$kopuzd" --socket "$sock" --db-path "$work/library.db" >"$log" 2>&1 &
+pid=$!
+for _ in $(seq 1 100); do
+  [ -S "$sock" ] && break
+  sleep 0.2
+done
+[ -S "$sock" ] || { echo "kopuzd did not open its socket"; tail -n 40 "$log"; exit 1; }
 
-next_id=0
-# Sends one command on the open connection and prints the response's `ok`
-# value, or returns 1 on an error reply or after `wait` seconds.
-call() {
-  local wait=${2:-30} line
-  next_id=$((next_id + 1))
-  jq -cn --argjson id "$next_id" --argjson cmd "$1" '{id: $id} + $cmd' >&"${SOCK[1]}"
-  while IFS= read -r -t "$wait" line <&"${SOCK[0]}"; do
-    if jq -e --argjson id "$next_id" '.type == "response" and .id == $id' <<<"$line" >/dev/null; then
-      jq -ce '.ok // error(.err | tostring)' <<<"$line" 2>&1 || { echo "$line" >&2; return 1; }
-      return 0
-    fi
-  done
-  echo "no answer within ${wait}s" >&2
-  return 1
-}
+rpc() { grpcurl -max-time 60 -unix -plaintext -d "$2" "$sock" "kopuz.v1.Kopuz/$1"; }
 
-if [ -S "$sock" ]; then
-  coproc SOCK { socat - "UNIX-CONNECT:$sock"; }
-  if hello=$(call '{"cmd":"hello","args":{"protocol":2}}' 10); then
-    pass "daemon $(jq -r .data.version <<<"$hello") on a private socket"
-
-    if r=$(call '{"cmd":"browse","args":{"target":{"kind":"home"}}}') &&
-      n=$(jq '.data.sections | length' <<<"$r") && [ "$n" -ge 2 ]; then
-      pass "home: $n shelves"
-    else
-      fail "home: ${r:-no reply}"
-    fi
-
-    if r=$(call '{"cmd":"search","args":{"query":"daft punk","filter":null}}') &&
-      n=$(jq '[.data.sections[].items[]] | length' <<<"$r") && [ "$n" -ge 10 ]; then
-      pass "search: $n results"
-    else
-      fail "search: ${r:-no reply}"
-    fi
-
-    if r=$(call "{\"cmd\":\"browse\",\"args\":{\"target\":{\"kind\":\"album\",\"id\":\"$album\"}}}") &&
-      n=$(jq '[.data.sections[0].items[] | select(.kind == "track")] | length' <<<"$r") && [ "$n" -ge 10 ]; then
-      pass "album: $n tracks"
-    else
-      fail "album: ${r:-no reply}"
-    fi
-
-    play="{\"cmd\":\"play\",\"args\":{\"source\":{\"kind\":\"radio\",\"video_id\":\"$track\"},\"start_index\":0,\"shuffle\":false,\"radio\":false}}"
-    if call "$play" 60 >/dev/null; then
-      state=
-      for _ in $(seq 1 120); do
-        state=$(call '{"cmd":"player_state"}' 10) || break
-        [ "$(jq '.data.position_ms' <<<"$state")" -ge 10000 ] && break
-        sleep 1
-      done
-      if jq -e '.data.status == "playing" and .data.position_ms >= 10000' <<<"$state" >/dev/null 2>&1; then
-        pass "playback: $(jq -r '"\(.data.playing_id) \(.data.stream // "?") at \(.data.position_ms / 1000 | floor) s"' <<<"$state")"
-      else
-        fail "playback: did not reach 10 s, last state $(jq -c '.data | {status, position_ms, playing_id}' <<<"$state" 2>/dev/null)"
-      fi
-    else
-      fail "playback: play was refused"
-    fi
+failed=0
+check() {
+  local name=$1 ok=$2
+  if [ "$ok" = 1 ]; then
+    summary+="ok    $name"$'\n'
   else
-    fail "daemon did not answer hello"
+    summary+="FAIL  $name"$'\n'
+    failed=1
   fi
-else
-  [ -n "${daemon_pid:-}" ] && fail "daemon did not open its socket"
-fi
-if [ "$failed" = 1 ] && [ -f "$dir/daemon.log" ]; then
-  echo "--- daemon log (last 30 lines)"
-  tail -30 "$dir/daemon.log"
-fi
+}
+summary=
 
-if (cd "$root" && cargo test -q -p formalmusic-innertube -- --ignored --nocapture) > "$dir/innertube.log" 2>&1; then
-  pass "innertube live tests: $(rg -o '[0-9]+ passed' "$dir/innertube.log" | awk '{s += $1} END {print s}') passed"
-else
-  fail "innertube live tests"
-  echo "--- cargo test -p formalmusic-innertube -- --ignored (failures)"
-  rg -A 12 '^failures:|panicked at' "$dir/innertube.log" | head -60
-fi
-rg '^(home|search_all|album|player): new' "$dir/innertube.log" | sed 's/^/      renderer keys /'
+source_id=$(rpc UpsertSource '{"name":"YouTube Music","service":"ytmusic","values":[{"key":"auth_method","value":"anonymous"}]}' | jq -r .id)
+rpc SelectSource "{\"id\":\"$source_id\"}" >/dev/null
+check "anonymous source $source_id" "$([ -n "$source_id" ] && [ "$source_id" != null ] && echo 1)"
 
-if [ "${FORMALMUSIC_MAINTENANCE_FORCE_FAIL:-}" = 1 ]; then
-  fail "forced failure (FORMALMUSIC_MAINTENANCE_FORCE_FAIL=1)"
-fi
+home=$(rpc GetCatalogDetail '{"kind":"CATALOG_ITEM_PAGE","id":"FEmusic_home"}')
+shelves=$(jq '.shelves | length' <<<"$home" 2>/dev/null || echo 0)
+check "home: $shelves shelves" "$([ "${shelves:-0}" -gt 0 ] && echo 1)"
 
-echo "--- live-check"
-printf '%s\n' "${summary[@]}"
+search=$(rpc Search '{"query":"daft punk get lucky","filter":"songs"}')
+key=$(jq -r '[(.tracks[]?, .shelves[]?.items[]?.track) | .key // empty][0] // empty' <<<"$search")
+check "search: first song $key" "$([ -n "$key" ] && echo 1)"
+
+album=$(jq -r '[(.tracks[]?, .shelves[]?.items[]?.track) | .albumId // empty][0] // empty' <<<"$search")
+if [ -n "$album" ]; then
+  tracks=$(rpc GetCatalogDetail "{\"kind\":\"CATALOG_ITEM_ALBUM\",\"id\":\"$album\"}" | jq '.tracks | length')
+fi
+check "album $album: ${tracks:-0} tracks" "$([ "${tracks:-0}" -gt 0 ] && echo 1)"
+
+rpc SetQueue "{\"mode\":\"QUEUE_MODE_REPLACE\",\"context\":{\"tracks\":{\"keys\":[\"$key\"]}},\"startIndex\":0}" >/dev/null
+sleep 12
+state=$(rpc GetPlayerState '{}')
+position=$(jq -r '((.position.ms // 0 | tonumber) + (if .position.playing then (.nowMs | tonumber) - (.position.atMs | tonumber) else 0 end))' <<<"$state")
+[ "${FORMALMUSIC_MAINTENANCE_FORCE_FAIL:-0}" = 1 ] && position=0
+check "playback: $(jq -r .phase <<<"$state") at ${position} ms" "$([ "$position" -gt 5000 ] && echo 1)"
+
+if [ "$failed" = 1 ]; then
+  echo "--- kopuzd log (tail)"
+  tail -n 40 "$log"
+fi
+echo "--- live check"
+printf '%s' "$summary"
 exit "$failed"

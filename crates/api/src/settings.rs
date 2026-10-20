@@ -93,8 +93,6 @@ impl Default for Privacy {
 pub struct Window {
     /// Keep playing after the window closes, instead of pausing.
     pub keep_playing_when_closed: bool,
-    /// Show the daemon's tray icon while a track is loaded (Linux and Windows).
-    pub show_in_tray: bool,
     /// Play the album's motion artwork in the player bar too, not only in the expanded player.
     pub animated_cover_in_bar: bool,
 }
@@ -103,7 +101,6 @@ impl Default for Window {
     fn default() -> Self {
         Self {
             keep_playing_when_closed: false,
-            show_in_tray: true,
             animated_cover_in_bar: true,
         }
     }
@@ -218,9 +215,6 @@ pub fn migrate_legacy(dir: &Path, legacy: &Path) -> std::io::Result<bool> {
     {
         s.window.keep_playing_when_closed = v;
     }
-    if let Some(v) = app.get("showInTray").and_then(serde_json::Value::as_bool) {
-        s.window.show_in_tray = v;
-    }
     if let Some(v) = app
         .get("animatedCoverInBar")
         .and_then(serde_json::Value::as_bool)
@@ -272,7 +266,7 @@ mod tests {
         assert_eq!(s.playback.crossfade_ms, 3000);
         assert_eq!(s.playback.equalizer.preset, crate::EqPreset::Rock);
         assert_eq!(s.playback.equalizer.custom[9], 10.0);
-        assert!(s.window.keep_playing_when_closed && s.window.show_in_tray);
+        assert!(s.window.keep_playing_when_closed);
         // Once written, the old files are not read again.
         assert!(!migrate_legacy(&new, &legacy).unwrap());
     }

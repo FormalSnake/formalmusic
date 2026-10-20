@@ -5,7 +5,12 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-formalmusic-api = { workspace = true, features = ["io"] }
+formalmusic-api = { workspace = true, features = ["io", "settings"] }
+formalmusic-extras.workspace = true
+kopuz-api.workspace = true
+kopuz-client.workspace = true
+kopuz-config.workspace = true
+futures-util = "0.3"
 tokio.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
@@ -17,16 +22,10 @@ thiserror.workspace = true
 async-trait = "0.1"
 libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-formalmusic-innertube = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
-[features]
-default = []
-# The demo serves innertube's recorded responses where it has one, read from
-# the source tree at run time, so it is for dev builds only.
-demo-fixtures = ["dep:formalmusic-innertube"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

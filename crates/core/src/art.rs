@@ -1,14 +1,15 @@
 //! Artwork on disk. Each URL is fetched once into
 //! `$XDG_CACHE_HOME/formalmusic/art/<hash>`, and the desktop decodes from
-//! there at the size it shows the picture. Googleusercontent URLs carry their
-//! size in the path, so they are asked for at a size step just over the box
-//! instead of the 544 px the page offered.
+//! there at the size it shows the picture. Kopuz serves artwork as bytes rather
+//! than URLs, so its pictures carry a `kopuz:` URL that names the request.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use kopuz_client::GrpcApi;
 use formalmusic_api::{Thumbnail, best};
+use kopuz_api::ArtworkApi;
 use parking_lot::Mutex;
 
 /// Sizes asked of the image server, so a 48 px row and a 56 px card share a file.
@@ -17,9 +18,13 @@ const STEPS: [u32; 6] = [60, 120, 226, 360, 544, 1080];
 /// Scheme of the demo set's artwork, painted locally rather than fetched.
 pub const DEMO_SCHEME: &str = "demo:";
 
+/// Scheme of the Kopuz daemon's artwork, fetched over its socket.
+pub const KOPUZ_SCHEME: &str = "kopuz:";
+
 pub struct ArtCache {
     dir: PathBuf,
     http: reqwest::Client,
+    daemon: Option<Arc<GrpcApi>>,
     /// One lock per URL in flight, so two views asking at once fetch once.
     inflight: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -29,8 +34,14 @@ impl ArtCache {
         Self {
             dir,
             http,
+            daemon: None,
             inflight: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn with_daemon(mut self, daemon: Arc<GrpcApi>) -> Self {
+        self.daemon = Some(daemon);
+        self
     }
 
     pub fn path_for(&self, url: &str) -> PathBuf {
@@ -65,6 +76,17 @@ impl ArtCache {
             tokio::task::spawn_blocking(move || demo_art(&seed))
                 .await
                 .ok()?
+        } else if url.starts_with(KOPUZ_SCHEME) {
+            let request = crate::kopuz::artwork_request(url)?;
+            let daemon = self.daemon.as_ref()?;
+            match daemon.artwork(request).await {
+                Ok(data) if !data.bytes.is_empty() => data.bytes,
+                Ok(_) => return None,
+                Err(error) => {
+                    tracing::debug!("artwork {url}: {error}");
+                    return None;
+                }
+            }
         } else {
             let response = self
                 .http
