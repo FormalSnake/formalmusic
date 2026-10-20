@@ -22,14 +22,33 @@
   ffmpeg-headless,
   kopuz,
   runCommand,
+  stdenv,
+  libicns,
 }:
 
 let
   appId = "dev.formalsnake.formalmusic";
+  version = (lib.importTOML ../Cargo.toml).workspace.package.version;
+  inherit (stdenv.hostPlatform) isDarwin isLinux;
+  infoPlist = builtins.toFile "Info.plist" (lib.generators.toPlist { escape = true; } {
+    CFBundleDevelopmentRegion = "en";
+    CFBundleExecutable = "formalmusic";
+    CFBundleIdentifier = appId;
+    CFBundleInfoDictionaryVersion = "6.0";
+    CFBundleName = "FormalMusic";
+    CFBundleDisplayName = "FormalMusic";
+    CFBundlePackageType = "APPL";
+    CFBundleShortVersionString = version;
+    CFBundleVersion = version;
+    CFBundleIconFile = "AppIcon";
+    LSMinimumSystemVersion = "14.0";
+    NSPrincipalClass = "NSApplication";
+    NSHighResolutionCapable = true;
+  });
 in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "formalmusic";
-  version = (lib.importTOML ../Cargo.toml).workspace.package.version;
+  inherit version;
 
   # The app depends on nativedesktop by path (`../nativedesktop`), so the
   # build tree holds both checkouts side by side.
@@ -58,14 +77,21 @@ rustPlatform.buildRustPackage (finalAttrs: {
     lockFile = ../Cargo.lock;
     allowBuiltinFetchGit = true;
   };
-  cargoBuildFlags = [ "--package=formalmusic" ];
+  cargoBuildFlags = [
+    "--package=formalmusic"
+  ]
+  # nd's AppKit backend links Swift from Xcode, so the link and rustc's strip use the system
+  # tools: Nix's cc wrapper brings its own SDK and Nix's strip corrupts proc-macro dylibs. The
+  # hooks set the linker in the environment, which only `--config` outranks. This needs the Nix
+  # sandbox off, the default on macOS.
+  ++ lib.optional isDarwin ''--config=target.aarch64-apple-darwin.linker="/usr/bin/clang"'';
 
   nativeBuildInputs = [
     pkg-config
     makeBinaryWrapper
-  ];
+  ] ++ lib.optional isDarwin libicns;
 
-  buildInputs = [
+  buildInputs = lib.optionals isLinux [
     fontconfig
     freetype
     libxkbcommon
@@ -79,18 +105,42 @@ rustPlatform.buildRustPackage (finalAttrs: {
     CARGO_PROFILE_RELEASE_DEBUG = "false";
   };
 
+  preBuild = lib.optionalString isDarwin ''
+    unset SDKROOT DEVELOPER_DIR
+    mkdir -p "$TMPDIR/apple-bin"
+    ln -s /usr/bin/strip /usr/bin/xcrun "$TMPDIR/apple-bin/"
+    export PATH="$TMPDIR/apple-bin:$PATH"
+  '';
+
   # The window tests need a window server, and the live tests need the network.
   doCheck = false;
 
-  postInstall = ''
+  postInstall = lib.optionalString isLinux ''
     install -Dm644 packaging/linux/${appId}.png -t $out/share/icons/hicolor/512x512/apps
     install -Dm644 packaging/linux/${appId}.desktop -t $out/share/applications
+  '' + lib.optionalString isDarwin ''
+    app=$out/Applications/FormalMusic.app/Contents
+    install -Dm644 ${infoPlist} $app/Info.plist
+    echo -n 'APPL????' > $app/PkgInfo
+    mkdir -p $app/MacOS $app/Resources
+    png2icns $app/Resources/AppIcon.icns packaging/icon.png
+    mv $out/bin/formalmusic $app/MacOS/formalmusic
+    ln -s $app/MacOS/formalmusic $out/bin/formalmusic
   '';
+
+  dontStrip = isDarwin;
 
   # nd's GPUI backend dlopens the windowing and GPU libraries at runtime. Animated
   # covers and music videos decode with ffmpeg. With no daemon on the socket the
   # window starts kopuzd, the same Kopuz build its client crates come from.
-  postFixup = ''
+  postFixup = lib.optionalString isDarwin ''
+    wrapProgram $out/Applications/FormalMusic.app/Contents/MacOS/formalmusic --suffix PATH : ${
+      lib.makeBinPath [
+        ffmpeg-headless
+        kopuz
+      ]
+    }
+  '' + lib.optionalString isLinux ''
     patchelf $out/bin/formalmusic --add-rpath ${
       lib.makeLibraryPath [
         vulkan-loader
@@ -124,6 +174,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
     homepage = "https://github.com/FormalSnake/formalmusic";
     license = lib.licenses.mit;
     mainProgram = "formalmusic";
-    platforms = lib.platforms.linux;
+    platforms = lib.platforms.linux ++ [ "aarch64-darwin" ];
   };
 })

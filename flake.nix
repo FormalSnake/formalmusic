@@ -19,7 +19,6 @@
   outputs = { self, nixpkgs, kopuz, nativedesktop }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
-      linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
       overlay = final: prev: {
         kopuz = kopuz.packages.${final.stdenv.hostPlatform.system}.default;
         formalmusic = final.callPackage ./nix/package.nix { inherit nativedesktop; };
@@ -28,7 +27,7 @@
       forAll = f: nixpkgs.lib.genAttrs systems (system: f (pkgsFor system));
     in
     {
-      packages = nixpkgs.lib.genAttrs linuxSystems (system: rec {
+      packages = nixpkgs.lib.genAttrs systems (system: rec {
         inherit (pkgsFor system) formalmusic kopuz;
         default = formalmusic;
       });
