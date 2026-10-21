@@ -65,6 +65,10 @@ pub fn install(cx: &mut App, store: &MusicStore) {
         }
     });
     on_main(rx, |delivery, cx| {
+        let now_playing = matches!(
+            delivery,
+            Delivery::One(StoreEvent::NowPlaying | StoreEvent::Player) | Delivery::All
+        );
         let ids: Vec<EntityId> = match delivery {
             Delivery::One(event) => watchers(cx)
                 .borrow()
@@ -82,6 +86,9 @@ pub fn install(cx: &mut App, store: &MusicStore) {
         };
         for id in ids {
             cx.notify(id);
+        }
+        if now_playing {
+            crate::tray::sync(cx);
         }
     });
     let _ = cx;

@@ -39,6 +39,7 @@ fn write<V: Serialize>(key: &str, value: V, cx: &mut App) -> Option<String> {
     cx.refresh_windows();
     // The daemon watches the file too; this makes a running old daemon reread it at once.
     crate::store(cx).reload_settings();
+    crate::tray::sync(cx);
     result.err().map(|e| format!("Unable to save: {e:?}"))
 }
 
@@ -263,6 +264,12 @@ impl Render for SettingsWindow {
                     )),
                 ),
             )
+            .child(self.switch(
+                "window.show_in_tray",
+                if cfg!(target_os = "macos") { "Show in the menu bar" } else { "Show in the system tray" },
+                s.window.show_in_tray,
+                cx,
+            ))
             .child(self.switch(
                 "window.keep_playing_when_closed",
                 "Keep playing after closing the window",

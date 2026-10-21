@@ -1244,6 +1244,23 @@ impl MusicStore {
         self.send(Command::Toggle);
     }
 
+    /// Pauses when playing: the window closed behind the tray item.
+    pub fn pause(&self) {
+        let playing = self.inner.update(|state, events| {
+            if !matches!(state.player.status, Status::Playing | Status::Loading) {
+                return false;
+            }
+            state.position_ms = state.position_now();
+            state.position_at = Some(Instant::now());
+            state.player.status = Status::Paused;
+            events.extend([StoreEvent::Player, StoreEvent::NowPlaying]);
+            true
+        });
+        if playing {
+            self.send(Command::Pause);
+        }
+    }
+
     /// Pauses and waits up to `timeout` for the daemon to take it, for a
     /// window that closes just before the process exits. Blocks, so it must
     /// not run on the store's runtime.

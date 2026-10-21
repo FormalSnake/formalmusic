@@ -49,3 +49,7 @@ harness = false
 [[test]]
 name = "kopuz"
 harness = false
+
+[[test]]
+name = "tray"
+harness = false

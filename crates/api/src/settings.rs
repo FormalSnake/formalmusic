@@ -87,6 +87,8 @@ pub struct Window {
     pub animated_cover_in_bar: bool,
     /// Show a desktop notification when the song changes while the window is in the background.
     pub notify_song_change: bool,
+    /// Show FormalMusic in the system tray (the menu bar on macOS), running on with the window closed.
+    pub show_in_tray: bool,
 }
 
 impl Default for Window {
@@ -95,6 +97,7 @@ impl Default for Window {
             keep_playing_when_closed: false,
             animated_cover_in_bar: true,
             notify_song_change: false,
+            show_in_tray: true,
         }
     }
 }
@@ -208,6 +211,9 @@ pub fn migrate_legacy(dir: &Path, legacy: &Path) -> std::io::Result<bool> {
     {
         s.window.keep_playing_when_closed = v;
     }
+    if let Some(v) = app.get("showInTray").and_then(serde_json::Value::as_bool) {
+        s.window.show_in_tray = v;
+    }
     if let Some(v) = app
         .get("animatedCoverInBar")
         .and_then(serde_json::Value::as_bool)
@@ -241,7 +247,7 @@ mod tests {
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(
             legacy.join("config.json"),
-            r#"{"audioQuality":"low","pauseHistory":true,"keepPlayingWhenClosed":true,
+            r#"{"audioQuality":"low","pauseHistory":true,"keepPlayingWhenClosed":true,"showInTray":false,
                 "equalizer":{"preset":"rock","custom":[1,2,3,4,5,6,7,8,9,10]},"unknown":1}"#,
         )
         .unwrap();
@@ -260,6 +266,7 @@ mod tests {
         assert_eq!(s.playback.equalizer.preset, crate::EqPreset::Rock);
         assert_eq!(s.playback.equalizer.custom[9], 10.0);
         assert!(s.window.keep_playing_when_closed);
+        assert!(!s.window.show_in_tray);
         // Once written, the old files are not read again.
         assert!(!migrate_legacy(&new, &legacy).unwrap());
     }

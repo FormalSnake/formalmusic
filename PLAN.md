@@ -109,8 +109,10 @@ Upstream PR candidates, in the order parity needs them:
    other version would land.
 8. **Start before the whole playlist is fetched.** A `Playlist` queue context
    walks every page before playing; formalmusicd started on the first page.
-9. **Tray.** formalmusicd drew the Linux tray; kopuzd has none, so the
-   `show_in_tray` setting is gone.
+9. **Tray.** formalmusicd drew the Linux tray and kopuzd has none, so the
+   app draws it through nd's tray instead (`window.show_in_tray`, on by
+   default) on Linux, macOS and Windows, and keeps running behind it with
+   the window closed. No longer a loss.
 
 ## Speed budget
 

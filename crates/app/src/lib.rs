@@ -13,6 +13,7 @@ pub mod player;
 pub mod root;
 pub mod settings;
 pub mod sheets;
+pub mod tray;
 pub mod video;
 
 use std::sync::Arc;
@@ -119,6 +120,7 @@ pub fn init(cx: &mut App, music: Music) -> WindowHandle<Root> {
         bridge::on_main(rx, move |(), cx| {
             reload.reload_settings();
             cx.refresh_windows();
+            tray::sync(cx);
         });
         if let Ok(guard) = settings.watch() {
             std::mem::forget(guard);
@@ -129,13 +131,46 @@ pub fn init(cx: &mut App, music: Music) -> WindowHandle<Root> {
     bridge::install(cx, &store);
     root::bind_keys(cx);
     runtime.spawn(async move { store.start().await });
-    cx.open_window(
+    open_window(cx)
+}
+
+/// The main window's id, while it is open.
+struct MainWindow(nd::core::WindowId);
+
+fn open_window(cx: &mut App) -> WindowHandle<Root> {
+    let handle = cx.open_window(
         WindowOptions::main("main")
             .title("FormalMusic")
             .size(size(px(1280.), px(820.)))
             .min_size(size(px(880.), px(560.))),
-        |window, cx| cx.new(|cx| Root::new(window, cx)),
-    )
+        |window, cx| {
+            // Behind the tray the app outlives the window, so closing it pauses here rather than
+            // at exit, unless the settings say to keep playing.
+            window.on_should_close(|_, cx| {
+                if tray::keeps_running(cx)
+                    && !settings::current(cx).window.keep_playing_when_closed
+                {
+                    store(cx).pause();
+                }
+                true
+            });
+            cx.new(|cx| Root::new(window, cx))
+        },
+    );
+    cx.set_global(MainWindow(handle.id()));
+    handle
+}
+
+/// Brings the main window forward, opening it again when it was closed behind the tray.
+pub fn show_window(cx: &mut App) {
+    let open = cx.try_global::<MainWindow>().map(|w| w.0).filter(|id| cx.window_ids().any(|w| w == *id));
+    match open {
+        Some(id) => cx.activate_window(id),
+        None => {
+            let id = open_window(cx).id();
+            cx.activate_window(id);
+        }
+    }
 }
 
 pub fn run() -> nd::Result<()> {
@@ -171,7 +206,7 @@ pub fn run() -> nd::Result<()> {
     let store = build_store(&runtime, preloaded);
     let (closing, keep_playing) = (store.clone(), settings.clone());
     app().run(move |cx| {
-        let window = init(
+        init(
             cx,
             Music {
                 store,
@@ -180,8 +215,9 @@ pub fn run() -> nd::Result<()> {
             },
         );
         if let Some(primary) = primary {
-            raise_on_relaunch(cx, &runtime, primary, window.id());
+            raise_on_relaunch(cx, &runtime, primary);
         }
+        tray::install(cx);
     })?;
     // Quitting pauses the daemon unless the settings say to keep playing; it has to reach the
     // daemon before the process exits, so this waits for the answer.
@@ -191,12 +227,12 @@ pub fn run() -> nd::Result<()> {
     Ok(())
 }
 
-/// A second launch hands its arguments over and exits; the running window comes forward.
+/// A second launch hands its arguments over and exits; the window comes forward, opened again
+/// when it was closed behind the tray.
 fn raise_on_relaunch(
     cx: &mut App,
     runtime: &tokio::runtime::Handle,
     mut primary: nd_ipc::instance::Primary,
-    window: nd::core::WindowId,
 ) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     runtime.spawn(async move {
@@ -206,7 +242,7 @@ fn raise_on_relaunch(
             }
         }
     });
-    bridge::on_main(rx, move |_launch, cx| cx.activate_window(window));
+    bridge::on_main(rx, move |_launch, cx| show_window(cx));
     let _ = cx;
 }
 

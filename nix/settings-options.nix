@@ -49,6 +49,7 @@ in
         keep_playing_when_closed = opt t.bool "Keep playing after the window closes, instead of pausing.\n\nThe app's default is `false`; leave unset to keep it.";
         animated_cover_in_bar = opt t.bool "Play the album's motion artwork in the player bar too, not only in the expanded player.\n\nThe app's default is `true`; leave unset to keep it.";
         notify_song_change = opt t.bool "Show a desktop notification when the song changes while the window is in the background.\n\nThe app's default is `false`; leave unset to keep it.";
+        show_in_tray = opt t.bool "Show FormalMusic in the system tray (the menu bar on macOS), running on with the window closed.\n\nThe app's default is `true`; leave unset to keep it.";
       };
     };
     default = { };

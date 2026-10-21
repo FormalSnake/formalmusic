@@ -42,7 +42,7 @@ daemon around it, and how the nd window (`crates/app`) was checked to keep it.
 | New playlist | Code |
 | Sign in: browser profile import, new browser window, cookie paste, browse signed out | Code |
 | Account switching, sign out | Code (Account menu) |
-| Settings: quality, autoplay, explicit, normalisation, crossfade, equalizer, history, keep playing, bar cover | api `old_json_files_become_config_toml`, daemon builds against `config.toml` |
+| Settings: quality, autoplay, explicit, normalisation, crossfade, equalizer, history, keep playing, tray, bar cover | api `old_json_files_become_config_toml`, daemon builds against `config.toml` |
 | Scrobbling: Last.fm and ListenBrainz connect, switches, queued count | Code |
 | Notices as toasts that clear themselves | Code |
 | Offline banner while the daemon is unreachable | Code |
@@ -50,7 +50,8 @@ daemon around it, and how the nd window (`crates/app`) was checked to keep it.
 | Single instance: a second launch raises the window | Code (nd-ipc instance) |
 | Close pauses unless "keep playing" | Code |
 | Theme from matugen, light and dark | Audit |
-| MPRIS with shuffle, loop, volume, Seeked; Windows SMTC (no tray, PLAN.md loss 9) | Code (daemon unchanged) |
+| MPRIS with shuffle, loop, volume, Seeked; Windows SMTC | Code (daemon unchanged) |
+| Tray: the playing track, play or pause, next, previous, Open, Quit; the app runs on behind it with the window closed | Code (`tray.rs`), checked on macOS and on g815 |
 | Demo mode (`FORMALMUSIC_DEMO=1`) | T3 |
 | Packaging: id `dev.formalsnake.formalmusic`, desktop entry, icon | `nativedesktop.toml`, `nix/package.nix` |
 | Home Manager module with typed settings | api `home_manager_options_are_current` |
