@@ -1,7 +1,7 @@
 # FormalMusic: plan
 
 FormalMusic is a YouTube Music client. Binary `formalmusic`, repo
-`FormalSnake/formalmusic`, app id `dev.formalsnake.formalmusic`. The daemon is
+`FormalStudio/formalmusic`, app id `dev.formalsnake.formalmusic`. The daemon is
 Kopuz's `kopuzd` (`github:Kopuz-org/kopuz`).
 
 A NativeDesktop client (AppKit on macOS, GPUI elsewhere) at full parity with

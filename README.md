@@ -3,7 +3,7 @@
 # FormalMusic
 
 YouTube Music on Linux, macOS and Windows. A native Rust client on
-[NativeDesktop](https://github.com/FormalSnake/NativeDesktop) (AppKit on macOS, GPUI
+[NativeDesktop](https://github.com/FormalStudio/NativeDesktop) (AppKit on macOS, GPUI
 elsewhere) on top of the [Kopuz](https://github.com/Kopuz-org/kopuz) daemon, with
 synced lyrics and Apple Music motion artwork.
 
@@ -52,7 +52,7 @@ scrobbling switches (`PLAN.md` lists what Kopuz still lacks).
 ### Nix
 
 ```
-nix run github:FormalSnake/formalmusic
+nix run github:FormalStudio/formalmusic
 ```
 
 Home Manager:
@@ -60,7 +60,7 @@ Home Manager:
 ```nix
 {
   inputs.formalmusic = {
-    url = "github:FormalSnake/formalmusic";
+    url = "github:FormalStudio/formalmusic";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
@@ -88,7 +88,7 @@ release `Cargo.toml` pins, or the Kopuz app running), and on Linux Vulkan,
 `libxkbcommon`, `wayland`, `vulkan-loader`, `fontconfig` and `freetype`.
 
 ```
-git clone https://github.com/FormalSnake/formalmusic
+git clone https://github.com/FormalStudio/formalmusic
 cd formalmusic
 cargo build --release -p formalmusic
 ```

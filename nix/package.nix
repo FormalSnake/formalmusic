@@ -171,7 +171,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   meta = {
     description = "YouTube Music client for Linux";
-    homepage = "https://github.com/FormalSnake/formalmusic";
+    homepage = "https://github.com/FormalStudio/formalmusic";
     license = lib.licenses.mit;
     mainProgram = "formalmusic";
     platforms = lib.platforms.linux ++ [ "aarch64-darwin" ];
