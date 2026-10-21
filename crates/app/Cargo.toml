@@ -25,7 +25,7 @@ nd = { path = "../../../nativedesktop/crates/nd", default-features = false, feat
 nd = { path = "../../../nativedesktop/crates/nd", features = ["test", "audit"] }
 nd-test = { path = "../../../nativedesktop/crates/nd-test" }
 
-[target.'cfg(target_os = "linux")'.dev-dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dev-dependencies]
 ndshell = { path = "../../../nativedesktop/crates/ndshell" }
 
 [[bin]]
@@ -40,6 +40,10 @@ harness = false
 # Tier 3: the built app as its own process, driven over its automation socket.
 [[test]]
 name = "real"
+harness = false
+
+[[test]]
+name = "look"
 harness = false
 
 [[test]]
