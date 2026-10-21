@@ -25,6 +25,7 @@ actions!(
         Dismiss,
         ToggleExpanded,
         ToggleQueue,
+        ToggleLyrics,
         ShowShortcuts,
         TogglePlay,
         NextTrack,
@@ -135,6 +136,7 @@ fn menus(cx: &mut App, accounts: &[formalmusic_api::Account]) {
                 MenuItem::action("Toggle Sidebar", ToggleSidebar),
                 MenuItem::action("Expanded Player", ToggleExpanded),
                 MenuItem::action("Up Next", ToggleQueue),
+                MenuItem::action("Lyrics", ToggleLyrics),
                 MenuItem::separator(),
                 MenuItem::action("Back", GoBack),
                 MenuItem::action("Forward", GoForward),
@@ -159,6 +161,7 @@ fn menus(cx: &mut App, accounts: &[formalmusic_api::Account]) {
                 MenuItem::action("Dislike", DislikeTrack),
             ]),
             Menu::new("Account").items(account_items),
+            Menu::window([]),
             Menu::help([MenuItem::action("Keyboard Shortcuts", ShowShortcuts)]),
         ],
     );
@@ -352,17 +355,27 @@ impl Root {
     fn sidebar_nodes(&self, cx: &App) -> Vec<SourceNode> {
         let store = crate::store(cx);
         let state = store.state();
-        let mut nodes = vec![
-            source_node("nav.home", "Home").icon(Icon::Music),
+        let mut nodes = Vec::new();
+        // Music leads its sidebar with Search; elsewhere the header bar's search button does.
+        if cfg!(target_os = "macos") {
+            nodes.push(source_node("nav.search", "Search").icon(Icon::Search));
+        }
+        nodes.extend([
+            source_node("nav.home", "Home").icon(Icon::House),
             source_node("nav.explore", "Explore").icon(Icon::Globe),
-            source_node("nav.library", "Library").icon(Icon::Archive),
+            source_node("nav.library", "Library").icon(Icon::LibraryBig),
             source_node("nav.history", "History").icon(Icon::Clock),
             source_section("playlists", "Playlists"),
             source_node("nav.new-playlist", "New playlist")
                 .parent("playlists")
                 .icon(Icon::Plus),
-        ];
+        ]);
         if state.signed_in() {
+            nodes.push(
+                source_node("playlist:SE", "Episodes for Later")
+                    .parent("playlists")
+                    .icon(Icon::ListMusic),
+            );
             for item in state.library_playlists() {
                 if let Item::Playlist {
                     playlist_id, title, ..
@@ -371,15 +384,16 @@ impl Root {
                     nodes.push(
                         source_node(format!("playlist:{playlist_id}"), title.clone())
                             .parent("playlists")
-                            .icon(Icon::FileText),
+                            .icon(Icon::ListMusic),
                     );
                 }
             }
         } else {
             nodes.push(
-                source_node("nav.signed-out", "Sign in to see your playlists here.")
+                source_node("nav.sign-in", "Sign in")
                     .parent("playlists")
-                    .selectable(false),
+                    .caption("See your playlists here")
+                    .icon(Icon::User),
             );
         }
         nodes
@@ -412,6 +426,16 @@ impl Root {
             "nav.explore" => Route::Browse(BrowseTarget::Explore),
             "nav.library" => Route::Browse(BrowseTarget::Library(LibraryTab::Playlists)),
             "nav.history" => Route::Browse(BrowseTarget::History),
+            "nav.search" => {
+                self.palette_open = true;
+                cx.notify();
+                return;
+            }
+            "nav.sign-in" => {
+                sheets::sign_in(window, cx);
+                cx.notify();
+                return;
+            }
             "nav.new-playlist" => {
                 sheets::new_playlist(window, cx);
                 cx.notify();
@@ -612,6 +636,17 @@ impl Root {
                     cx,
                 );
             }))
+            .on_action(cx.listener(|this, _: &ToggleLyrics, _, cx| {
+                let open_on_lyrics = this.expanded && this.now_playing.read(cx).tab == Tab::Lyrics;
+                this.set_expanded(
+                    if open_on_lyrics {
+                        None
+                    } else {
+                        Some(Tab::Lyrics)
+                    },
+                    cx,
+                );
+            }))
             .on_action(|_: &ShowShortcuts, window, cx| sheets::shortcuts(window, cx))
             .on_action(|_: &TogglePlay, _, cx| crate::store(cx).toggle())
             .on_action(|_: &NextTrack, _, cx| crate::store(cx).next())
@@ -709,6 +744,13 @@ impl Render for Root {
             .connection_error
             .clone()
             .unwrap_or_else(|| "The music daemon is not answering.".into());
+        let expanded = self.expanded.then(|| self.now_playing.read(cx).tab);
+        self.player.update(cx, |player, cx| {
+            if player.expanded != expanded {
+                player.expanded = expanded;
+                cx.notify();
+            }
+        });
         let palette_items = self.palette_items(cx);
         let content = self.content(cx);
         self.want_pictures(cx);
@@ -727,8 +769,7 @@ impl Render for Root {
         self.handlers(root, cx).child(
             scaffold()
                 .toolbar(
-                    toolbar()
-                        .title("FormalMusic")
+                    titled(toolbar().title("FormalMusic"))
                         .sidebar_toggle()
                         .item(
                             icon_button("toolbar.back", Icon::ChevronLeft)
@@ -759,7 +800,8 @@ impl Render for Root {
                             icon_button("toolbar.settings", Icon::Settings)
                                 .tooltip("Settings")
                                 .on_click(|_, _, cx| crate::settings::open(cx)),
-                        ),
+                        )
+                        .primary_menu(),
                 )
                 .sidebar(
                     sidebar()
@@ -782,9 +824,13 @@ impl Render for Root {
                             )
                             .revealed(offline),
                         )
-                        .child(div().flex_1().min_h_0().w_full().child(content))
-                        .child(separator())
-                        .child(self.player.clone())
+                        .child(
+                            div().flex_1().min_h_0().w_full().child(
+                                bottom_accessory("main")
+                                    .content(content)
+                                    .bar(self.player.clone()),
+                            ),
+                        )
                         .child(decoders)
                         .child(
                             toast_overlay("toasts")
@@ -819,4 +865,10 @@ impl Render for Root {
                 ),
         )
     }
+}
+
+/// Music names the page in a large title over it, so macOS leaves the window's title out of the
+/// toolbar.
+fn titled(toolbar: Toolbar) -> Toolbar {
+    if cfg!(target_os = "macos") { toolbar.hide_title() } else { toolbar }
 }
