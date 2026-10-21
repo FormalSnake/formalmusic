@@ -8,9 +8,9 @@ version.workspace = true
 formalmusic-api = { workspace = true, features = ["settings"] }
 formalmusic-core.workspace = true
 kopuz-client.workspace = true
-nd = { path = "../../../nativedesktop/crates/nd", features = ["settings-ui"] }
-nd-ipc = { path = "../../../nativedesktop/crates/nd-ipc" }
-nd-settings = { path = "../../../nativedesktop/crates/nd-settings" }
+nd = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", features = ["settings-ui"] }
+nd-ipc = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+nd-settings = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -19,14 +19,14 @@ schemars = "1.2.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [build-dependencies]
-nd = { path = "../../../nativedesktop/crates/nd", default-features = false, features = ["build"] }
+nd = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", default-features = false, features = ["build"] }
 
 [dev-dependencies]
-nd = { path = "../../../nativedesktop/crates/nd", features = ["test", "audit"] }
-nd-test = { path = "../../../nativedesktop/crates/nd-test" }
+nd = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", features = ["test", "audit"] }
+nd-test = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dev-dependencies]
-ndshell = { path = "../../../nativedesktop/crates/ndshell" }
+ndshell = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 
 [[bin]]
 name = "formalmusic"

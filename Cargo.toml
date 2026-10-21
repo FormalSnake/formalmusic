@@ -42,9 +42,9 @@ opt-level = 2
 # nd's GPUI patch queue (its vendored gpui-pre crates); an app outside nd's workspace has to
 # name it, or cargo resolves the unpatched crates.io releases.
 [patch.crates-io]
-gpui-pre = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-pre" }
-gpui-fast = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-fast" }
-gpui-pre-linux = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-pre-linux" }
-gpui-fast-linux = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-fast-linux" }
-gpui-pre-wgpu = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-pre-wgpu" }
-gpui-fast-wgpu = { path = "../nativedesktop/crates/nd-gpui/vendor/gpui-fast-wgpu" }
+gpui-pre = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-fast = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-pre-linux = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-fast-linux = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-pre-wgpu = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-fast-wgpu = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }

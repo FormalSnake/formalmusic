@@ -7,9 +7,9 @@
     # the wire changes with the app, so the client and the daemon move together.
     # Not following our nixpkgs keeps kopuz.cachix.org's builds usable.
     kopuz.url = "github:Kopuz-org/kopuz/v0.22.0";
-    # The UI toolkit, built from source beside this repo (the app depends on
-    # it by path). Its own flake also carries the home-manager module the
-    # settings options plug into.
+    # The UI toolkit's home-manager module, which the settings options plug
+    # into. The app's crates come from the same repo through Cargo.lock; keep
+    # this pin on the rev the lock names.
     nativedesktop = {
       url = "github:FormalStudio/NativeDesktop";
       flake = false;
@@ -21,7 +21,7 @@
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       overlay = final: prev: {
         kopuz = kopuz.packages.${final.stdenv.hostPlatform.system}.default;
-        formalmusic = final.callPackage ./nix/package.nix { inherit nativedesktop; };
+        formalmusic = final.callPackage ./nix/package.nix { };
       };
       pkgsFor = system: import nixpkgs { inherit system; overlays = [ overlay ]; };
       forAll = f: nixpkgs.lib.genAttrs systems (system: f (pkgsFor system));

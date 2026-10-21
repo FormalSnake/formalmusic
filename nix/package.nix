@@ -1,6 +1,5 @@
 {
   lib,
-  nativedesktop,
   rustPlatform,
   pkg-config,
   makeBinaryWrapper,
@@ -21,7 +20,6 @@
   xdg-utils,
   ffmpeg-headless,
   kopuz,
-  runCommand,
   stdenv,
   libicns,
 }:
@@ -50,29 +48,19 @@ rustPlatform.buildRustPackage (finalAttrs: {
   pname = "formalmusic";
   inherit version;
 
-  # The app depends on nativedesktop by path (`../nativedesktop`), so the
-  # build tree holds both checkouts side by side.
-  src = runCommand "formalmusic-src" { } ''
-    mkdir -p $out
-    cp -r ${
-      lib.fileset.toSource {
-        root = ../.;
-        fileset = lib.fileset.unions [
-          ../Cargo.toml
-          ../Cargo.lock
-          ../.cargo
-          ../crates
-          ../packaging
-        ];
-      }
-    } $out/youtubemusic
-    cp -r ${nativedesktop} $out/nativedesktop
-    chmod -R u+w $out
-  '';
-  sourceRoot = "formalmusic-src/youtubemusic";
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../Cargo.toml
+      ../Cargo.lock
+      ../.cargo
+      ../crates
+      ../packaging
+    ];
+  };
 
-  # The git dependencies (kopuz's client crates, libghostty-vt) are pinned by rev in
-  # Cargo.lock, which builtins.fetchGit takes without a separate hash.
+  # The git dependencies (nativedesktop, kopuz's client crates, libghostty-vt) are pinned by
+  # rev in Cargo.lock, which builtins.fetchGit takes without a separate hash.
   cargoLock = {
     lockFile = ../Cargo.lock;
     allowBuiltinFetchGit = true;
