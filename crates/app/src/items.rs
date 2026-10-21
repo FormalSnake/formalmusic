@@ -540,13 +540,11 @@ pub fn hero(id: String, section: &Section, env: &RowEnv, cx: &App) -> AnyElement
         .into_any_element()
 }
 
+/// What picking a chip does.
+pub type OnChip = Rc<dyn Fn(&Chip, &mut Window, &mut App)>;
+
 /// Chips under the header: Home's moods, Library's tabs, a search's filters.
-pub fn chips(
-    id: &str,
-    chips: &[Chip],
-    handle: &ShelfHandle,
-    on_select: Rc<dyn Fn(&Chip, &mut Window, &mut App)>,
-) -> AnyElement {
+pub fn chips(id: &str, chips: &[Chip], handle: &ShelfHandle, on_select: OnChip) -> AnyElement {
     shelf(id.to_owned(), handle)
         .label("Filters")
         .gap_2()

@@ -475,7 +475,7 @@ impl Root {
                         })
                 }
                 Suggestion::Item(item) => {
-                    let (title, kind) = match item {
+                    let (title, kind) = match item.as_ref() {
                         Item::Track(t) => (t.title.clone(), "Song"),
                         Item::Album { title, .. } => (title.clone(), "Album"),
                         Item::Artist { name, .. } => (name.clone(), "Artist"),

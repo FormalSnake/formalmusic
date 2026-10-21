@@ -1,7 +1,6 @@
 //! Hits the real providers. Run with `cargo test -p formalmusic-extras --test live -- --ignored`.
 
 use formalmusic_extras::AnimatedCovers;
-use std::time::Duration;
 
 #[tokio::test]
 #[ignore = "needs network"]

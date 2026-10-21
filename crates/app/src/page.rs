@@ -477,7 +477,7 @@ impl PageView {
             .into_any_element()
     }
 
-    fn chips_of(&self, content: &Content) -> (Vec<Chip>, Rc<dyn Fn(&Chip, &mut Window, &mut App)>) {
+    fn chips_of(&self, content: &Content) -> (Vec<Chip>, items::OnChip) {
         match (content, &self.route) {
             (Content::Search(_), Route::Search(key)) => {
                 let query = key.query.clone();

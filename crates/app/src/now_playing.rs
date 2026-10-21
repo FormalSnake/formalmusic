@@ -317,17 +317,17 @@ impl NowPlayingView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = cx.entity_id();
-        if mode == PlaybackMode::Video {
-            if let Some(frame) = crate::video::music_frame(id, cx) {
-                return image(frame)
-                    .id("np.video")
-                    .alt(track.title.clone())
-                    .contain()
-                    .w(px(640.))
-                    .h(px(360.))
-                    .rounded_lg()
-                    .into_any_element();
-            }
+        if mode == PlaybackMode::Video
+            && let Some(frame) = crate::video::music_frame(id, cx)
+        {
+            return image(frame)
+                .id("np.video")
+                .alt(track.title.clone())
+                .contain()
+                .w(px(640.))
+                .h(px(360.))
+                .rounded_lg()
+                .into_any_element();
         }
         match crate::video::cover_frame(id, cx) {
             Some(frame) => image(frame)

@@ -249,7 +249,7 @@ pub enum Reply {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", content = "data", rename_all = "snake_case")]
 pub enum Event {
-    Player(PlayerState),
+    Player(Box<PlayerState>),
     /// Sent about once a second while playing, and at once on every play,
     /// pause, seek and track change. Clients interpolate in between from
     /// [`PlayerState::status`].
@@ -294,7 +294,7 @@ mod tests {
             library: None,
             counterpart: None,
         };
-        let suggestion = Suggestion::Item(Item::Track(track));
+        let suggestion = Suggestion::Item(Box::new(Item::Track(track)));
         let json = serde_json::to_string(&suggestion).unwrap();
         assert_eq!(
             serde_json::from_str::<Suggestion>(&json).unwrap(),

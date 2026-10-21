@@ -423,7 +423,7 @@ pub struct SearchResults {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Suggestion {
     Query { text: String, from_history: bool },
-    Item(Item),
+    Item(Box<Item>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

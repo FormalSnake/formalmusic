@@ -1091,12 +1091,12 @@ fn suggestions(query: &str) -> Vec<Suggestion> {
     if let Some(n) = (0..catalog.artists.len())
         .find(|n| catalog.artists[*n].name.to_lowercase().contains(&needle))
     {
-        out.push(Suggestion::Item(artist_item(catalog, n)));
+        out.push(Suggestion::Item(Box::new(artist_item(catalog, n))));
     }
     if let Some(n) = (0..catalog.albums.len())
         .find(|n| catalog.albums[*n].title.to_lowercase().contains(&needle))
     {
-        out.push(Suggestion::Item(album_item(catalog, n)));
+        out.push(Suggestion::Item(Box::new(album_item(catalog, n))));
     }
     out
 }
@@ -1364,7 +1364,7 @@ impl DemoShared {
 
     fn emit_player(&self) {
         let player = self.state.lock().snapshot();
-        self.emit(Event::Player(player));
+        self.emit(Event::Player(Box::new(player)));
         self.wake.notify_one();
     }
 
@@ -1784,7 +1784,7 @@ impl Transport for DemoTransport {
             } => {
                 let mut tracks = tracks_for(&source);
                 if shuffle {
-                    let mut rng = Rng(tracks.len() as u64 * 2654435761 | 1);
+                    let mut rng = Rng((tracks.len() as u64 * 2654435761) | 1);
                     for n in (1..tracks.len()).rev() {
                         tracks.swap(n, rng.below(n as u64 + 1) as usize);
                     }

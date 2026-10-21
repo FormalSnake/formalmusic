@@ -61,7 +61,7 @@ fn hardware_decode() -> bool {
 fn png(frame: VideoFrame) -> Option<Arc<[u8]>> {
     use image::ImageEncoder;
     let mut rgba = frame.bgra;
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     let mut out = Vec::with_capacity(rgba.len() / 3);

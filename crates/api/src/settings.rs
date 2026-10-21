@@ -18,7 +18,7 @@ use crate::Equalizer;
 /// `~/Library/Application Support` on macOS.
 pub const APP: &str = "formalmusic";
 
-#[derive(nd_settings::Settings, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(nd_settings::Settings, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     #[settings(section)]
@@ -27,16 +27,6 @@ pub struct Settings {
     pub privacy: Privacy,
     #[settings(section)]
     pub window: Window,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            playback: Playback::default(),
-            privacy: Privacy::default(),
-            window: Window::default(),
-        }
-    }
 }
 
 /// Playback.

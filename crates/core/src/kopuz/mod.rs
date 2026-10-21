@@ -891,7 +891,7 @@ impl Shared {
                                 convert::items(std::slice::from_ref(&shelf), ctx).pop()
                             });
                             match item {
-                                Some(item) => Suggestion::Item(item),
+                                Some(item) => Suggestion::Item(Box::new(item)),
                                 None => Suggestion::Query {
                                     text: suggestion.text,
                                     from_history: suggestion.from_history,
@@ -1164,7 +1164,7 @@ fn settings_edits(
     edit(theirs.pause_watch_history != paused, E::PauseWatchHistory(paused));
     let crossfade = (playback.crossfade_ms.div_ceil(1000)).min(u8::MAX as u32) as u8;
     edit(theirs.crossfade_seconds != crossfade, E::CrossfadeSeconds(crossfade));
-    let mut gain = theirs.replay_gain.clone();
+    let mut gain = theirs.replay_gain;
     gain.mode = match playback.normalisation {
         true => ReplayGainMode::Auto,
         false => ReplayGainMode::Off,
@@ -1242,7 +1242,7 @@ async fn attached(shared: &Arc<Shared>, events: &mpsc::UnboundedSender<Transport
     };
     let resync = async |shared: &Arc<Shared>| {
         if let Ok(player) = shared.player_snapshot().await {
-            send(Event::Player(player));
+            send(Event::Player(Box::new(player)));
         }
         if let Ok(queue) = shared.queue_snapshot().await {
             send(Event::Queue(queue));
@@ -1259,7 +1259,7 @@ async fn attached(shared: &Arc<Shared>, events: &mpsc::UnboundedSender<Transport
     while let Some(event) = stream.next().await {
         match event {
             k::ApiEvent::PlayerState(state) => {
-                send(Event::Player(shared.on_player_state(&state)));
+                send(Event::Player(Box::new(shared.on_player_state(&state))));
                 // Next, previous and a track ending move the queue's index without a
                 // QueueChanged; only the player state says so.
                 let at = Some((state.queue.rev, state.queue.index));

@@ -665,7 +665,7 @@ impl MusicStore {
                 state.position_ms = player.position_ms;
                 state.position_at = Some(Instant::now());
                 state.learn_ratings(&player.track, events);
-                state.player = player;
+                state.player = *player;
                 events.extend([StoreEvent::Player, StoreEvent::Position]);
                 if changed_track {
                     state.buffered_ms = 0;
@@ -2282,11 +2282,11 @@ mod tests {
     async fn position_ticks_move_the_lyric_line_and_nothing_else() {
         let store = store();
         let track = crate::demo::catalog().albums[0].tracks[0].clone();
-        store.apply(Event::Player(PlayerState {
+        store.apply(Event::Player(Box::new(PlayerState {
             track: Some(track.clone()),
             status: Status::Paused,
             ..PlayerState::default()
-        }));
+        })));
         store.inner.update(|state, _| {
             let line = |start_ms| LyricLine {
                 start_ms,
@@ -2402,18 +2402,18 @@ mod tests {
             current: Some(0),
             radio: true,
         }));
-        store.apply(Event::Player(PlayerState {
+        store.apply(Event::Player(Box::new(PlayerState {
             track: Some(from_next.clone()),
             status: Status::Playing,
             ..PlayerState::default()
-        }));
+        })));
         assert_eq!(store.state().rating(&from_next), Rating::Like);
 
         // A response that does say wins, whichever surface it came from.
-        store.apply(Event::Player(PlayerState {
+        store.apply(Event::Player(Box::new(PlayerState {
             track: Some(rated_track("redlight", Some(Rating::Indifferent))),
             ..PlayerState::default()
-        }));
+        })));
         assert_eq!(store.state().rating(&from_next), Rating::Indifferent);
     }
 
