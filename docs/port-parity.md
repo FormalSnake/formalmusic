@@ -74,8 +74,8 @@ test pass. Open before the switch to main:
 - [ ] Rows marked "Code" above checked by hand on a real session.
 
 Known losses against the GPUI window, all waiting on nd:
-icon-only rating, repeat and shuffle buttons (text until `Icon` gains media glyphs), drag
-to reorder (Move up/down menu rows instead), hover prefetch (no hover event on containers),
-"More actions" buttons (right-click only), macOS Now Playing (the daemon has no AppKit run
-loop; MPRIS and SMTC stay in the daemon since nd-system's session lacks shuffle, loop,
-volume and Seeked).
+drag to reorder (Move up/down menu rows instead), "More actions" buttons on rows (right-click only; the player bar has one),
+macOS Now Playing (the daemon has no AppKit run loop; MPRIS and SMTC stay in the daemon
+since nd-system's session lacks shuffle, loop, volume and Seeked). Rating, repeat and
+shuffle are icon toggles again (nd `formalmusic-ui`: media glyphs and `Button::checked`), and
+a card under the pointer prefetches its page as before.

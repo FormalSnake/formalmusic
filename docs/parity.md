@@ -32,7 +32,7 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Library, Uploads tab | `/library/uploads` | partial | Lists uploads (`innertube/src/parse/mod.rs`); no upload or delete |
 | Liked music | `LM` playlist | yes | `desktop/src/sidebar.rs` playlist list, `desktop/src/page.rs` |
 | History | `/history` | yes | Sidebar entry in `desktop/src/sidebar.rs`; day shelves (Today, Yesterday, ...) come from the response, `innertube/src/parse/shelves.rs` |
-| Episodes for Later | `SE` playlist in sidebar | no | No entry; the playlist would browse generically |
+| Episodes for Later | `SE` playlist in sidebar | yes | Sidebar row when signed in, `app/src/root.rs` (`sidebar_nodes`); browses as a playlist |
 | Search results | `/search?q=` | yes | `desktop/src/topbar.rs`, `desktop/src/page.rs` |
 | Search suggestions and history | dropdown | yes | `desktop/src/topbar.rs` (`Suggestion::Query`, `from_history`) |
 | Search filters | Songs, Videos, Albums, Featured playlists, Community playlists, Artists, Podcasts, Episodes, Profiles | yes | `desktop/src/page.rs` (`SEARCH_FILTERS`) |
@@ -49,8 +49,8 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Watch page, Up next | `/watch` | yes | `desktop/src/now_playing.rs` (`QueueView`) |
 | Watch page, Lyrics | tab | yes | `desktop/src/lyrics.rs`, `extras/src/lyrics/`; word-synced, beyond the web app |
 | Watch page, Related | tab | yes | `desktop/src/now_playing.rs`, `core/src/store.rs` (`load_related`) |
-| Song credits | `get_song_credits` | no | |
-| Taste profile (pick artists) | `get_tasteprofile` | no | |
+| Song credits | `get_song_credits` | no | Kopuz has no credits call for YouTube Music |
+| Taste profile (pick artists) | `get_tasteprofile` | no | Kopuz has no taste profile call |
 | Account switcher | avatar menu | yes | `desktop/src/topbar.rs`, `daemon/src/session.rs` |
 | Settings page | avatar menu | partial | `desktop/src/settings.rs`, see Settings |
 
@@ -66,8 +66,8 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Song or Video toggle | switch | yes | `desktop/src/music_video.rs`, `desktop/src/now_playing.rs` |
 | Autoplay radio keeps queue filled | autoplay | yes | `daemon/src/queue.rs` (`RADIO_LOW_WATER`) |
 | Queue reorder, remove | drag | yes | `desktop/src/now_playing.rs` (`QueueDrag`) |
-| Clear queue | button | partial | `Command::ClearQueue` in `api/src/lib.rs`, no control in `desktop/src` |
-| Save queue as playlist | menu | no | |
+| Clear queue | button | yes | Clear above Up next, `app/src/now_playing.rs`; Kopuz clears the songs after the playing one |
+| Save queue as playlist | menu | yes | Save as playlist above Up next, `app/src/sheets.rs` (`save_queue`) |
 | Gapless playback | automatic | yes | `player/src/engine.rs` |
 | Loudness normalisation | "stable volume" | yes | `player/src/gain.rs`, `daemon/src/config.rs` |
 | Media keys and now-playing widgets | OS media session | yes | `daemon/src/mpris.rs` (Linux only) |
@@ -103,9 +103,9 @@ rows come from ytmusicapi and the help page, not from the live menus.
 | Reorder tracks in a playlist | drag | yes | `desktop/src/shelves.rs` (`RowDrag`), `core/src/store.rs` (`move_in_playlist`) |
 | Delete playlist | menu | yes | `desktop/src/edit_playlist.rs`, after a confirmation |
 | Add whole playlist into another | menu | partial | `PlaylistEdit::AddPlaylist`, no UI |
-| Collaborative playlists | `join_collaborative_playlist` | no | |
-| Upload songs | `upload_song` | no | |
-| Delete uploads | `delete_upload_entity` | no | |
+| Collaborative playlists | `join_collaborative_playlist` | no | Kopuz has no collaboration call |
+| Upload songs | `upload_song` | no | Kopuz's `upload_track` is implemented for Clippsly only, not YouTube Music |
+| Delete uploads | `delete_upload_entity` | no | Kopuz has no call for it |
 | Subscribe to a podcast | podcast page | partial | Via `Save to library` where the header carries a playlist id |
 
 ## Keyboard shortcuts
@@ -127,7 +127,7 @@ are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
 | Volume up, down | `=`, `-` | yes | `desktop/src/shortcuts.rs` (`Shift+Up` and `Shift+Down` too) |
 | Mute | `m` | yes | `desktop/src/shortcuts.rs` |
 | Toggle queue or expanded player | `q`, `Esc` | yes | `desktop/src/shortcuts.rs`, `desktop/src/app.rs` |
-| Full screen | `f` | partial | `f` opens the in-window expanded player, not OS full screen |
+| Full screen | `f` | yes | `f` opens the expanded player; Window > Enter Full Screen (Ctrl+Cmd+F) on macOS, `app/src/root.rs` (`menus`) |
 | Like current song | `+` | yes | `desktop/src/shortcuts.rs` |
 | Dislike current song | `_` | yes | `desktop/src/shortcuts.rs` |
 | Go to Home, Explore, Library, Settings | `gh`, `ge`, `gl`, `g,` | yes | `desktop/src/shortcuts.rs` (`resolve`), `Ctrl+,` for Settings too |
@@ -145,10 +145,25 @@ are in `desktop/src/shortcuts.rs`, the modifier bindings in `desktop/src/app.rs`
 | Show or hide music videos (audio only) | playback settings | yes | Song/Video switch in `desktop/src/music_video.rs`; no persistent default |
 | Restrict explicit content | playback settings | yes | "Skip explicit songs" in `desktop/src/settings.rs`; `daemon/src/playback.rs` keeps explicit tracks out of the queue |
 | Pause watch history | privacy | yes | `desktop/src/settings.rs`, `daemon/src/config.rs` (`pauseHistory` over `reportHistory`) |
-| Delete watch history | privacy | no | |
-| Notifications | account settings | no | No desktop notifications; in-app toasts only (`desktop/src/toast.rs`) |
+| Delete watch history | privacy | no | Kopuz removes single history entries only (`remove_from_history`) |
+| Notifications | account settings | yes | "Notify when the song changes in the background" in Settings, `app/src/player.rs` (`announce`) |
 | Connected apps, scrobbling | account settings | yes | Last.fm and ListenBrainz, `desktop/src/settings.rs`, `daemon/src/scrobble/` |
 | Sign in, sign out, brand accounts | avatar menu | yes | `desktop/src/signin.rs`, `daemon/src/signin/` |
+
+## Look on macOS
+
+The macOS window follows Music on macOS 27, checked against Music.app captured on the macbook
+and the macOS 26 marketing shot. Music's player is a Liquid Glass capsule floating over the
+content: shuffle, previous, play, next and repeat leading, the song on two lines over a thin
+progress line, then more, lyrics, queue and volume (nd `bottom_accessory` with
+`TransportLayout::Pill`). Top-level pages carry a large title and the toolbar no window title.
+macOS 27 changes no part of Music's player; system-wide, sidebars reach the window's edge and
+keep their icons' colour. Not matched yet: Search as a sidebar row, the account row at the
+sidebar's foot and Music's red symbol tint.
+
+Sources:
+[9to5Mac, macOS 27 changes](https://9to5mac.com/2026/06/09/macos-27-golden-gate-includes-these-changes-that-tahoe-critics-will-appreciate/),
+[iPhoneIslam, Liquid Glass in iOS 27 and macOS 27](https://iphoneislam.com/language/en/2026/06/apple-responds-to-complaints-how-it-fixed-the-liquid-glass-interface-in-ios-27-and-mac/168187).
 
 ## Gaps
 
