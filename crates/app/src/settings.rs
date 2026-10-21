@@ -274,6 +274,12 @@ impl Render for SettingsWindow {
                 "Animated cover in the player bar",
                 s.window.animated_cover_in_bar,
                 cx,
+            ))
+            .child(self.switch(
+                "window.notify_song_change",
+                "Notify when the song changes in the background",
+                s.window.notify_song_change,
+                cx,
             ));
 
         let mut equalizer = settings_group("Equalizer")

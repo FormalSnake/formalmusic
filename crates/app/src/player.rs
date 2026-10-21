@@ -1,5 +1,5 @@
-//! The bar along the bottom: nd's `player_bar` over the daemon's playback, with the rating,
-//! repeat, shuffle and expand controls beside it. The bar extrapolates the position itself, so
+//! The bar along the bottom: nd's `player_bar` over the daemon's playback, the rating and
+//! track menu beside the playing song, repeat, shuffle, queue and expand at the trailing end. The bar extrapolates the position itself, so
 //! a playing track costs one render per position report, not one per frame.
 
 use std::time::Duration;
@@ -11,8 +11,14 @@ use nd::prelude::*;
 use crate::art;
 use crate::bridge;
 use crate::menus::{self, MenuContext};
+use crate::now_playing::Tab;
 
-pub struct Player;
+pub struct Player {
+    /// The expanded player's tab while it is open, which the expand and queue buttons show.
+    pub expanded: Option<Tab>,
+    /// The song the last notification was for, so each song notifies once.
+    announced: Option<String>,
+}
 
 /// The clock and length nd's media widgets read, from the store's last report.
 pub fn clock(state: &AppState) -> (PlaybackClock, Option<Duration>) {
@@ -39,7 +45,10 @@ impl Player {
         ] {
             bridge::watch(cx, topic, id);
         }
-        Self
+        Self {
+            expanded: None,
+            announced: None,
+        }
     }
 
     fn command(
@@ -69,6 +78,37 @@ impl Player {
     }
 }
 
+impl Player {
+    /// A desktop notification for a new song while the window is in the background, when the
+    /// setting asks for it.
+    fn announce(&mut self, track: Option<&formalmusic_api::Track>, cx: &mut Context<Self>) {
+        let id = track.map(|t| t.video_id.clone());
+        if self.announced == id {
+            return;
+        }
+        let first = self.announced.is_none();
+        self.announced = id;
+        let Some(track) = track else { return };
+        if first
+            || !crate::settings::current(cx).window.notify_song_change
+            || nd::system::system().is_active()
+        {
+            return;
+        }
+        let notification = nd::system::Notification::new(track.title.clone())
+            .body(formalmusic_core::format::byline(track))
+            .silent();
+        nd::system::spawn(
+            nd::system::system().notifications().show(notification),
+            |shown, _| {
+                if let Err(error) = shown {
+                    eprintln!("formalmusic: notification: {error}");
+                }
+            },
+        );
+    }
+}
+
 impl Render for Player {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let store = crate::store(cx);
@@ -76,6 +116,7 @@ impl Render for Player {
         let (clock, duration) = clock(&state);
         let track = state.player.track.clone();
         let has_track = track.is_some();
+        self.announce(track.as_ref(), cx);
         let mut now = NowPlaying::new(
             track
                 .as_ref()
@@ -112,84 +153,84 @@ impl Render for Player {
                 }
             }
         };
-        let extras = h_flex()
-            .id("player.extras")
-            .gap_1()
-            .flex_none()
-            .child(
-                button(
-                    "player.like",
-                    if rating == Rating::Like {
-                        "Liked"
-                    } else {
-                        "Like"
-                    },
-                )
-                .borderless()
-                .disabled(!has_track)
-                .on_click(rate(if rating == Rating::Like {
-                    Rating::Indifferent
-                } else {
-                    Rating::Like
-                })),
-            )
-            .child(
-                button(
-                    "player.dislike",
-                    if rating == Rating::Dislike {
-                        "Disliked"
-                    } else {
-                        "Dislike"
-                    },
-                )
-                .borderless()
-                .disabled(!has_track)
-                .on_click(rate(if rating == Rating::Dislike {
-                    Rating::Indifferent
-                } else {
-                    Rating::Dislike
-                })),
-            )
-            .child(
-                button(
-                    "player.repeat",
-                    match repeat {
-                        Repeat::Off => "Repeat off",
-                        Repeat::All => "Repeat all",
-                        Repeat::One => "Repeat one",
-                    },
-                )
-                .borderless()
-                .on_click(|_, _, cx| crate::store(cx).cycle_repeat()),
-            )
-            .child(
-                button(
-                    "player.shuffle",
-                    if shuffle { "Shuffle on" } else { "Shuffle off" },
-                )
-                .borderless()
-                .on_click(|_, _, cx| crate::store(cx).toggle_shuffle()),
-            )
-            .child(
-                icon_button("player.expand", Icon::PanelRight)
-                    .tooltip("Open player")
-                    .disabled(!has_track)
-                    .on_click(|_, _, cx| crate::root::toggle_expanded(cx)),
-            );
+        let toggle = |on: Rating| if rating == on { Rating::Indifferent } else { on };
+        let liked = rating == Rating::Like;
+        let disliked = rating == Rating::Dislike;
+        let like = icon_button("player.like", Icon::ThumbsUp)
+            .tooltip(if liked { "Remove like" } else { "Like" })
+            .checked(liked)
+            .on_click(rate(toggle(Rating::Like)));
+        let dislike = icon_button("player.dislike", Icon::ThumbsDown)
+            .tooltip(if disliked { "Remove dislike" } else { "Dislike" })
+            .checked(disliked)
+            .on_click(rate(toggle(Rating::Dislike)));
+        let more_track = track.clone();
+        let more = menu_button("player.more", Icon::Ellipsis, move |menu, _, cx| match &more_track {
+            Some(track) => menus::item_menu(menu, &Item::Track(track.clone()), &MenuContext::default(), cx),
+            None => menu,
+        })
+        .tooltip("More actions");
+        let repeat_button = icon_button(
+            "player.repeat",
+            if repeat == Repeat::One { Icon::Repeat1 } else { Icon::Repeat },
+        )
+        .tooltip(match repeat {
+            Repeat::Off => "Repeat",
+            Repeat::All => "Repeat one",
+            Repeat::One => "Turn off repeat",
+        })
+        .checked(repeat != Repeat::Off)
+        .on_click(|_, _, cx| crate::store(cx).cycle_repeat());
+        let shuffle_button = icon_button("player.shuffle", Icon::Shuffle)
+            .tooltip(if shuffle { "Turn off shuffle" } else { "Shuffle" })
+            .checked(shuffle)
+            .on_click(|_, _, cx| crate::store(cx).toggle_shuffle());
+        let queue_open = self.expanded == Some(Tab::UpNext);
+        let queue = icon_button("player.queue", Icon::ListMusic)
+            .tooltip(if queue_open { "Hide queue" } else { "Show queue" })
+            .checked(queue_open)
+            .dispatch(crate::root::ToggleQueue);
+        let expand = icon_button(
+            "player.expand",
+            if self.expanded.is_some() { Icon::ChevronDown } else { Icon::ChevronUp },
+        )
+        .tooltip(if self.expanded.is_some() { "Close player" } else { "Open player" })
+        .on_click(|_, _, cx| crate::root::toggle_expanded(cx));
         let menu_track = track.clone();
-        h_flex()
+        let layout = TransportLayout::platform();
+        let bar = player_bar("player.bar", now)
+            .layout(layout)
+            .on_command(cx.listener(Self::command))
+            .on_open(|_, cx| crate::root::toggle_expanded(cx));
+        let bar = if layout == TransportLayout::Pill {
+            // Music's mini player: shuffle and repeat around the transport, rating under More,
+            // lyrics and the queue at the trailing end.
+            let lyrics_open = self.expanded == Some(Tab::Lyrics);
+            let lyrics = icon_button("player.lyrics", Icon::MicVocal)
+                .tooltip(if lyrics_open { "Hide lyrics" } else { "Show lyrics" })
+                .checked(lyrics_open)
+                .dispatch(crate::root::ToggleLyrics);
+            bar.before_transport(shuffle_button.into_any_element())
+                .after_transport(repeat_button.into_any_element())
+                .trailing(more.into_any_element())
+                .trailing(lyrics.into_any_element())
+                .trailing(queue.into_any_element())
+        } else {
+            bar.accessory(like.into_any_element())
+                .accessory(dislike.into_any_element())
+                .accessory(more.into_any_element())
+                .trailing(repeat_button.into_any_element())
+                .trailing(shuffle_button.into_any_element())
+                .trailing(queue.into_any_element())
+                .trailing(expand.into_any_element())
+        }
+        .w_full();
+        let docked = layout != TransportLayout::Pill;
+        div()
             .id("player")
             .w_full()
-            .px_4()
-            .py_2()
-            .gap_4()
-            .child(
-                player_bar("player.bar", now)
-                    .on_command(cx.listener(Self::command))
-                    .flex_1()
-                    .min_w_0(),
-            )
-            .child(extras)
+            .when(docked, |bar| bar.px_4().pt_1().pb_2())
+            .child(bar)
             .when_some(menu_track, |bar, track| {
                 bar.context_menu(move |menu, _, cx| {
                     menus::item_menu(

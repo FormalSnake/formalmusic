@@ -95,6 +95,8 @@ pub struct Window {
     pub keep_playing_when_closed: bool,
     /// Play the album's motion artwork in the player bar too, not only in the expanded player.
     pub animated_cover_in_bar: bool,
+    /// Show a desktop notification when the song changes while the window is in the background.
+    pub notify_song_change: bool,
 }
 
 impl Default for Window {
@@ -102,6 +104,7 @@ impl Default for Window {
         Self {
             keep_playing_when_closed: false,
             animated_cover_in_bar: true,
+            notify_song_change: false,
         }
     }
 }
