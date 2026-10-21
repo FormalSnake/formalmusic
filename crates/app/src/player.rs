@@ -213,7 +213,14 @@ impl Render for Player {
             let control = |b: Button| b.text_size(px(PILL.control_glyph)).bezel(Bezel::Plain);
             bar.before_transport(shuffle_button.size(px(PILL.toggle)).into_any_element())
                 .after_transport(repeat_button.size(px(PILL.toggle)).into_any_element())
-                .accessory(control(more).into_any_element())
+                // Music's More is three 4 pt dots spanning about 16 pt: the ellipsis symbol at 30 pt
+                // semibold.
+                .accessory(
+                    more.text_size(px(30.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .bezel(Bezel::Plain)
+                        .into_any_element(),
+                )
                 .trailing(control(lyrics).into_any_element())
                 .trailing(control(queue).into_any_element())
         } else {
