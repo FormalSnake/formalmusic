@@ -8,7 +8,7 @@ exit. Everything you print lands in the journal
 (`journalctl --user -u formalmusic-maintenance`).
 
 Your working directory is `~/Developer/formalmusic-maintenance`, a clone of
-`github.com/FormalSnake/formalmusic` that exists only for this run. It is the
+`github.com/FormalStudio/formalmusic` that exists only for this run. It is the
 only copy of the FormalMusic repo you may write to.
 
 Set these first and use them throughout:
@@ -156,7 +156,7 @@ anywhere before preflight passes.
 On a new branch in the clone (`git switch -c <branch>`):
 
 0. NativeDesktop: the window crate depends on `../nativedesktop` by path. Keep
-   a clone of `github.com/FormalSnake/NativeDesktop` beside this clone
+   a clone of `github.com/FormalStudio/NativeDesktop` beside this clone
    (`../nativedesktop`, cloned the first time) checked out at the rev
    `flake.lock` pins for `nativedesktop` (`git -C ../nativedesktop fetch &&
    git -C ../nativedesktop checkout --detach <rev>`), so cargo and the Nix

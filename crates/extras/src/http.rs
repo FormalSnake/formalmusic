@@ -2,7 +2,7 @@ use crate::{Error, Result};
 use reqwest::{Client, RequestBuilder, StatusCode};
 use std::time::Duration;
 
-pub(crate) const USER_AGENT: &str = "FormalMusic (https://github.com/FormalSnake/formalmusic)";
+pub(crate) const USER_AGENT: &str = "FormalMusic (https://github.com/FormalStudio/formalmusic)";
 
 pub(crate) fn client() -> Result<Client> {
     Ok(Client::builder()

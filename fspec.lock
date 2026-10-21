@@ -1,0 +1,286 @@
+[[pkg]]
+name = "python"
+source = "python"
+version = "3.13.16"
+
+[pkg.aarch64-darwin]
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.13.16%2B20261013-aarch64-apple-darwin-install_only_stripped.tar.gz"
+hash = "sha256-FqUzL7Dct38WP8j4y8zZW+FkTMU+aOXSp59Qr9ZoCg4="
+bins = ["python3=python/bin/python3", "python=python/bin/python3", "python3.13=python/bin/python3"]
+
+[pkg.aarch64-linux]
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.13.16%2B20261013-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
+hash = "sha256-aaMO0mGYF4cyw3uN4La1GRR5+6z+UmlU2ndr7+OPGOc="
+bins = ["python3=python/bin/python3", "python=python/bin/python3", "python3.13=python/bin/python3"]
+
+[pkg.x86_64-darwin]
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.13.16%2B20261013-x86_64-apple-darwin-install_only_stripped.tar.gz"
+hash = "sha256-9QeuBOt3R82Xy0hOjF2Dk2y/xS2bCKHzXAC0fHB7GuE="
+bins = ["python3=python/bin/python3", "python=python/bin/python3", "python3.13=python/bin/python3"]
+
+[pkg.x86_64-linux]
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.13.16%2B20261013-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+hash = "sha256-0AgHZra3SuuB4ZSe8NmiDmwX97Fg+ylaabk2zLF2YL4="
+bins = ["python3=python/bin/python3", "python=python/bin/python3", "python3.13=python/bin/python3"]
+
+[[pkg]]
+name = "rustup"
+source = "aqua:rustup"
+version = "1.29.2"
+
+[pkg.aarch64-darwin]
+url = "https://static.rust-lang.org/rustup/archive/1.29.2/aarch64-apple-darwin/rustup-init"
+hash = "sha256-98fhHrLgfwBuUyqKqsd7MvRSfTBaw4bAxjPKYTPTXKk="
+bins = ["rustup", "rustup-init=rustup"]
+
+[pkg.aarch64-linux]
+url = "https://static.rust-lang.org/rustup/archive/1.29.2/aarch64-unknown-linux-gnu/rustup-init"
+hash = "sha256-qcFo2+qBqEZxxrelwXlcsOtpkCARDRB938pCe9eX5pc="
+bins = ["rustup", "rustup-init=rustup"]
+
+[pkg.x86_64-darwin]
+url = "https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-apple-darwin/rustup-init"
+hash = "sha256-uWEHMN3u9SdlcjhHhm/R41QLK/fVqwwySqFDpe3yW6A="
+bins = ["rustup", "rustup-init=rustup"]
+
+[pkg.x86_64-linux]
+url = "https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init"
+hash = "sha256-W+GR6McKUAcHQlTLdNeNv90lzVphwn3nuOVBASLsJPQ="
+bins = ["rustup", "rustup-init=rustup"]
+
+[[pkg]]
+name = "uv"
+source = "aqua:uv"
+version = "0.13.4"
+
+[pkg.aarch64-darwin]
+url = "https://github.com/astral-sh/uv/releases/download/0.13.4/uv-aarch64-apple-darwin.tar.gz"
+hash = "sha256-4LHUdDzmTFXZ8PSkRK+muBElaABw7gToU/zQ9sHr+PE="
+bins = ["uv-aarch64-apple-darwin/uv", "uv-aarch64-apple-darwin/uvx"]
+
+[pkg.aarch64-linux]
+url = "https://github.com/astral-sh/uv/releases/download/0.13.4/uv-aarch64-unknown-linux-musl.tar.gz"
+hash = "sha256-JToXyty2Wa53oP47mi8cFCl1KNSAxCGJnmHmTWTyTo8="
+bins = ["uv-aarch64-unknown-linux-musl/uv", "uv-aarch64-unknown-linux-musl/uvx"]
+
+[pkg.x86_64-darwin]
+url = "https://github.com/astral-sh/uv/releases/download/0.13.4/uv-x86_64-apple-darwin.tar.gz"
+hash = "sha256-e+Lc0xYSL0s+Wgp4ifYkgmbBRCU3ThBf99yXeRhGA6Y="
+bins = ["uv-x86_64-apple-darwin/uv", "uv-x86_64-apple-darwin/uvx"]
+
+[pkg.x86_64-linux]
+url = "https://github.com/astral-sh/uv/releases/download/0.13.4/uv-x86_64-unknown-linux-musl.tar.gz"
+hash = "sha256-KNQ4X5+dHRx2VNhbOFXg4mFbL2zBMTai7f+Fi73Bb/E="
+bins = ["uv-x86_64-unknown-linux-musl/uv", "uv-x86_64-unknown-linux-musl/uvx"]
+
+[[pkg]]
+name = "yt-dlp"
+source = "pypi:yt-dlp"
+version = "2026.8.19"
+
+[pkg.any]
+requirements = ["yt-dlp==2026.8.19 --hash=sha256:1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf --hash=sha256:9e213e48cea35c66b378e4447903f118f6392a5fa380a2b6d7070ec86f4e0af1"]
+
+[[native]]
+kind = "lib"
+name = "alsa"
+apt = "libasound2-dev"
+dnf = "pkgconfig(alsa)"
+moss = "pkgconfig(alsa)"
+pacman = "alsa-lib"
+xbps = "alsa-lib-devel"
+zypper = "pkgconfig(alsa)"
+
+[[native]]
+kind = "lib"
+name = "egl"
+apt = "libegl-dev"
+dnf = "pkgconfig(egl)"
+moss = "pkgconfig(egl)"
+pacman = "libglvnd"
+xbps = "libglvnd-devel"
+zypper = "pkgconfig(egl)"
+
+[[native]]
+kind = "lib"
+name = "fontconfig"
+apt = "libfontconfig-dev"
+dnf = "pkgconfig(fontconfig)"
+moss = "pkgconfig(fontconfig)"
+pacman = "fontconfig"
+xbps = "fontconfig-devel"
+zypper = "pkgconfig(fontconfig)"
+
+[[native]]
+kind = "lib"
+name = "freetype2"
+apt = "libfreetype-dev"
+dnf = "pkgconfig(freetype2)"
+moss = "pkgconfig(freetype2)"
+pacman = "freetype2"
+xbps = "freetype-devel"
+zypper = "pkgconfig(freetype2)"
+
+[[native]]
+kind = "lib"
+name = "opus"
+apt = "libopus-dev"
+brew = "opus"
+dnf = "pkgconfig(opus)"
+moss = "pkgconfig(opus)"
+pacman = "opus"
+xbps = "opus-devel"
+zypper = "pkgconfig(opus)"
+
+[[native]]
+kind = "lib"
+name = "vulkan"
+apt = "libvulkan-dev"
+dnf = "pkgconfig(vulkan)"
+moss = "pkgconfig(vulkan)"
+pacman = "vulkan-icd-loader"
+xbps = "vulkan-loader-devel"
+zypper = "pkgconfig(vulkan)"
+
+[[native]]
+kind = "lib"
+name = "wayland-client"
+apt = "libwayland-dev"
+dnf = "pkgconfig(wayland-client)"
+moss = "pkgconfig(wayland-client)"
+pacman = "wayland"
+xbps = "wayland-devel"
+zypper = "pkgconfig(wayland-client)"
+
+[[native]]
+kind = "lib"
+name = "wayland-protocols"
+apt = "wayland-protocols"
+dnf = "pkgconfig(wayland-protocols)"
+moss = "pkgconfig(wayland-protocols)"
+pacman = "wayland-protocols"
+xbps = "wayland-protocols"
+zypper = "pkgconfig(wayland-protocols)"
+
+[[native]]
+kind = "lib"
+name = "x11"
+apt = "libx11-dev"
+dnf = "pkgconfig(x11)"
+moss = "pkgconfig(x11)"
+pacman = "libx11"
+xbps = "libX11-devel"
+zypper = "pkgconfig(x11)"
+
+[[native]]
+kind = "lib"
+name = "xcb"
+apt = "libxcb1-dev"
+dnf = "pkgconfig(xcb)"
+moss = "pkgconfig(xcb)"
+pacman = "libxcb"
+xbps = "libxcb-devel"
+zypper = "pkgconfig(xcb)"
+
+[[native]]
+kind = "lib"
+name = "xcursor"
+apt = "libxcursor-dev"
+dnf = "pkgconfig(xcursor)"
+moss = "pkgconfig(xcursor)"
+pacman = "libxcursor"
+xbps = "libXcursor-devel"
+zypper = "pkgconfig(xcursor)"
+
+[[native]]
+kind = "lib"
+name = "xi"
+apt = "libxi-dev"
+dnf = "pkgconfig(xi)"
+moss = "pkgconfig(xi)"
+pacman = "libxi"
+xbps = "libXi-devel"
+zypper = "pkgconfig(xi)"
+
+[[native]]
+kind = "lib"
+name = "xkbcommon"
+apt = "libxkbcommon-dev"
+dnf = "pkgconfig(xkbcommon)"
+moss = "pkgconfig(xkbcommon)"
+pacman = "libxkbcommon"
+xbps = "libxkbcommon-devel"
+zypper = "pkgconfig(xkbcommon)"
+
+[[native]]
+kind = "lib"
+name = "xkbcommon-x11"
+apt = "libxkbcommon-x11-dev"
+dnf = "pkgconfig(xkbcommon-x11)"
+moss = "pkgconfig(xkbcommon-x11)"
+pacman = "libxkbcommon-x11"
+xbps = "libxkbcommon-devel"
+zypper = "pkgconfig(xkbcommon-x11)"
+
+[[native]]
+kind = "lib"
+name = "xrandr"
+apt = "libxrandr-dev"
+dnf = "pkgconfig(xrandr)"
+moss = "pkgconfig(xrandr)"
+pacman = "libxrandr"
+xbps = "libXrandr-devel"
+zypper = "pkgconfig(xrandr)"
+
+[[native]]
+kind = "bin"
+name = "ffmpeg"
+apt = "ffmpeg"
+brew = "ffmpeg"
+dnf = "/usr/bin/ffmpeg"
+moss = "binary(ffmpeg)"
+pacman = "ffmpeg"
+xbps = "ffmpeg6"
+zypper = "ffmpeg"
+
+[[native]]
+kind = "bin"
+name = "gcc"
+apt = "gcc"
+dnf = "/usr/bin/gcc"
+moss = "binary(gcc)"
+pacman = "gcc"
+xbps = "gcc"
+zypper = "gcc"
+
+[[native]]
+kind = "bin"
+name = "grim"
+apt = "grim"
+dnf = "/usr/bin/grim"
+moss = "binary(grim)"
+pacman = "grim"
+xbps = "grim"
+zypper = "grim"
+
+[[native]]
+kind = "bin"
+name = "pkg-config"
+apt = "pkgconf"
+brew = "pkgconf"
+dnf = "/usr/bin/pkg-config"
+moss = "binary(pkg-config)"
+pacman = "pkgconf"
+xbps = "pkg-config"
+zypper = "pkgconf-pkg-config"
+
+[[native]]
+kind = "bin"
+name = "socat"
+apt = "socat"
+brew = "socat"
+dnf = "/usr/bin/socat"
+moss = "binary(socat)"
+pacman = "socat"
+xbps = "socat"
+zypper = "socat"

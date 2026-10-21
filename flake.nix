@@ -11,7 +11,7 @@
     # it by path). Its own flake also carries the home-manager module the
     # settings options plug into.
     nativedesktop = {
-      url = "github:FormalSnake/NativeDesktop";
+      url = "github:FormalStudio/NativeDesktop";
       flake = false;
     };
   };
