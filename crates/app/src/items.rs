@@ -149,6 +149,14 @@ pub fn card(id: String, item: &Item, cx: &App) -> AnyElement {
                 .truncate(),
         )
         .on_tap(tap(activate(item)))
+        .when_some(menus::target_of(item), |card, target| {
+            // A card under the pointer is likely the next click: its page loads ahead.
+            card.on_hover(move |hovered, _, cx| {
+                if *hovered {
+                    crate::store(cx).prefetch(vec![target.clone()]);
+                }
+            })
+        })
         .context_menu(move |menu, _, cx| {
             menus::item_menu(menu, &menu_item, &MenuContext::default(), cx)
         })
@@ -207,6 +215,7 @@ pub fn track_row(
     let title = text(track.title.clone())
         .truncate()
         .when(current, |t| t.text_color(theme.accent));
+    let wash = theme.hover(theme.surface.base);
     h_flex()
         .id(id)
         .role(Role::ListItem, track.title.clone())
@@ -214,6 +223,8 @@ pub fn track_row(
         .h(px(56.))
         .px_3()
         .gap_3()
+        .rounded(px(8.))
+        .hover(move |s| s.bg(wash))
         .child(
             art::cover(
                 format!("art.{}", track.video_id),
@@ -287,7 +298,7 @@ pub fn item_row(id: String, item: &Item, tappable: bool, cx: &App) -> AnyElement
         art.rounded_sm()
     };
     let menu_item = item.clone();
-    let _ = cx;
+    let wash = cx.theme().hover(cx.theme().surface.base);
     h_flex()
         .id(id)
         .role(Role::ListItem, title.clone())
@@ -295,6 +306,8 @@ pub fn item_row(id: String, item: &Item, tappable: bool, cx: &App) -> AnyElement
         .h(px(56.))
         .px_3()
         .gap_3()
+        .rounded(px(8.))
+        .hover(move |s| s.bg(wash))
         .child(art)
         .child(
             v_flex()
@@ -550,6 +563,29 @@ pub fn chips(
 }
 
 /// The page header: album or playlist details, an artist, or a plain title.
+/// A description clamped to three lines that opens in place when clicked, as Music's album
+/// notes do; one short enough to fit shows whole and does nothing.
+fn description_text(text: String, open: bool, on_toggle: OnTap) -> AnyElement {
+    let long = text.chars().count() > DESCRIPTION_FITS || text.lines().count() > 3;
+    let body = label(text).secondary().wraps().max_w(px(640.));
+    if !long {
+        return body.into_any_element();
+    }
+    div()
+        .id("header.description")
+        .max_w(px(640.))
+        .role(
+            Role::Button,
+            if open { "Collapse description" } else { "Expand description" },
+        )
+        .on_tap(move |_, w, cx| on_toggle(w, cx))
+        .child(body.when(!open, |l| l.line_clamp(3)))
+        .into_any_element()
+}
+
+/// Characters three lines of the description hold at its widest.
+const DESCRIPTION_FITS: usize = 280;
+
 pub fn header(header: &Header, description_open: bool, on_toggle: OnTap, cx: &App) -> AnyElement {
     let theme = cx.theme();
     match header {
@@ -578,7 +614,7 @@ pub fn header(header: &Header, description_open: bool, on_toggle: OnTap, cx: &Ap
                     .gap_2()
                     .when_some(playlist_id.clone(), |row, playlist_id| {
                         let (a, b) = (playlist_id.clone(), playlist_id.clone());
-                        row.child(button("header.play", "Play").accent().on_click(
+                        row.child(button("header.play", "Play").icon(Icon::Play).accent().on_click(
                             move |_, _, cx| {
                                 crate::store(cx).play(
                                     PlaySource::Playlist {
@@ -592,7 +628,7 @@ pub fn header(header: &Header, description_open: bool, on_toggle: OnTap, cx: &Ap
                             },
                         ))
                         .child(
-                            button("header.shuffle", "Shuffle").on_click(move |_, _, cx| {
+                            button("header.shuffle", "Shuffle").icon(Icon::Shuffle).on_click(move |_, _, cx| {
                                 crate::store(cx).play(
                                     PlaySource::Playlist {
                                         playlist_id: b.clone(),
@@ -651,20 +687,7 @@ pub fn header(header: &Header, description_open: bool, on_toggle: OnTap, cx: &Ap
                             col.child(label(s).secondary())
                         })
                         .when_some(description.clone(), |col, d| {
-                            col.child(
-                                label(d)
-                                    .secondary()
-                                    .max_w(px(640.))
-                                    .when(!description_open, |l| l.line_clamp(3)),
-                            )
-                            .child(
-                                button(
-                                    "header.more",
-                                    if description_open { "Less" } else { "More" },
-                                )
-                                .borderless()
-                                .on_click(move |_, w, cx| on_toggle(w, cx)),
-                            )
+                            col.child(description_text(d, description_open, on_toggle.clone()))
                         })
                         .child(actions),
                 )
@@ -700,26 +723,13 @@ pub fn header(header: &Header, description_open: bool, on_toggle: OnTap, cx: &Ap
                     col.child(label(l).secondary())
                 })
                 .when_some(description.clone(), |col, d| {
-                    col.child(
-                        label(d)
-                            .secondary()
-                            .max_w(px(640.))
-                            .when(!description_open, |l| l.line_clamp(3)),
-                    )
-                    .child(
-                        button(
-                            "header.more",
-                            if description_open { "Less" } else { "More" },
-                        )
-                        .borderless()
-                        .on_click(move |_, w, cx| on_toggle(w, cx)),
-                    )
+                    col.child(description_text(d, description_open, on_toggle.clone()))
                 })
                 .child(
                     h_flex()
                         .gap_2()
                         .when_some(shuffle_playlist_id.clone(), |row, id| {
-                            row.child(button("header.shuffle", "Shuffle").accent().on_click(
+                            row.child(button("header.shuffle", "Shuffle").icon(Icon::Shuffle).accent().on_click(
                                 move |_, _, cx| {
                                     crate::store(cx).play(
                                         PlaySource::Playlist {

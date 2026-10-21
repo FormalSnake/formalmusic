@@ -78,6 +78,7 @@ impl Content {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Row {
+    LargeTitle,
     Header,
     Chips,
     Correction,
@@ -170,6 +171,9 @@ impl PageView {
         // A search lists albums, artists and playlists as rows; they read better as cards.
         let search = matches!(content, Content::Search(_));
         let mut rows = Vec::new();
+        if large_title(content).is_some() {
+            rows.push(Row::LargeTitle);
+        }
         if content.header().is_some() {
             rows.push(Row::Header);
         }
@@ -183,7 +187,8 @@ impl PageView {
             }
         };
         if chips {
-            rows.insert(usize::from(content.header().is_some()), Row::Chips);
+            let above = content.header().is_some() || large_title(content).is_some();
+            rows.insert(usize::from(above), Row::Chips);
         }
         for (index, section) in content.sections().iter().enumerate() {
             if section.items.is_empty() {
@@ -197,8 +202,15 @@ impl PageView {
                 }
                 layout => layout,
             };
-            // Carousels and the quick picks carry their title as the shelf's own label row.
-            rows.push(Row::Title(index));
+            // Carousels and the quick picks carry their title as the shelf's own label row. A
+            // shelf with nothing to say there (an album's or playlist's own songs) gets none.
+            let titled = section.title.is_some()
+                || section.strapline.is_some()
+                || section.more.is_some()
+                || section.filter.is_some();
+            if titled {
+                rows.push(Row::Title(index));
+            }
             match layout {
                 SectionLayout::Carousel => rows.push(Row::Carousel(index)),
                 SectionLayout::TrackGrid => rows.push(Row::TrackGrid(index)),
@@ -313,6 +325,9 @@ impl PageView {
         let sections = content.sections();
         let id = |kind: &str, a: usize| format!("{kind}-{a}");
         let body = match row {
+            Row::LargeTitle => label(large_title(&content).unwrap_or_default())
+                .text_style(TextStyle::LargeTitle)
+                .into_any_element(),
             Row::Header => {
                 let Some(header) = content.header() else {
                     return div().into_any_element();
@@ -350,7 +365,6 @@ impl PageView {
                 let filter = shelf.filter;
                 let route = self.route.clone();
                 v_flex()
-                    .pt_4()
                     .when_some(shelf.strapline.clone(), |col, s| {
                         col.child(label(s).secondary())
                     })
@@ -366,7 +380,7 @@ impl PageView {
                                 row.child(
                                     button(
                                         id("more", section),
-                                        if filter.is_some() { "Show all" } else { "More" },
+                                        "Show all",
                                     )
                                     .borderless()
                                     .on_click(
@@ -438,11 +452,29 @@ impl PageView {
                 if content.has_more() || self.loading_more {
                     loading_row()
                 } else {
-                    div().h(px(32.)).into_any_element()
+                    div()
+                        .h(px(32. + bottom_accessory_clearance()))
+                        .into_any_element()
                 }
             }
         };
-        div().w_full().px_6().child(body).into_any_element()
+        // Content sits on a 32 pt gutter; list rows start 12 pt further out so their hover wash
+        // surrounds the art while art and titles still line up with the headings.
+        let (inset, top, bottom) = match row {
+            Row::LargeTitle => (PAGE_INSET, 20., 4.),
+            Row::Header => (PAGE_INSET, 24., 24.),
+            Row::Chips => (PAGE_INSET, 16., 0.),
+            Row::Title(_) => (PAGE_INSET, 28., 8.),
+            Row::Item(..) => (PAGE_INSET - ROW_INSET, 0., 0.),
+            _ => (PAGE_INSET, 0., 0.),
+        };
+        div()
+            .w_full()
+            .px(px(inset))
+            .pt(px(top))
+            .pb(px(bottom))
+            .child(body)
+            .into_any_element()
     }
 
     fn chips_of(&self, content: &Content) -> (Vec<Chip>, Rc<dyn Fn(&Chip, &mut Window, &mut App)>) {
@@ -559,6 +591,11 @@ impl PageView {
     }
 }
 
+/// The page's side margin, as the old FormalMusic and Music keep it.
+const PAGE_INSET: f32 = 32.;
+/// How far a list row's own padding reaches in from its hover wash.
+const ROW_INSET: f32 = 12.;
+
 fn status_of(has_page: bool, loading: bool, error: Option<String>) -> Status {
     match (has_page, error) {
         (true, _) => Status::Ready,
@@ -654,5 +691,21 @@ impl Render for PageView {
                     .into_any_element()
             }
         }
+    }
+}
+
+/// The large title Music puts over its top-level pages; macOS only, where the toolbar carries no
+/// page title.
+fn large_title(content: &Content) -> Option<&'static str> {
+    if !cfg!(target_os = "macos") || content.header().is_some() {
+        return None;
+    }
+    let Content::Page(page) = content else { return None };
+    match page.target {
+        BrowseTarget::Home | BrowseTarget::HomeChip { .. } => Some("Home"),
+        BrowseTarget::Explore => Some("Explore"),
+        BrowseTarget::Library(_) => Some("Library"),
+        BrowseTarget::History => Some("History"),
+        _ => None,
     }
 }
