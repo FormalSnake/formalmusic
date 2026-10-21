@@ -29,11 +29,15 @@ pub fn names(links: &[Link]) -> String {
     }
 }
 
+/// Music on macOS sets artist and album apart with an em dash; YouTube Music and GNOME apps with a
+/// bullet.
+const BYLINE_SEPARATOR: &str = if cfg!(target_os = "macos") { " \u{2014} " } else { " \u{2022} " };
+
 /// Artists, then the album, as a track row's second line.
 pub fn byline(track: &Track) -> String {
     let artists = names(&track.artists);
     match &track.album {
-        Some(album) if !artists.is_empty() => format!("{artists} \u{2022} {}", album.text),
+        Some(album) if !artists.is_empty() => format!("{artists}{BYLINE_SEPARATOR}{}", album.text),
         Some(album) => album.text.clone(),
         None => artists,
     }

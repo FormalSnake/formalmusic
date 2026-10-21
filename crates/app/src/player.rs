@@ -203,18 +203,19 @@ impl Render for Player {
             .on_command(cx.listener(Self::command))
             .on_open(|_, cx| crate::root::toggle_expanded(cx));
         let bar = if layout == TransportLayout::Pill {
-            // Music's mini player: shuffle and repeat around the transport, rating under More,
-            // lyrics and the queue at the trailing end.
+            // Music's mini player: shuffle and repeat around the transport, More (with rating)
+            // at the end of the song, lyrics and the queue at the trailing end.
             let lyrics_open = self.expanded == Some(Tab::Lyrics);
             let lyrics = icon_button("player.lyrics", Icon::MicVocal)
                 .tooltip(if lyrics_open { "Hide lyrics" } else { "Show lyrics" })
                 .checked(lyrics_open)
                 .dispatch(crate::root::ToggleLyrics);
-            bar.before_transport(shuffle_button.into_any_element())
-                .after_transport(repeat_button.into_any_element())
-                .trailing(more.into_any_element())
-                .trailing(lyrics.into_any_element())
-                .trailing(queue.into_any_element())
+            let control = |b: Button| b.text_size(px(PILL.control_glyph)).bezel(Bezel::Plain);
+            bar.before_transport(shuffle_button.size(px(PILL.toggle)).into_any_element())
+                .after_transport(repeat_button.size(px(PILL.toggle)).into_any_element())
+                .accessory(control(more).into_any_element())
+                .trailing(control(lyrics).into_any_element())
+                .trailing(control(queue).into_any_element())
         } else {
             bar.accessory(like.into_any_element())
                 .accessory(dislike.into_any_element())

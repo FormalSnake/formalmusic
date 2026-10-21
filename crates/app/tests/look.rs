@@ -69,6 +69,46 @@ impl Shots {
     }
 }
 
+impl Shots {
+    /// Waits up to five seconds for the bar's cover to paint: covers decode off the main thread,
+    /// and a capture taken before shows the flat placeholder.
+    #[cfg(target_os = "macos")]
+    fn wait_for_art(&self, app: &Session) {
+        let Some(dir) = &self.dir else { return };
+        let probe = dir.join("art-probe.png");
+        let art = app.get_by_test_id("player.bar.art");
+        let Ok(Some(b)) = art.bounding_box() else { return };
+        for _ in 0..25 {
+            let Some(window) = ndshell::window_list::of_pid(self.pid).into_iter().next() else { return };
+            if ndshell::window_list::capture(window.number, &probe).is_ok()
+                && let Ok(img) = image::open(&probe)
+            {
+                let img = img.to_rgb8();
+                let scale = f64::from(img.width()) / window.bounds.2;
+                let at = |x: f32, y: f32| {
+                    let px = f64::from(b.x + x) * scale;
+                    let py = f64::from(b.y + y) * scale;
+                    *img.get_pixel(px as u32, py as u32)
+                };
+                let corner = at(b.width * 0.15, b.height * 0.15);
+                let centre = at(b.width / 2., b.height / 2.);
+                if corner != centre {
+                    let _ = std::fs::remove_file(&probe);
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let _ = std::fs::remove_file(&probe);
+        eprintln!("screenshot: the bar's cover had not painted after five seconds");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn wait_for_art(&self, _app: &Session) {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
 /// Clicks the middle of `locator` with the pointer: nd's automation presses buttons only.
 fn tap(app: &Session, locator: &nd_test::Locator, what: &str) {
     expect(locator).to_be_visible().expect(what);
@@ -141,6 +181,7 @@ fn signed_in() {
             .click()
             .expect("repeat all");
         std::thread::sleep(Duration::from_millis(300));
+        shots.wait_for_art(app);
         shots.take(app, "3-player-bar");
 
         // The queue button is on both the docked bar and macOS's pill.
