@@ -168,7 +168,7 @@ impl NowPlayingView {
                     (0..len).map(|i| (i, digest[i] ^ u64::from(current == Some(i)))),
                     cx,
                 );
-                list("queue", &self.queue, cx.processor(Self::queue_row))
+                let queue = list("queue", &self.queue, cx.processor(Self::queue_row))
                     .on_select(cx.listener(|this, e: &SelectEvent<usize>, _, cx| {
                         this.queue.set_selected(Vec::new(), cx);
                         crate::store(cx).jump_to(e.key);
@@ -177,7 +177,29 @@ impl NowPlayingView {
                         status_page("Nothing in the queue")
                             .icon(Icon::Music)
                             .description("Play something to fill it."),
-                    )
+                    );
+                v_flex()
+                    .size_full()
+                    .gap_2()
+                    .when(len > 0, |col| {
+                        col.child(
+                            h_flex()
+                                .gap_1()
+                                .justify_end()
+                                .child(
+                                    button("queue.save", "Save as playlist")
+                                        .borderless()
+                                        .on_click(|_, window, cx| crate::sheets::save_queue(window, cx)),
+                                )
+                                .child(
+                                    button("queue.clear", "Clear")
+                                        .borderless()
+                                        .tooltip("Remove the songs after this one")
+                                        .on_click(|_, _, cx| crate::store(cx).clear_queue()),
+                                ),
+                        )
+                    })
+                    .child(div().flex_1().min_h_0().w_full().child(queue))
                     .into_any_element()
             }
             Tab::Lyrics => {

@@ -294,14 +294,33 @@ impl Render for SignIn {
 
 pub struct NewPlaylist {
     title: SharedString,
+    /// The songs it starts with: the queue's, when the queue is saved.
+    video_ids: Vec<String>,
     busy: bool,
     error: Option<String>,
 }
 
 pub fn new_playlist(window: &mut Window, cx: &mut App) {
+    open_new_playlist(Vec::new(), window, cx);
+}
+
+/// Saves the queue's songs as a new playlist, asking for its title.
+pub fn save_queue(window: &mut Window, cx: &mut App) {
+    let video_ids = crate::store(cx)
+        .state()
+        .queue
+        .tracks
+        .iter()
+        .map(|t| t.video_id.clone())
+        .collect();
+    open_new_playlist(video_ids, window, cx);
+}
+
+fn open_new_playlist(video_ids: Vec<String>, window: &mut Window, cx: &mut App) {
     window.open_sheet_sized(cx, size(px(420.), px(220.)), |_, cx| {
         cx.new(|_| NewPlaylist {
             title: SharedString::default(),
+            video_ids,
             busy: false,
             error: None,
         })
@@ -317,9 +336,10 @@ impl NewPlaylist {
         self.busy = true;
         let store = crate::store(cx);
         let page = cx.weak_entity();
+        let video_ids = self.video_ids.clone();
         bridge::task(
             cx,
-            async move { store.create_playlist(title, Vec::new()).await },
+            async move { store.create_playlist(title, video_ids).await },
             move |result, cx| {
                 page.update(cx, |this, cx| {
                     this.busy = false;
@@ -346,7 +366,11 @@ impl NewPlaylist {
 
 impl Render for NewPlaylist {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        sheet_layout("New playlist")
+        sheet_layout(if self.video_ids.is_empty() {
+            "New playlist"
+        } else {
+            "Save queue as playlist"
+        })
             .child(
                 text_field("new-playlist.title")
                     .label("Title")
