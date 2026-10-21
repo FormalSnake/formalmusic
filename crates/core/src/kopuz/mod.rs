@@ -742,7 +742,24 @@ impl Shared {
         Ok(match command {
             Command::Session => Reply::Session(self.session().await?),
             Command::SignIn { cookies } => {
-                let id = self.source_id().await?;
+                let source = self.source().await?;
+                let id = source.id.clone();
+                // Kopuz keeps a source made anonymous anonymous through pasted credentials (only
+                // its browser sign-ins clear the flag), so the session would read signed out.
+                if source.anonymous {
+                    api.upsert_source(k::SourceDraft {
+                        id: Some(id.clone()),
+                        name: source.name.clone(),
+                        service: YTMUSIC.into(),
+                        values: vec![k::FieldValue {
+                            key: "auth_method".into(),
+                            value: "browser".into(),
+                        }],
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(wire)?;
+                }
                 api.provision_credentials(k::CredentialProvision {
                     server_id: id,
                     secret: cookies,
