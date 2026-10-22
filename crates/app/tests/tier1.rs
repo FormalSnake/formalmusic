@@ -137,3 +137,28 @@ fn share_copies_and_go_to_opens() {
     );
     drop(music);
 }
+
+/// A toast's notice clears itself through `bridge::after`, whose timer has to start on the
+/// store's runtime: started on nd's task threads it panicked, and the panic ended the app.
+#[test]
+fn a_notice_clears_itself_after_its_delay() {
+    let mut cx = TestApp::new();
+    let music = demo(&mut cx);
+    let store = music.store.clone();
+    store.confirm("Link copied".into());
+    let seq = store.state().notice.as_ref().expect("the notice").seq;
+    let cleared = store.clone();
+    formalmusic::bridge::after(&cx, Duration::from_millis(20), move |_| {
+        cleared.clear_notice(seq)
+    });
+    let start = Instant::now();
+    while store.state().notice.is_some() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the notice never cleared"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+        nd::system::run_pending(&mut cx);
+    }
+    drop(music);
+}

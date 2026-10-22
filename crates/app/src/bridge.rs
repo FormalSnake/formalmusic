@@ -132,7 +132,11 @@ pub fn after(cx: &App, delay: std::time::Duration, f: impl FnOnce(&mut App) + 's
     let runtime = crate::music(cx).runtime.clone();
     nd::system::spawn(
         async move {
-            let _ = runtime.spawn(tokio::time::sleep(delay)).await;
+            // `sleep` registers with the runtime's timer when it is called, so it has to be
+            // called on the runtime: this future runs on nd's task threads.
+            let _ = runtime
+                .spawn(async move { tokio::time::sleep(delay).await })
+                .await;
         },
         move |(), cx| f(cx),
     );
