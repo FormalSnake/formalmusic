@@ -49,7 +49,9 @@ in
         PartOf = [ "graphical-session.target" ];
       };
       Service = {
-        ExecStart = lib.getExe' kopuz.packages.${pkgs.stdenv.hostPlatform.system}.default "kopuzd";
+        # MPRIS shows the daemon as FormalMusic, with its icon, as the app does when it starts
+        # kopuzd itself.
+        ExecStart = "${lib.getExe' kopuz.packages.${pkgs.stdenv.hostPlatform.system}.default "kopuzd"} --app-id dev.formalsnake.formalmusic --app-name FormalMusic";
         Restart = "on-failure";
         RestartSec = 5;
       };
