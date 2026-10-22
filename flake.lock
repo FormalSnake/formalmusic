@@ -39,11 +39,11 @@
     "nativedesktop": {
       "flake": false,
       "locked": {
-        "lastModified": 1792666345,
-        "narHash": "sha256-FRBz1J6nqEchoDxZnmclaCAUvujWrqDvxAFBkrSotfU=",
+        "lastModified": 1792669825,
+        "narHash": "sha256-zJd8ZFPnAChJWqsP8EVUY/SXTvbKB6CaXpCyVpweiFs=",
         "owner": "FormalStudio",
         "repo": "NativeDesktop",
-        "rev": "236ce8e997e18cb021c8fb8f99943b70cfa376c2",
+        "rev": "f99204a727dc54ed8f934c31f8e32baec960df2b",
         "type": "github"
       },
       "original": {
