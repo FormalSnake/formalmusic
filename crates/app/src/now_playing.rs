@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use formalmusic_api::{Item, PlaybackMode, SectionLayout};
 use formalmusic_core::StoreEvent;
+use nd::core::semantic::Role;
 use nd::prelude::*;
 
 use crate::art;
@@ -128,9 +129,10 @@ impl NowPlayingView {
             return div().into_any_element();
         };
         let current = state.queue.current == Some(index);
+        let playing = state.player.status != formalmusic_api::Status::Paused;
         drop(state);
         let env = RowEnv {
-            playing: current.then(|| (track.video_id.clone(), true)),
+            playing: current.then(|| (track.video_id.clone(), playing)),
             menu: MenuContext {
                 editable_playlist: None,
                 queue_index: Some(index),
@@ -169,9 +171,13 @@ impl NowPlayingView {
                         .collect::<Vec<_>>();
                     (state.queue.tracks.len(), digest)
                 };
-                let current = store.state().queue.current;
+                let (current, mark, from) = {
+                    let state = store.state();
+                    let paused = state.player.status == formalmusic_api::Status::Paused;
+                    (state.queue.current, 1 + u64::from(paused), state.playing_from.clone())
+                };
                 self.queue.set_items_versioned(
-                    (0..len).map(|i| (i, digest[i] ^ u64::from(current == Some(i)))),
+                    (0..len).map(|i| (i, digest[i] ^ if current == Some(i) { mark } else { 0 })),
                     cx,
                 );
                 let queue = list("queue", &self.queue, cx.processor(Self::queue_row))
@@ -184,6 +190,31 @@ impl NowPlayingView {
                             .icon(Icon::Music)
                             .description("Play something to fill it."),
                     );
+                // Where the queue came from, as Music's "Continue Playing From" and YouTube
+                // Music's "Playing from": it opens that page.
+                let source = from.filter(|_| len > 0).map(|from| {
+                    v_flex()
+                        .id("queue.from")
+                        .role(Role::Link, format!("Playing from {}", from.title))
+                        .min_w_0()
+                        .flex_1()
+                        .child(
+                            label("Playing from")
+                                .text_style(TextStyle::Caption1)
+                                .secondary(),
+                        )
+                        .child(
+                            label(from.title.clone())
+                                .text_style(TextStyle::Headline)
+                                .truncate(),
+                        )
+                        .on_tap(move |_, _, cx| {
+                            crate::root::navigate(
+                                formalmusic_core::Route::Browse(from.target.clone()),
+                                cx,
+                            )
+                        })
+                });
                 v_flex()
                     .size_full()
                     .gap_2()
@@ -191,7 +222,9 @@ impl NowPlayingView {
                         col.child(
                             h_flex()
                                 .gap_1()
+                                .items_center()
                                 .justify_end()
+                                .children(source)
                                 .child(
                                     button("queue.save", "Save as playlist")
                                         .borderless()
@@ -394,7 +427,7 @@ pub fn convert(source: &formalmusic_api::Lyrics) -> Lyrics {
     }
 }
 
-fn fnv(s: &str) -> u64 {
+pub(crate) fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf29ce484222325, |h, b| {
         (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
     })
@@ -460,10 +493,19 @@ impl Render for NowPlayingView {
                     })),
             )
             .child(div().flex_1().min_h_0().w_full().child(body));
-        player_layout("now-playing", &self.layout)
-            .artwork(move |_| picture)
-            .details(details)
-            .panel(panel)
+        // Dark over the darkened backdrop whatever the scheme, as Music's player: a light cover
+        // would otherwise leave light text on a light wash.
+        div()
+            .size_full()
+            .theme(|t| t.appearance(Appearance::Dark))
+            // The root's darkened artwork shows through: no dark surface for the flipped scheme.
+            .bg(hsla(0., 0., 0., 0.))
+            .child(
+                player_layout("now-playing", &self.layout)
+                    .artwork(move |_| picture)
+                    .details(details)
+                    .panel(panel),
+            )
             .into_any_element()
     }
 }

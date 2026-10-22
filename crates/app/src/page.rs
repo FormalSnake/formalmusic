@@ -108,6 +108,9 @@ pub struct PageView {
     description_open: bool,
     loading_more: bool,
     wide: bool,
+    /// The playing track's id and whether it plays, while this page is where the queue plays
+    /// from: its row shows the now-playing bars.
+    marked: Option<(String, bool)>,
 }
 
 impl PageView {
@@ -134,6 +137,7 @@ impl PageView {
             description_open: false,
             loading_more: false,
             wide: true,
+            marked: None,
         };
         this.fetch();
         this
@@ -261,7 +265,25 @@ impl PageView {
             self.content = None;
             return status;
         };
-        if self.content.as_ref().is_none_or(|old| !old.same(&content)) {
+        let marked = {
+            let state = self.store.state();
+            let playlist_id = match content.header() {
+                Some(Header::Detail { playlist_id, .. }) => playlist_id.as_deref(),
+                _ => None,
+            };
+            state
+                .player
+                .track
+                .as_ref()
+                .filter(|_| state.plays_from(playlist_id))
+                .map(|t| (t.video_id.clone(), state.player.status != formalmusic_api::Status::Paused))
+        };
+        let changed = self.content.as_ref().is_none_or(|old| !old.same(&content));
+        if changed || marked != self.marked {
+            self.marked = marked;
+            self.feed(&content, cx);
+        }
+        if changed {
             if self.content.is_none()
                 && matches!(
                     self.route,
@@ -270,26 +292,40 @@ impl PageView {
             {
                 self.store.prefetch(first_targets(&content));
             }
-            // Rows of a changed page re-render; the version is its pointer.
-            let version = match &content {
-                Content::Page(p) => Arc::as_ptr(p) as u64,
-                Content::Search(s) => Arc::as_ptr(s) as u64,
-            };
-            self.list
-                .set_items_versioned(Self::rows(&content).into_iter().map(|r| (r, version)), cx);
             self.content = Some(content);
         }
         Status::Ready
     }
 
+    /// Feeds the list `content`'s rows. Rows of a changed page re-render, the version being
+    /// its pointer, and so do the rows that hold the playing track when it changes.
+    fn feed(&mut self, content: &Content, cx: &mut Context<Self>) {
+        let page = match content {
+            Content::Page(p) => Arc::as_ptr(p) as u64,
+            Content::Search(s) => Arc::as_ptr(s) as u64,
+        };
+        let mark = self.marked.as_ref().map_or(0, |(id, playing)| crate::now_playing::fnv(id) ^ u64::from(*playing));
+        let holds = |row: &Row| {
+            let Some((id, _)) = &self.marked else { return false };
+            let items = match *row {
+                Row::Item(section, item) => content.sections().get(section).and_then(|s| s.items.get(item..=item)),
+                Row::TrackGrid(section) => content.sections().get(section).map(|s| s.items.as_slice()),
+                _ => None,
+            };
+            items.is_some_and(|items| items.iter().any(|i| matches!(i, Item::Track(t) if t.video_id == *id)))
+        };
+        let rows: Vec<_> = Self::rows(content)
+            .into_iter()
+            .map(|r| {
+                let version = if holds(&r) { page ^ mark } else { page };
+                (r, version)
+            })
+            .collect();
+        self.list.set_items_versioned(rows, cx);
+    }
+
     fn env(&self, row: usize) -> RowEnv {
-        let state = self.store.state();
-        let playing = state.player.track.as_ref().map(|t| {
-            (
-                t.video_id.clone(),
-                state.player.status == formalmusic_api::Status::Playing,
-            )
-        });
+        let playing = self.marked.clone();
         let header = self.content.as_ref().and_then(Content::header);
         let editable_playlist = match (&self.route, header) {
             (
@@ -541,6 +577,10 @@ impl PageView {
             return;
         };
         let action = match entry {
+            // The playing row pauses and resumes, as its Pause glyph says.
+            Item::Track(t) if self.marked.as_ref().is_some_and(|(id, _)| *id == t.video_id) => {
+                items::toggle()
+            }
             Item::Track(_) => self.play_from(&content, section, item),
             other => items::activate(&other),
         };

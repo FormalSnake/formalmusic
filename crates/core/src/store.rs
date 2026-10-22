@@ -154,9 +154,43 @@ pub struct AppState {
     pub notice: Option<Notice>,
     /// `None` until the daemon has said.
     pub scrobbling: Option<ScrobbleStatus>,
+    /// The playlist or album the queue was started from here, while its page is known.
+    pub playing_from: Option<PlayingFrom>,
+}
+
+/// Where the queue was started from: the "Playing from" line above Up next, and the one page
+/// whose rows mark the playing track when the same song is on several.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayingFrom {
+    /// The page to open for it.
+    pub target: BrowseTarget,
+    pub title: String,
+    /// The playlist the queue plays, without its `VL`.
+    pub playlist_id: String,
 }
 
 impl AppState {
+    /// Whether a list of `playlist_id` (a page header's, `None` for any other list) shows
+    /// the queue: the page it was started from, or any list when that is not known.
+    pub fn plays_from(&self, playlist_id: Option<&str>) -> bool {
+        match &self.playing_from {
+            Some(from) => playlist_id.is_some_and(|id| bare_playlist(id) == from.playlist_id),
+            None => true,
+        }
+    }
+
+    fn source_of(&self, playlist_id: &str) -> Option<PlayingFrom> {
+        let bare = bare_playlist(playlist_id);
+        self.pages.iter().find_map(|(target, entry)| match entry.page.as_ref()?.header.as_ref()? {
+            Header::Detail { playlist_id: Some(id), title, .. } if bare_playlist(id) == bare => Some(PlayingFrom {
+                target: target.clone(),
+                title: title.clone(),
+                playlist_id: bare.to_owned(),
+            }),
+            _ => None,
+        })
+    }
+
     pub fn page(&self, target: &BrowseTarget) -> Option<&Arc<Page>> {
         self.pages.get(target).and_then(|entry| entry.page.as_ref())
     }
@@ -1250,6 +1284,16 @@ impl MusicStore {
             PlaySource::Playlist { playlist_id, .. } => Some(bare_playlist(playlist_id).to_owned()),
             _ => None,
         };
+        self.inner.update(|state, events| {
+            let from = match &source {
+                PlaySource::Playlist { playlist_id, .. } => state.source_of(playlist_id),
+                _ => None,
+            };
+            if state.playing_from != from {
+                state.playing_from = from;
+                events.extend([StoreEvent::Queue, StoreEvent::NowPlaying]);
+            }
+        });
         self.send(Command::Play {
             source,
             start_index,
@@ -2284,6 +2328,26 @@ mod tests {
         // Fresh now, so opening again does not refetch.
         store.open(BrowseTarget::Home);
         assert!(!store.state().pages[&BrowseTarget::Home].loading);
+    }
+
+    #[tokio::test]
+    async fn the_queue_remembers_the_page_it_was_played_from() {
+        let store = store();
+        store.start().await;
+        let target = BrowseTarget::Playlist("PLdemo-run".into());
+        store.open(target.clone());
+        settle(&store, |state| state.page(&target).is_some()).await;
+        let (playlist_id, title) = match &store.state().page(&target).unwrap().header {
+            Some(Header::Detail { playlist_id: Some(id), title, .. }) => (id.clone(), title.clone()),
+            other => panic!("no playlist header: {other:?}"),
+        };
+        store.play(PlaySource::Playlist { playlist_id: playlist_id.clone(), tracks: Vec::new() }, 0, false, false);
+        let state = store.state();
+        let from = state.playing_from.as_ref().expect("playing from the page");
+        assert_eq!((&from.target, from.title.as_str()), (&target, title.as_str()));
+        assert!(state.plays_from(Some(&playlist_id)));
+        assert!(!state.plays_from(Some("PLdemo-focus")));
+        assert!(!state.plays_from(None), "a song on another list is not the one playing");
     }
 
     #[tokio::test]

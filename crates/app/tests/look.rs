@@ -354,6 +354,20 @@ fn signed_in() {
         shots.wait_for_art(app);
         shots.take(app, "3-player-bar");
 
+        // The playing row: bars over its artwork, Pause under the pointer, the bars still while
+        // paused.
+        point_at(app, shots, b.x + b.width / 2., b.y + b.height / 2.);
+        std::thread::sleep(Duration::from_millis(400));
+        shots.take(app, "3-row-hover");
+        point_at(app, shots, b.x + b.width / 2., b.y - 120.);
+        std::thread::sleep(Duration::from_millis(400));
+        shots.take(app, "3-row-playing");
+        let toggle = app.get_by_test_id("player.bar.play");
+        toggle.click().expect("pause");
+        std::thread::sleep(Duration::from_millis(400));
+        shots.take(app, "3-row-paused");
+        toggle.click().expect("play again");
+
         // Frames while the cover travels out of the bar (ND_ANIMATION_SLOWDOWN=8 spreads them
         // over the whole move), then the settled player.
         // Opened as people do: the bar's expand control, or the pill's song on macOS.
@@ -374,7 +388,10 @@ fn signed_in() {
         }
         expect(&app.get_by_test_id("queue"))
             .to_be_visible()
-            .expect("the expanded player opens");
+            .expect("the expanded player opens on Up next");
+        expect(&app.get_by_test_id("queue.from"))
+            .to_be_visible()
+            .expect("Up next says where it plays from");
         std::thread::sleep(Duration::from_millis(800));
         shots.take(app, "4-expanded");
         if let Some(secs) = std::env::var("ND_RECORD").ok().and_then(|s| s.parse().ok()) {

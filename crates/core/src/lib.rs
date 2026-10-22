@@ -11,5 +11,5 @@ pub mod store;
 pub mod transport;
 pub mod video;
 
-pub use store::{AppState, MusicStore, Route, SearchKey, StoreEvent, StoreOptions};
+pub use store::{AppState, MusicStore, PlayingFrom, Route, SearchKey, StoreEvent, StoreOptions};
 pub use transport::{ClientError, ConnectionStatus, Transport, TransportEvent, TransportKind};

@@ -24,13 +24,19 @@ pub type OnTap = Rc<dyn Fn(&mut Window, &mut App)>;
 /// What a row needs to know about where it is.
 #[derive(Clone)]
 pub struct RowEnv {
-    /// The playing track's id, and whether it is playing.
+    /// The playing track's id, and whether it is playing, when this list is the one the queue
+    /// plays from: its row shows the now-playing bars.
     pub playing: Option<(String, bool)>,
     pub menu: MenuContext,
     /// Hide artists that are the album's own, on an album page.
     pub hide_artist: Option<String>,
     /// Album and plays columns, when the page is wide enough.
     pub wide: bool,
+}
+
+/// The playing track's Play, which pauses and resumes it as its Pause glyph says.
+pub fn toggle() -> OnTap {
+    Rc::new(|_, cx| crate::store(cx).toggle())
 }
 
 fn tap(f: OnTap) -> impl Fn(&TapEvent, &mut Window, &mut App) + 'static {
@@ -223,10 +229,14 @@ pub fn track_row(
     cx: &App,
 ) -> AnyElement {
     let theme = cx.theme();
-    let current = env
+    // `Some(playing)` on the row of the playing track.
+    let now_playing = env
         .playing
         .as_ref()
-        .is_some_and(|(id, _)| *id == track.video_id);
+        .filter(|(id, _)| *id == track.video_id)
+        .map(|(_, playing)| *playing);
+    let current = now_playing.is_some();
+    let on_play = if current { on_play.map(|_| toggle()) } else { on_play };
     let artists: Vec<&Link> = track
         .artists
         .iter()
@@ -243,7 +253,9 @@ pub fn track_row(
         .truncate()
         .when(current, |t| t.text_color(theme.accent));
     let wash = theme.hover(theme.surface.base);
-    let play = artwork_actions(format!("{id}.actions"), ROW).compact();
+    let play = artwork_actions(format!("{id}.actions"), ROW)
+        .compact()
+        .now_playing(now_playing);
     let play = match &on_play {
         Some(f) => {
             let f = f.clone();
@@ -378,16 +390,20 @@ pub fn item_row(id: String, item: &Item, tappable: bool, cx: &App) -> AnyElement
 
 /// A compact track for the quick picks grid and the top result's songs.
 fn compact_track(id: String, track: &Track, on_play: OnTap, env: &RowEnv, cx: &App) -> AnyElement {
-    let current = env
+    let now_playing = env
         .playing
         .as_ref()
-        .is_some_and(|(id, _)| *id == track.video_id);
+        .filter(|(id, _)| *id == track.video_id)
+        .map(|(_, playing)| *playing);
+    let current = now_playing.is_some();
+    let on_play = if current { toggle() } else { on_play };
     let item = Item::Track(track.clone());
     let menu = env.menu.clone();
     let play = {
         let f = on_play.clone();
         artwork_actions(format!("{id}.actions"), ROW)
             .compact()
+            .now_playing(now_playing)
             .on_play(move |w, cx| f(w, cx))
     };
     let more = {

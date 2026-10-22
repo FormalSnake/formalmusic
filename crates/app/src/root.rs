@@ -61,6 +61,9 @@ pub const CONTEXT: &str = "FormalMusic";
 const KEYS: &str = "FormalMusic && !searching";
 /// Pages kept alive for back and forward, with their scroll positions.
 const KEEP_PAGES: usize = 8;
+/// Black over the expanded player's blurred cover. Sized for a white cover under Adwaita's
+/// selected segment, a white wash over the backdrop: at 0.6 its white label fell to 3.9:1.
+const BACKDROP_SCRIM: f32 = 0.7;
 
 pub fn bind_keys(cx: &mut App) {
     let secondary = |key: &str| format!("secondary-{key}");
@@ -617,8 +620,8 @@ impl Root {
             .as_ref()
             .map(|t| t.thumbnails.clone())
             .unwrap_or_default();
-        // The artwork's colours washed across the region, under a scrim of the surface so text
-        // keeps its contrast.
+        // The artwork's colours washed across the region, under a black scrim so the player's
+        // light text keeps its contrast over a white cover, in either scheme.
         let backdrop = div()
             .size_full()
             .child(
@@ -632,7 +635,7 @@ impl Root {
                     .top_0()
                     .left_0()
                     .size_full()
-                    .bg(theme.surface.base.opacity(0.55)),
+                    .bg(hsla(0., 0., 0., BACKDROP_SCRIM)),
             );
         presentation("now-playing", &self.expanded)
             .base(div().size_full().child(page))
