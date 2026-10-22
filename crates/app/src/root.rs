@@ -816,7 +816,7 @@ impl Render for Root {
                 .when(!self.expanded.is_shown(), |s| s.content_under_toolbar())
                 .content_bottom_bar(bottom_accessory_clearance())
                 .toolbar(
-                    titled(toolbar().title("FormalMusic"))
+                    titled(toolbar(), self.route())
                         .sidebar_toggle()
                         .item(
                             icon_button("toolbar.back", Icon::ChevronLeft)
@@ -915,7 +915,39 @@ impl Render for Root {
 }
 
 /// Music names the page in a large title over it, so macOS leaves the window's title out of the
-/// toolbar.
-fn titled(toolbar: Toolbar) -> Toolbar {
-    if cfg!(target_os = "macos") { toolbar.hide_title() } else { toolbar }
+/// toolbar. A libadwaita header bar names the page shown, or nothing (the page's own header
+/// names an album); a WinUI title bar names the app.
+fn titled(toolbar: Toolbar, route: &Route) -> Toolbar {
+    if cfg!(target_os = "macos") {
+        toolbar.hide_title()
+    } else {
+        toolbar.title(header_title(route))
+    }
+}
+
+fn header_title(route: &Route) -> &'static str {
+    if cfg!(target_os = "windows") {
+        "FormalMusic"
+    } else {
+        crate::page::title(route).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_title_follows_the_page() {
+        let album = Route::Browse(BrowseTarget::Album("MPREb_x".into()));
+        let home = Route::Browse(BrowseTarget::Home);
+        let library = Route::Browse(BrowseTarget::Library(LibraryTab::Songs));
+        if cfg!(target_os = "windows") {
+            assert_eq!(header_title(&album), "FormalMusic", "a WinUI title bar names the app");
+        } else {
+            assert_eq!(header_title(&home), "Home");
+            assert_eq!(header_title(&library), "Library");
+            assert_eq!(header_title(&album), "", "the album's header names it, the bar stays empty");
+        }
+    }
 }

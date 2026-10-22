@@ -701,11 +701,16 @@ fn large_title(content: &Content) -> Option<&'static str> {
         return None;
     }
     let Content::Page(page) = content else { return None };
-    match page.target {
-        BrowseTarget::Home | BrowseTarget::HomeChip { .. } => Some("Home"),
-        BrowseTarget::Explore => Some("Explore"),
-        BrowseTarget::Library(_) => Some("Library"),
-        BrowseTarget::History => Some("History"),
+    title(&Route::Browse(page.target.clone()))
+}
+
+/// A top-level page's name. The others name themselves in their header, or need no name.
+pub fn title(route: &Route) -> Option<&'static str> {
+    match route {
+        Route::Browse(BrowseTarget::Home | BrowseTarget::HomeChip { .. }) => Some("Home"),
+        Route::Browse(BrowseTarget::Explore) => Some("Explore"),
+        Route::Browse(BrowseTarget::Library(_)) => Some("Library"),
+        Route::Browse(BrowseTarget::History) => Some("History"),
         _ => None,
     }
 }
