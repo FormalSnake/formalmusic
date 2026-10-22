@@ -349,7 +349,7 @@ impl NowPlayingView {
                     .top_0()
                     .left_0()
                     .size(px(side))
-                    .hero_from(BAR_ART, self.presentation.is_closing())
+                    .hero_with(&self.presentation, BAR_ART)
                     .child(cover.size_full().rounded_lg()),
             )
             .into_any_element()

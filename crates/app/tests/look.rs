@@ -86,41 +86,59 @@ impl Shots {
     /// checking motion artwork frame by frame (`ND_RECORD=<secs>`; on Linux `ND_RECORDER` names
     /// the wf-recorder binary when it is not on the PATH).
     fn record(&self, name: &str, secs: u64) {
-        let Some(dir) = &self.dir else { return };
+        self.record_while(name, secs, || {});
+    }
+
+    /// Records `secs` seconds as [`Self::record`] does, running `act` once the recorder is up:
+    /// a transition from its first frame.
+    fn record_while(&self, name: &str, secs: u64, act: impl FnOnce()) {
+        let Some(dir) = &self.dir else {
+            act();
+            return;
+        };
         #[cfg(target_os = "macos")]
-        {
+        let child = {
             let Some(w) = ndshell::window_list::of_pid(self.pid).into_iter().next() else {
+                act();
                 return;
             };
             let (x, y, ww, hh) = w.bounds;
             let rect = format!("-R{},{},{},{}", x as i64, y as i64, ww as i64, hh as i64);
-            let _ = std::process::Command::new("screencapture")
+            std::process::Command::new("screencapture")
                 .args(["-v", "-x", &format!("-V{secs}"), &rect])
                 .arg(dir.join(format!("{name}.mov")))
-                .status();
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let Ok(mut child) = self
-                .hyprland
-                .command(std::env::var("ND_RECORDER").unwrap_or_else(|_| "wf-recorder".into()))
-                .arg("-y")
-                .arg("-f")
-                .arg(dir.join(format!("{name}.mp4")))
                 .spawn()
-            else {
-                eprintln!("record {name}: no wf-recorder");
-                return;
-            };
-            std::thread::sleep(Duration::from_secs(secs));
+        };
+        #[cfg(target_os = "linux")]
+        let child = self
+            .hyprland
+            .command(std::env::var("ND_RECORDER").unwrap_or_else(|_| "wf-recorder".into()))
+            .arg("-y")
+            .arg("-f")
+            .arg(dir.join(format!("{name}.mp4")))
+            .spawn();
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let child: std::io::Result<std::process::Child> = {
+            let _ = (dir, secs);
+            Err(std::io::ErrorKind::Unsupported.into())
+        };
+        let Ok(mut child) = child else {
+            eprintln!("record {name}: no recorder");
+            act();
+            return;
+        };
+        // Both recorders take a moment to deliver their first frame.
+        std::thread::sleep(Duration::from_millis(1500));
+        let started = std::time::Instant::now();
+        act();
+        if cfg!(target_os = "linux") {
+            std::thread::sleep(Duration::from_secs(secs).saturating_sub(started.elapsed()));
             // SIGINT lets it finish the file.
             let _ = std::process::Command::new("kill")
                 .args(["-INT", &child.id().to_string()])
                 .status();
-            let _ = child.wait();
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let _ = (dir, name, secs);
+        let _ = child.wait();
     }
 
     /// Resizes the window to `width` points wide, 820 tall.
@@ -214,9 +232,13 @@ impl Shots {
 
 /// Puts the pointer at window point `(x, y)`. Hover comes from tracking areas on macOS, which a
 /// posted move never reaches, so there the real pointer moves.
+/// `ND_LOOK_NO_POINTER=1` leaves the real pointer alone on macOS, skipping the hover shots.
 fn point_at(app: &Session, shots: &Shots, x: f32, y: f32) {
     #[cfg(target_os = "macos")]
     {
+        if std::env::var_os("ND_LOOK_NO_POINTER").is_some() {
+            return;
+        }
         let _ = app;
         ndshell::input::activate(shots.pid);
         let window = ndshell::window_list::of_pid(shots.pid)
@@ -269,7 +291,13 @@ fn launch(signed_out: bool, run: impl FnOnce(&Session, &Shots)) {
     let shots = Shots { dir, pid: handle.pid() };
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let shots = Shots { dir };
-    run(&handle.with_timeout(Duration::from_secs(15)), &shots);
+    let session = handle.with_timeout(Duration::from_secs(15));
+    if let Err(panic) =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&session, &shots)))
+    {
+        eprintln!("app stderr:\n{}", handle.stderr_tail(40).join("\n"));
+        std::panic::resume_unwind(panic);
+    }
 }
 
 fn signed_in() {
@@ -326,18 +354,27 @@ fn signed_in() {
         shots.wait_for_art(app);
         shots.take(app, "3-player-bar");
 
-        // The queue button is on both the docked bar and macOS's pill.
         // Frames while the cover travels out of the bar (ND_ANIMATION_SLOWDOWN=8 spreads them
         // over the whole move), then the settled player.
-        app.get_by_test_id("player.queue")
-            .click()
-            .expect("open the player");
-        for i in 0..6 {
-            shots.take(app, &format!("4-opening-{i}"));
+        // Opened as people do: the bar's expand control, or the pill's song on macOS.
+        // ND_RECORD_TRANSITIONS=<secs> records each move instead.
+        let transitions = std::env::var("ND_RECORD_TRANSITIONS").ok().and_then(|s| s.parse().ok());
+        let toggle = if cfg!(target_os = "macos") { "player.bar.now" } else { "player.expand" };
+        let open = || {
+            tap(app, &app.get_by_test_id(toggle), "open the player");
+        };
+        match transitions {
+            Some(secs) => shots.record_while("4-opening", secs, open),
+            None => {
+                open();
+                for i in 0..6 {
+                    shots.take(app, &format!("4-opening-{i}"));
+                }
+            }
         }
         expect(&app.get_by_test_id("queue"))
             .to_be_visible()
-            .expect("the expanded player opens on Up next");
+            .expect("the expanded player opens");
         std::thread::sleep(Duration::from_millis(800));
         shots.take(app, "4-expanded");
         if let Some(secs) = std::env::var("ND_RECORD").ok().and_then(|s| s.parse().ok()) {
@@ -361,12 +398,39 @@ fn signed_in() {
         expect(&app.get_by_test_id("queue"))
             .to_be_visible()
             .expect("the queue button shows Up next");
-        app.get_by_test_id("player.queue")
-            .click()
-            .expect("close the player");
-        for i in 0..6 {
-            shots.take(app, &format!("4-closing-{i}"));
+        let close = || {
+            tap(app, &app.get_by_test_id(toggle), "close the player");
+        };
+        match transitions {
+            Some(secs) => shots.record_while("4-closing", secs, close),
+            None => {
+                close();
+                for i in 0..6 {
+                    shots.take(app, &format!("4-closing-{i}"));
+                }
+            }
         }
+        expect(&app.get_by_test_id("page"))
+            .to_be_visible()
+            .expect("the page shows again");
+        // Opened again from the bar's cover, which the cover travels out of and back into.
+        let cover = || {
+            tap(app, &app.get_by_test_id("player.bar.art"), "open the player from the cover");
+        };
+        match transitions {
+            Some(secs) => shots.record_while("4-opening-cover", secs, cover),
+            None => {
+                cover();
+                for i in 0..6 {
+                    shots.take(app, &format!("4-opening-cover-{i}"));
+                }
+            }
+        }
+        expect(&app.get_by_test_id("queue"))
+            .to_be_visible()
+            .expect("the cover opens the player");
+        std::thread::sleep(Duration::from_millis(800));
+        tap(app, &app.get_by_test_id(toggle), "close the player again");
         expect(&app.get_by_test_id("page"))
             .to_be_visible()
             .expect("the page shows again");
