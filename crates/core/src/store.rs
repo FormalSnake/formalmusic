@@ -161,6 +161,25 @@ impl AppState {
         self.pages.get(target).and_then(|entry| entry.page.as_ref())
     }
 
+    /// The rows a loaded page lists for `playlist_id`, so its Play button
+    /// plays what is on screen.
+    pub fn listed_tracks(&self, playlist_id: &str) -> Vec<Track> {
+        let listed = self.pages.values().filter_map(|entry| entry.page.as_ref()).find(|page| {
+            matches!(&page.header, Some(Header::Detail { playlist_id: Some(id), .. }) if id == playlist_id)
+        });
+        let Some(section) = listed.and_then(|page| page.sections.first()) else {
+            return Vec::new();
+        };
+        section
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Track(track) => Some(track.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Where playback is now: the last position plus the time since, while
     /// playing, never past the end of the track.
     pub fn position_now(&self) -> u64 {
@@ -1217,6 +1236,16 @@ impl MusicStore {
     }
 
     pub fn play(&self, source: PlaySource, start_index: usize, shuffle: bool, radio: bool) {
+        let source = match source {
+            PlaySource::Playlist {
+                playlist_id,
+                tracks,
+            } if tracks.is_empty() && !radio => PlaySource::Playlist {
+                tracks: self.state().listed_tracks(&playlist_id),
+                playlist_id,
+            },
+            other => other,
+        };
         self.inner.private.lock().playing_from = match &source {
             PlaySource::Playlist { playlist_id, .. } => Some(bare_playlist(playlist_id).to_owned()),
             _ => None,
@@ -2470,6 +2499,37 @@ mod tests {
         store.rated("t", 1, Some("refused".into()));
         assert_eq!(store.state().rating(&track), Rating::Indifferent);
         assert!(!store.state().ratings.contains_key("t"));
+    }
+
+    #[tokio::test]
+    async fn play_without_rows_takes_the_ones_its_page_lists() {
+        let store = store();
+        let target = BrowseTarget::Playlist("RDTMAK5uy_replay".into());
+        let mut page = list_page(target.clone(), "925 b c");
+        page.header = Some(Header::Detail {
+            title: "Replay Mix".into(),
+            subtitle: Vec::new(),
+            second_subtitle: None,
+            description: None,
+            thumbnails: Default::default(),
+            playlist_id: Some("RDTMAK5uy_replay".into()),
+            editable: false,
+            saved: None,
+            privacy: None,
+        });
+        store.inner.update(|state, _| {
+            state.pages.insert(
+                target,
+                PageEntry {
+                    page: Some(Arc::new(page)),
+                    ..PageEntry::default()
+                },
+            );
+        });
+        let listed = store.state().listed_tracks("RDTMAK5uy_replay");
+        let ids: Vec<_> = listed.iter().map(|t| t.video_id.as_str()).collect();
+        assert_eq!(ids, ["925", "b", "c"]);
+        assert!(store.state().listed_tracks("PLother").is_empty());
     }
 
     fn list_page(target: BrowseTarget, ids: &str) -> Page {

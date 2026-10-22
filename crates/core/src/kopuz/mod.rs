@@ -18,7 +18,7 @@ use formalmusic_api::{
     ContinuationPage, EnqueuePosition, Event, Item, LibraryScope, ListenBrainzSource, Page,
     PlaySource, PlaylistEdit, ProfileBrowser, RateTarget, Rating, Reply, Repeat, ScrobbleAccount,
     ScrobbleService, ScrobbleStatus, SearchResults, Section, SectionLayout, SessionInfo,
-    Suggestion,
+    Suggestion, Track,
 };
 use futures_util::StreamExt;
 use kopuz_api::{
@@ -1006,23 +1006,24 @@ impl Shared {
                 source,
                 start_index,
                 shuffle,
-                ..
+                radio,
             } => {
-                let context = match source {
-                    PlaySource::Tracks { tracks } => k::QueueContext::Tracks {
-                        keys: tracks.into_iter().map(|track| track.video_id).collect(),
-                    },
-                    PlaySource::Playlist { playlist_id, .. } => playlist_context(playlist_id),
-                    PlaySource::Radio { video_id } => k::QueueContext::TrackRadio { key: video_id },
-                };
-                ack(api
+                let (context, start_on) = play_context(source, start_index, shuffle, radio);
+                let reply = ack(api
                     .set_queue(k::SetQueueRequest {
                         mode: k::QueueMode::Replace,
                         context,
                         start_index: Some(start_index as u32),
                         shuffle: Some(shuffle),
                     })
-                    .await)?
+                    .await)?;
+                if let Some(key) = start_on {
+                    let snapshot = api.queue_snapshot().await.map_err(wire)?;
+                    if let Some(index) = start_correction(&snapshot, &key) {
+                        ack(api.queue_edit(k::QueueEdit::Jump { index }).await)?;
+                    }
+                }
+                reply
             }
             Command::Enqueue { tracks, position } => ack(api
                 .set_queue(k::SetQueueRequest {
@@ -1096,6 +1097,58 @@ impl Shared {
             }
         })
     }
+}
+
+/// The queue context for a play, and the track it has to start on when the
+/// daemon builds the list itself and may not line up with the rows shown.
+///
+/// A mix (`RD...`) is answered afresh by every fetch, so one the page already
+/// lists plays those rows: asking the daemon for it again starts some other
+/// mix. Without rows (a card on Home) it starts the mix as the daemon has it.
+fn play_context(
+    source: PlaySource,
+    start_index: usize,
+    shuffle: bool,
+    radio: bool,
+) -> (k::QueueContext, Option<String>) {
+    let keys = |tracks: Vec<Track>| tracks.into_iter().map(|track| track.video_id).collect();
+    match source {
+        PlaySource::Tracks { tracks } => (k::QueueContext::Tracks { keys: keys(tracks) }, None),
+        PlaySource::Radio { video_id } => (k::QueueContext::TrackRadio { key: video_id }, None),
+        PlaySource::Playlist { playlist_id, .. } if radio => {
+            (k::QueueContext::PlaylistRadio { id: playlist_id }, None)
+        }
+        PlaySource::Playlist {
+            playlist_id,
+            tracks,
+        } if playlist_id.starts_with("RD") && !tracks.is_empty() => {
+            (k::QueueContext::Tracks { keys: keys(tracks) }, None)
+        }
+        PlaySource::Playlist {
+            playlist_id,
+            tracks,
+        } => {
+            let start_on = (!shuffle)
+                .then(|| tracks.get(start_index).map(|track| track.video_id.clone()))
+                .flatten();
+            (playlist_context(playlist_id), start_on)
+        }
+    }
+}
+
+/// The play-order index to jump to when the queue the daemon built does not
+/// start on `key`: its list can drop a repeated song or keep another order
+/// than the page, which moves every row after it.
+fn start_correction(snapshot: &k::QueueSnapshot, key: &str) -> Option<u32> {
+    let position = snapshot.position? as usize;
+    if snapshot.items.get(position).is_some_and(|item| item.key == key) {
+        return None;
+    }
+    snapshot
+        .items
+        .iter()
+        .position(|item| item.key == key)
+        .map(|index| index as u32)
 }
 
 /// The queue context that plays a playlist id the pages handed out.
@@ -1374,5 +1427,83 @@ fn maybe_spawn(shared: &Shared) {
             });
         }
         Err(error) => tracing::warn!("could not start kopuzd: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tracks(ids: &str) -> Vec<Track> {
+        ids.split(' ')
+            .map(|id| Track {
+                video_id: id.into(),
+                ..crate::demo::catalog().albums[0].tracks[0].clone()
+            })
+            .collect()
+    }
+
+    fn keys(context: &k::QueueContext) -> Vec<&str> {
+        match context {
+            k::QueueContext::Tracks { keys } => keys.iter().map(String::as_str).collect(),
+            other => panic!("not a track list: {other:?}"),
+        }
+    }
+
+    fn mix(rows: &str) -> PlaySource {
+        PlaySource::Playlist {
+            playlist_id: "RDTMAK5uy_replay".into(),
+            tracks: if rows.is_empty() { Vec::new() } else { tracks(rows) },
+        }
+    }
+
+    #[test]
+    fn a_listed_mix_plays_its_rows_from_the_one_clicked() {
+        let (context, start_on) = play_context(mix("925 b c"), 0, false, false);
+        assert_eq!(keys(&context), ["925", "b", "c"]);
+        assert_eq!(start_on, None);
+        let (context, _) = play_context(mix("925 b c"), 2, false, false);
+        assert_eq!(keys(&context), ["925", "b", "c"]);
+    }
+
+    #[test]
+    fn a_mix_starts_as_a_radio_only_without_rows_or_when_asked() {
+        let (context, _) = play_context(mix(""), 0, false, false);
+        assert!(matches!(context, k::QueueContext::PlaylistRadio { .. }));
+        let (context, start_on) = play_context(mix("a b"), 0, false, true);
+        assert!(matches!(context, k::QueueContext::PlaylistRadio { .. }));
+        assert_eq!(start_on, None);
+    }
+
+    #[test]
+    fn a_playlist_starts_on_the_row_clicked() {
+        let source = |rows| PlaySource::Playlist {
+            playlist_id: "PLmine".into(),
+            tracks: tracks(rows),
+        };
+        let (context, start_on) = play_context(source("a b a c"), 3, false, false);
+        assert_eq!(context, k::QueueContext::Playlist { id: "PLmine".into() });
+        assert_eq!(start_on.as_deref(), Some("c"));
+        let (_, start_on) = play_context(source("a b"), 0, true, false);
+        assert_eq!(start_on, None);
+    }
+
+    #[test]
+    fn the_queue_moves_to_the_row_clicked_when_the_daemon_listed_it_elsewhere() {
+        let snapshot = |ids: &str, position| k::QueueSnapshot {
+            items: ids
+                .split(' ')
+                .map(|key| k::TrackInfo {
+                    key: key.into(),
+                    ..Default::default()
+                })
+                .collect(),
+            position: Some(position),
+            ..Default::default()
+        };
+        // The page shows "a b a c" and the daemon drops the repeat, so index 3 is past "c".
+        assert_eq!(start_correction(&snapshot("a b c", 2), "c"), None);
+        assert_eq!(start_correction(&snapshot("a b c", 1), "c"), Some(2));
+        assert_eq!(start_correction(&snapshot("a b", 1), "c"), None);
     }
 }
