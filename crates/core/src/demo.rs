@@ -181,6 +181,12 @@ const MOODS: [(&str, u32); 12] = [
     ("Soul", 0xff6d597a),
 ];
 
+/// Album `n`'s cover. The first is nearly white, as many real covers are, so the player's
+/// backdrop is shown at its lightest.
+fn album_art(n: usize) -> Thumbnails {
+    art(&if n == 0 { format!("pale-album-{n}") } else { format!("album-{n}") })
+}
+
 fn art(seed: &str) -> Thumbnails {
     vec![Thumbnail {
         url: format!("{DEMO_SCHEME}{seed}"),
@@ -246,7 +252,7 @@ fn build_catalog() -> Catalog {
                         target: Some(BrowseTarget::Album(browse_id.clone())),
                     }),
                     duration_ms: Some(150_000 + rng.below(160_000)),
-                    thumbnails: art(&format!("album-{n}")),
+                    thumbnails: album_art(n),
                     explicit: rng.below(7) == 0,
                     kind: TrackKind::Song,
                     like: Some(Rating::Indifferent),
@@ -368,7 +374,7 @@ fn album_item(catalog: &Catalog, n: usize) -> Item {
         album_type: Some(album.album_type.into()),
         artists: vec![artist_link(catalog, album.artist)],
         year: Some(album.year.to_string()),
-        thumbnails: art(&format!("album-{n}")),
+        thumbnails: album_art(n),
         explicit: album.tracks.iter().any(|track| track.explicit),
     }
 }
@@ -706,7 +712,7 @@ fn album_page(browse_id: &str) -> Option<Page> {
                 "{} recorded {} over one winter in a borrowed house by the sea.",
                 catalog.artists[album.artist].name, album.title
             )),
-            thumbnails: art(&format!("album-{n}")),
+            thumbnails: album_art(n),
             playlist_id: Some(album.playlist_id.clone()),
             editable: false,
             saved: Some(n % 3 == 0),

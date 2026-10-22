@@ -143,16 +143,22 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 /// A 512 px PNG for a demo seed: a diagonal blend between two hues taken
-/// from the seed, with a soft disc, so every demo card is distinct.
-/// The demo set's artwork for `seed`: a PNG painted locally.
+/// from the seed, with a soft disc, so every demo card is distinct. A
+/// `pale-` seed paints it nearly white.
 pub fn demo_art(seed: &str) -> Vec<u8> {
     const SIZE: u32 = 512;
     let hash = fnv1a(seed.as_bytes());
     let hue_a = (hash % 360) as f32;
     let hue_b = (hue_a + 40. + ((hash >> 12) % 80) as f32) % 360.;
-    let a = hsl(hue_a, 0.55, 0.42);
-    let b = hsl(hue_b, 0.6, 0.22);
-    let disc = hsl((hue_a + 180.) % 360., 0.5, 0.6);
+    let (a, b, disc) = if seed.starts_with("pale-") {
+        ([0.95, 0.95, 0.94], [1., 1., 1.], [0.86, 0.86, 0.85])
+    } else {
+        (
+            hsl(hue_a, 0.55, 0.42),
+            hsl(hue_b, 0.6, 0.22),
+            hsl((hue_a + 180.) % 360., 0.5, 0.6),
+        )
+    };
     let (cx, cy) = (
         0.3 + ((hash >> 20) % 40) as f32 / 100.,
         0.3 + ((hash >> 28) % 40) as f32 / 100.,
