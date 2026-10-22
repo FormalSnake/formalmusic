@@ -37,6 +37,35 @@ fn tap(f: OnTap) -> impl Fn(&TapEvent, &mut Window, &mut App) + 'static {
     move |_, window, cx| f(window, cx)
 }
 
+/// Hover groups: Play and More fade in over the artwork of the card or row under the pointer.
+const CARD: &str = "card";
+const ROW: &str = "row";
+
+/// Artwork in a box clipped to its corners, for the hover actions to sit over.
+fn framed(art: Image, round: bool, corners: impl FnOnce(Div) -> Div) -> Div {
+    let frame = div().relative().flex_none().overflow_hidden();
+    if round {
+        frame.rounded_full()
+    } else {
+        corners(frame)
+    }
+    .child(art)
+}
+
+/// Play on the hover actions when the item plays (a track, an album, a playlist).
+fn actions(actions: ArtworkActions, item: &Item) -> ArtworkActions {
+    if !menus::playable(item) {
+        return actions;
+    }
+    let item = item.clone();
+    actions.on_play(move |_, cx| menus::play_item(&item, &crate::store(cx), false))
+}
+
+fn item_menu(item: &Item) -> impl Fn(ContextMenu, &mut Window, &mut App) -> ContextMenu + 'static {
+    let item = item.clone();
+    move |menu, _, cx| menus::item_menu(menu, &item, &MenuContext::default(), cx)
+}
+
 /// What a tap on an item does: open its page, or for a track start its radio.
 pub fn activate(item: &Item) -> OnTap {
     let item = item.clone();
@@ -121,14 +150,12 @@ pub fn card(id: String, item: &Item, cx: &App) -> AnyElement {
         CARD_ART,
         title.clone(),
     );
-    let art = if round {
-        art.rounded_full()
-    } else {
-        art.rounded_lg()
-    };
+    let art = framed(art, round, |d| d.rounded_lg())
+        .child(actions(artwork_actions(format!("{id}.actions"), CARD), item).menu(item_menu(item)));
     let menu_item = item.clone();
     v_flex()
         .id(id)
+        .group(CARD)
         .role(Role::Button, title.clone())
         .w(px(CARD_ART))
         .flex_none()
@@ -216,8 +243,23 @@ pub fn track_row(
         .truncate()
         .when(current, |t| t.text_color(theme.accent));
     let wash = theme.hover(theme.surface.base);
+    let play = artwork_actions(format!("{id}.actions"), ROW).compact();
+    let play = match &on_play {
+        Some(f) => {
+            let f = f.clone();
+            play.on_play(move |w, cx| f(w, cx))
+        }
+        None => play,
+    };
+    let more = {
+        let (item, menu) = (item.clone(), menu.clone());
+        hover_menu_button(format!("{id}.more"), ROW, move |m, _, cx| {
+            menus::item_menu(m, &item, &menu, cx)
+        })
+    };
     h_flex()
         .id(id)
+        .group(ROW)
         .role(Role::ListItem, track.title.clone())
         .w_full()
         .h(px(56.))
@@ -226,13 +268,17 @@ pub fn track_row(
         .rounded(px(8.))
         .hover(move |s| s.bg(wash))
         .child(
-            art::cover(
-                format!("art.{}", track.video_id),
-                &track.thumbnails,
-                ROW_ART,
-                track.title.clone(),
+            framed(
+                art::cover(
+                    format!("art.{}", track.video_id),
+                    &track.thumbnails,
+                    ROW_ART,
+                    track.title.clone(),
+                ),
+                false,
+                |d| d.rounded_sm(),
             )
-            .rounded_sm(),
+            .child(play),
         )
         .child(
             v_flex()
@@ -270,6 +316,7 @@ pub fn track_row(
                     .w(px(110.)),
             )
         })
+        .child(more)
         .child(
             label(track.duration_ms.map(format::duration).unwrap_or_default())
                 .secondary()
@@ -292,15 +339,17 @@ pub fn item_row(id: String, item: &Item, tappable: bool, cx: &App) -> AnyElement
         ROW_ART,
         title.clone(),
     );
-    let art = if round {
-        art.rounded_full()
-    } else {
-        art.rounded_sm()
-    };
+    let actions = actions(
+        artwork_actions(format!("{id}.actions"), ROW).compact(),
+        item,
+    );
+    let art = framed(art, round, |d| d.rounded_sm()).child(actions);
     let menu_item = item.clone();
     let wash = cx.theme().hover(cx.theme().surface.base);
+    let more = hover_menu_button(format!("{id}.more"), ROW, item_menu(item));
     h_flex()
         .id(id)
+        .group(ROW)
         .role(Role::ListItem, title.clone())
         .w_full()
         .h(px(56.))
@@ -321,6 +370,7 @@ pub fn item_row(id: String, item: &Item, tappable: bool, cx: &App) -> AnyElement
                         .truncate(),
                 ),
         )
+        .child(more)
         .when(tappable, |row| row.on_tap(tap(activate(item))))
         .context_menu(move |m, _, cx| menus::item_menu(m, &menu_item, &MenuContext::default(), cx))
         .into_any_element()
@@ -334,21 +384,42 @@ fn compact_track(id: String, track: &Track, on_play: OnTap, env: &RowEnv, cx: &A
         .is_some_and(|(id, _)| *id == track.video_id);
     let item = Item::Track(track.clone());
     let menu = env.menu.clone();
+    let play = {
+        let f = on_play.clone();
+        artwork_actions(format!("{id}.actions"), ROW)
+            .compact()
+            .on_play(move |w, cx| f(w, cx))
+    };
+    let more = {
+        let (item, menu) = (item.clone(), menu.clone());
+        hover_menu_button(format!("{id}.more"), ROW, move |m, _, cx| {
+            menus::item_menu(m, &item, &menu, cx)
+        })
+    };
+    let wash = cx.theme().hover(cx.theme().surface.base);
     h_flex()
         .id(id)
+        .group(ROW)
         .role(Role::ListItem, track.title.clone())
         .w(px(QUICK_PICK_WIDTH))
         .flex_none()
         .h(px(52.))
+        .px_2()
         .gap_3()
+        .rounded(px(8.))
+        .hover(move |s| s.bg(wash))
         .child(
-            art::cover(
-                format!("qp.{}", track.video_id),
-                &track.thumbnails,
-                ROW_ART,
-                track.title.clone(),
+            framed(
+                art::cover(
+                    format!("qp.{}", track.video_id),
+                    &track.thumbnails,
+                    ROW_ART,
+                    track.title.clone(),
+                ),
+                false,
+                |d| d.rounded_sm(),
             )
-            .rounded_sm(),
+            .child(play),
         )
         .child(
             v_flex()
@@ -366,6 +437,7 @@ fn compact_track(id: String, track: &Track, on_play: OnTap, env: &RowEnv, cx: &A
                         .truncate(),
                 ),
         )
+        .child(more)
         .on_tap(tap(on_play))
         .context_menu(move |m, _, cx| menus::item_menu(m, &item, &menu, cx))
         .into_any_element()

@@ -1,7 +1,7 @@
 //! Tier 3: the window's look on the demo catalog, for review against the old FormalMusic and
-//! the platform. Walks Home, a playlist with a song row under the pointer, the player bar's
-//! toggles, the expanded player and its queue, and the signed-out sidebar, keeping a
-//! screenshot of each in `ND_SHOT=<dir>`. Opens a real window, so it runs only with
+//! the platform. Walks Home with a card under the pointer, a playlist with a song row under the
+//! pointer, the player bar's toggles, the expanded player opening and closing, its queue and
+//! lyrics, and the signed-out sidebar, keeping a screenshot of each in `ND_SHOT=<dir>`. Opens a real window, so it runs only with
 //! `ND_REAL=1` (or under nextest).
 
 use std::time::Duration;
@@ -31,6 +31,8 @@ struct Shots {
     dir: Option<std::path::PathBuf>,
     #[cfg(target_os = "linux")]
     hyprland: ndshell::hyprland::Hyprland,
+    #[cfg(target_os = "linux")]
+    app_pid: u32,
     #[cfg(target_os = "macos")]
     pid: u32,
 }
@@ -70,6 +72,107 @@ impl Shots {
 }
 
 impl Shots {
+    /// Window widths to lay the expanded player out at: from the minimum up. Hyprland holds a
+    /// window to any size; macOS to the app's minimum.
+    fn widths(&self) -> Vec<u32> {
+        if cfg!(target_os = "macos") {
+            vec![880, 1000, 1400]
+        } else {
+            vec![480, 700, 1000, 1400]
+        }
+    }
+
+    /// Records the window for `secs` seconds as `<name>.mp4`/`.mov`, at the display's rate: for
+    /// checking motion artwork frame by frame (`ND_RECORD=<secs>`; on Linux `ND_RECORDER` names
+    /// the wf-recorder binary when it is not on the PATH).
+    fn record(&self, name: &str, secs: u64) {
+        let Some(dir) = &self.dir else { return };
+        #[cfg(target_os = "macos")]
+        {
+            let Some(w) = ndshell::window_list::of_pid(self.pid).into_iter().next() else {
+                return;
+            };
+            let (x, y, ww, hh) = w.bounds;
+            let rect = format!("-R{},{},{},{}", x as i64, y as i64, ww as i64, hh as i64);
+            let _ = std::process::Command::new("screencapture")
+                .args(["-v", "-x", &format!("-V{secs}"), &rect])
+                .arg(dir.join(format!("{name}.mov")))
+                .status();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let Ok(mut child) = self
+                .hyprland
+                .command(std::env::var("ND_RECORDER").unwrap_or_else(|_| "wf-recorder".into()))
+                .arg("-y")
+                .arg("-f")
+                .arg(dir.join(format!("{name}.mp4")))
+                .spawn()
+            else {
+                eprintln!("record {name}: no wf-recorder");
+                return;
+            };
+            std::thread::sleep(Duration::from_secs(secs));
+            // SIGINT lets it finish the file.
+            let _ = std::process::Command::new("kill")
+                .args(["-INT", &child.id().to_string()])
+                .status();
+            let _ = child.wait();
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = (dir, name, secs);
+    }
+
+    /// Resizes the window to `width` points wide, 820 tall.
+    fn resize(&self, width: u32) {
+        #[cfg(target_os = "macos")]
+        {
+            let Some(w) = ndshell::window_list::of_pid(self.pid).into_iter().next() else {
+                return;
+            };
+            let (x, y, ww, hh) = w.bounds;
+            // Room to grow: the window first moves to the screen's left edge.
+            if x > 0. {
+                ndshell::input::drag((x + ww / 2., y + 12.), -x, 0., 20);
+            }
+            let Some(w) = ndshell::window_list::of_pid(self.pid).into_iter().next() else {
+                return;
+            };
+            let (x, y, ww, hh2) = w.bounds;
+            let _ = hh;
+            ndshell::input::drag(
+                (x + ww - 3., y + hh2 - 3.),
+                f64::from(width) - ww,
+                820. - hh2,
+                20,
+            );
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // The headless session floats every window; its config is Lua, so dispatchers are too.
+            let window = format!("pid:{}", self.app_pid);
+            for call in [
+                format!("hl.dsp.window.resize({{ x = {width}, y = 820, relative = false, window = \"{window}\" }})"),
+                format!("hl.dsp.window.move({{ x = 0, y = 0, relative = false, window = \"{window}\" }})"),
+            ] {
+                match self.hyprland.request(&format!("dispatch {call}")) {
+                    Ok(reply) if reply.trim() == "ok" => {}
+                    reply => eprintln!("resize: {call}: {reply:?}"),
+                }
+            }
+            let pid = i64::from(self.app_pid);
+            let size = self
+                .hyprland
+                .clients()
+                .ok()
+                .and_then(|c| c.into_iter().find(|c| c.pid == pid))
+                .map(|c| c.size);
+            eprintln!("resize: {width} gave {size:?}");
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = width;
+    }
+
     /// Waits up to five seconds for the bar's cover to paint: covers decode off the main thread,
     /// and a capture taken before shows the flat placeholder.
     #[cfg(target_os = "macos")]
@@ -109,6 +212,27 @@ impl Shots {
     }
 }
 
+/// Puts the pointer at window point `(x, y)`. Hover comes from tracking areas on macOS, which a
+/// posted move never reaches, so there the real pointer moves.
+fn point_at(app: &Session, shots: &Shots, x: f32, y: f32) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        ndshell::input::activate(shots.pid);
+        let window = ndshell::window_list::of_pid(shots.pid)
+            .into_iter()
+            .next()
+            .expect("window on screen");
+        let (wx, wy, _, _) = window.bounds;
+        ndshell::input::move_to((wx + f64::from(x), wy + f64::from(y)));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = shots;
+        app.mouse().move_to(x, y).expect("move the pointer");
+    }
+}
+
 /// Clicks the middle of `locator` with the pointer: nd's automation presses buttons only.
 fn tap(app: &Session, locator: &nd_test::Locator, what: &str) {
     expect(locator).to_be_visible().expect(what);
@@ -127,18 +251,20 @@ fn launch(signed_out: bool, run: impl FnOnce(&Session, &Shots)) {
         );
     let dir = std::env::var_os("ND_SHOT").map(std::path::PathBuf::from);
     #[cfg(target_os = "linux")]
-    let shots = Shots {
-        dir,
-        hyprland: ndshell::hyprland::Hyprland::start(Default::default())
-            .expect("headless Hyprland"),
-    };
+    let hyprland =
+        ndshell::hyprland::Hyprland::start(Default::default()).expect("headless Hyprland");
     #[cfg(target_os = "linux")]
-    let options = shots
-        .hyprland
+    let options = hyprland
         .client_env()
         .into_iter()
         .fold(options.machine_lock(false), |o, (k, v)| o.env(k, v));
     let handle = launch_app(options).expect("launch");
+    #[cfg(target_os = "linux")]
+    let shots = Shots {
+        dir,
+        hyprland,
+        app_pid: handle.pid(),
+    };
     #[cfg(target_os = "macos")]
     let shots = Shots { dir, pid: handle.pid() };
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -152,6 +278,24 @@ fn signed_in() {
             .to_be_visible()
             .expect("Home shows");
         shots.take(app, "1-home");
+        // A card's own frame comes back relative to its shelf's scroll view, so aim from the
+        // shelf: the first card's 168 pt artwork sits above its two 30 pt text lines.
+        let b = (0..8)
+            .find_map(|s| {
+                app.get_by_test_id(&format!("shelf-{s}"))
+                    .bounding_box()
+                    .ok()
+                    .flatten()
+            })
+            .expect("Home shows a shelf of cards");
+        for s in 0..8 {
+            for id in [format!("shelf-{s}"), format!("shelf-{s}.0")] {
+                eprintln!("BOXDBG {id} {:?}", app.get_by_test_id(&id).bounding_box());
+            }
+        }
+        point_at(app, shots, b.x + 84., b.y + b.height - 60. - 84.);
+        std::thread::sleep(Duration::from_millis(400));
+        shots.take(app, "1-home-card-hover");
 
         app.keyboard().press("g l").expect("open Library");
         tap(
@@ -162,9 +306,7 @@ fn signed_in() {
         let row = app.get_by_test_id("row-0-1");
         expect(&row).to_be_visible().expect("the playlist lists songs");
         let b = row.bounding_box().expect("bounds").expect("laid out");
-        app.mouse()
-            .move_to(b.x + b.width / 2., b.y + b.height / 2.)
-            .expect("point at a song");
+        point_at(app, shots, b.x + b.width / 2., b.y + b.height / 2.);
         std::thread::sleep(Duration::from_millis(300));
         shots.take(app, "2-playlist-hover");
 
@@ -185,16 +327,34 @@ fn signed_in() {
         shots.take(app, "3-player-bar");
 
         // The queue button is on both the docked bar and macOS's pill.
+        // Frames while the cover travels out of the bar (ND_ANIMATION_SLOWDOWN=8 spreads them
+        // over the whole move), then the settled player.
         app.get_by_test_id("player.queue")
             .click()
             .expect("open the player");
+        for i in 0..6 {
+            shots.take(app, &format!("4-opening-{i}"));
+        }
         expect(&app.get_by_test_id("queue"))
             .to_be_visible()
             .expect("the expanded player opens on Up next");
+        std::thread::sleep(Duration::from_millis(800));
         shots.take(app, "4-expanded");
+        if let Some(secs) = std::env::var("ND_RECORD").ok().and_then(|s| s.parse().ok()) {
+            shots.record("4-expanded", secs);
+        }
         app.get_by_test_id("np.tabs")
             .fill("Lyrics")
             .expect("pick the Lyrics tab");
+        std::thread::sleep(Duration::from_millis(1500));
+        shots.take(app, "4-lyrics");
+        // The player's layout from the narrowest window up: the artwork keeps to its column.
+        for width in shots.widths() {
+            shots.resize(width);
+            std::thread::sleep(Duration::from_millis(800));
+            shots.take(app, &format!("6-lyrics-{width}"));
+        }
+        shots.resize(1280);
         app.get_by_test_id("player.queue")
             .click()
             .expect("back to the queue");
@@ -204,6 +364,9 @@ fn signed_in() {
         app.get_by_test_id("player.queue")
             .click()
             .expect("close the player");
+        for i in 0..6 {
+            shots.take(app, &format!("4-closing-{i}"));
+        }
         expect(&app.get_by_test_id("page"))
             .to_be_visible()
             .expect("the page shows again");

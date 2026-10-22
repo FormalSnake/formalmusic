@@ -119,6 +119,19 @@ pub fn target_of(item: &Item) -> Option<BrowseTarget> {
 }
 
 /// The play button on a card: albums and playlists play whole, a song starts its radio.
+/// Whether [`play_item`] plays `item`.
+pub fn playable(item: &Item) -> bool {
+    matches!(
+        item,
+        Item::Track(_)
+            | Item::Album {
+                playlist_id: Some(_),
+                ..
+            }
+            | Item::Playlist { .. }
+    )
+}
+
 pub fn play_item(item: &Item, store: &MusicStore, shuffle: bool) {
     match item {
         Item::Track(track) => store.play(

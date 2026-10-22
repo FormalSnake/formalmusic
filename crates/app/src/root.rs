@@ -191,7 +191,7 @@ pub fn navigate_replace(route: Route, cx: &mut App) {
 pub fn toggle_expanded(cx: &mut App) {
     if let Some(root) = root(cx) {
         root.update(cx, |this, cx| {
-            let tab = if this.expanded {
+            let tab = if this.expanded.is_open() {
                 None
             } else {
                 Some(this.now_playing.read(cx).tab)
@@ -230,7 +230,8 @@ pub struct Root {
     pages: Vec<Entity<PageView>>,
     player: Entity<Player>,
     now_playing: Entity<NowPlayingView>,
-    expanded: bool,
+    /// The expanded player, presented over the page.
+    expanded: Presentation,
     palette_open: bool,
     query: SharedString,
     toasts: Vec<Toast>,
@@ -267,13 +268,14 @@ impl Root {
         cx.set_global(pictures.clone());
         let home = Route::Browse(BrowseTarget::Home);
         let page = cx.new(|cx| PageView::new(home.clone(), cx));
+        let expanded = Presentation::new();
         Self {
             history: vec![home],
             cursor: 0,
             pages: vec![page],
             player: cx.new(Player::new),
-            now_playing: cx.new(|cx| NowPlayingView::new(Tab::UpNext, cx)),
-            expanded: false,
+            now_playing: cx.new(|cx| NowPlayingView::new(Tab::UpNext, expanded.clone(), cx)),
+            expanded,
             palette_open: false,
             query: SharedString::default(),
             toasts: Vec::new(),
@@ -291,7 +293,7 @@ impl Root {
     }
 
     pub fn expanded(&self) -> bool {
-        self.expanded
+        self.expanded.is_open()
     }
 
     fn page(&mut self, route: &Route, cx: &mut Context<Self>) -> Entity<PageView> {
@@ -310,7 +312,7 @@ impl Root {
     }
 
     pub fn navigate(&mut self, route: Route, replace: bool, cx: &mut Context<Self>) {
-        self.expanded = false;
+        self.close_expanded(cx);
         if *self.route() == route {
             let page = self.page(&route, cx);
             page.update(cx, |page, cx| page.scroll_to_top(cx));
@@ -334,7 +336,7 @@ impl Root {
             return;
         }
         self.cursor = next as usize;
-        self.expanded = false;
+        self.close_expanded(cx);
         let route = self.route().clone();
         self.page(&route, cx);
         cx.notify();
@@ -344,12 +346,20 @@ impl Root {
     pub fn set_expanded(&mut self, tab: Option<Tab>, cx: &mut Context<Self>) {
         match tab {
             Some(tab) => {
-                self.expanded = true;
+                self.expanded.set_open(true);
                 self.now_playing.update(cx, |np, cx| np.set_tab(tab, cx));
             }
-            None => self.expanded = false,
+            None => self.close_expanded(cx),
         }
         cx.notify();
+    }
+
+    fn close_expanded(&mut self, cx: &mut Context<Self>) {
+        if self.expanded.is_open() {
+            self.expanded.set_open(false);
+            // Its cover heads back to the bar.
+            self.now_playing.update(cx, |_, cx| cx.notify());
+        }
     }
 
     fn sidebar_nodes(&self, cx: &App) -> Vec<SourceNode> {
@@ -577,14 +587,14 @@ impl Root {
     fn want_pictures(&mut self, cx: &mut Context<Self>) {
         let video = crate::store(cx).state().player.mode == formalmusic_api::PlaybackMode::Video;
         let in_bar = crate::settings::current(cx).window.animated_cover_in_bar;
-        let cover = if self.expanded {
+        let cover = if self.expanded.is_shown() {
             Some(480.)
         } else if in_bar {
             Some(44.)
         } else {
             None
         };
-        let music = (self.expanded && video).then_some(480.);
+        let music = (self.expanded.is_shown() && video).then_some(480.);
         self.pictures
             .covers
             .update(cx, |c, cx| c.set_desired(cover, cx));
@@ -597,15 +607,39 @@ impl Root {
         if let Some(sign_in) = self.signing_in(cx) {
             return div().size_full().child(sign_in).into_any_element();
         }
-        if self.expanded {
-            return div()
-                .size_full()
-                .child(self.now_playing.clone())
-                .into_any_element();
-        }
         let route = self.route().clone();
         let page = self.page(&route, cx);
-        div().size_full().child(page).into_any_element()
+        let theme = cx.theme();
+        let thumbnails = crate::store(cx)
+            .state()
+            .player
+            .track
+            .as_ref()
+            .map(|t| t.thumbnails.clone())
+            .unwrap_or_default();
+        // The artwork's colours washed across the region, under a scrim of the surface so text
+        // keeps its contrast.
+        let backdrop = div()
+            .size_full()
+            .child(
+                crate::art::cover("np.backdrop", &thumbnails, 480., "")
+                    .size_full()
+                    .blur(px(64.)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(theme.surface.base.opacity(0.55)),
+            );
+        presentation("now-playing", &self.expanded)
+            .base(div().size_full().child(page))
+            .backdrop(backdrop)
+            .content(self.now_playing.clone())
+            .bg(theme.surface.base)
+            .into_any_element()
     }
 
     fn handlers(&self, root: Div, cx: &mut Context<Self>) -> Div {
@@ -617,12 +651,12 @@ impl Root {
             }))
             .on_action(|_: &OpenSettings, _, cx| crate::settings::open(cx))
             .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
-                if this.expanded {
+                if this.expanded.is_open() {
                     this.set_expanded(None, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleExpanded, _, cx| {
-                let tab = if this.expanded {
+                let tab = if this.expanded.is_open() {
                     None
                 } else {
                     Some(this.now_playing.read(cx).tab)
@@ -630,7 +664,8 @@ impl Root {
                 this.set_expanded(tab, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleQueue, _, cx| {
-                let open_on_queue = this.expanded && this.now_playing.read(cx).tab == Tab::UpNext;
+                let open_on_queue =
+                    this.expanded.is_open() && this.now_playing.read(cx).tab == Tab::UpNext;
                 this.set_expanded(
                     if open_on_queue {
                         None
@@ -641,7 +676,8 @@ impl Root {
                 );
             }))
             .on_action(cx.listener(|this, _: &ToggleLyrics, _, cx| {
-                let open_on_lyrics = this.expanded && this.now_playing.read(cx).tab == Tab::Lyrics;
+                let open_on_lyrics =
+                    this.expanded.is_open() && this.now_playing.read(cx).tab == Tab::Lyrics;
                 this.set_expanded(
                     if open_on_lyrics {
                         None
@@ -748,7 +784,10 @@ impl Render for Root {
             .connection_error
             .clone()
             .unwrap_or_else(|| "The music daemon is not answering.".into());
-        let expanded = self.expanded.then(|| self.now_playing.read(cx).tab);
+        let expanded = self
+            .expanded
+            .is_open()
+            .then(|| self.now_playing.read(cx).tab);
         self.player.update(cx, |player, cx| {
             if player.expanded != expanded {
                 player.expanded = expanded;

@@ -35,6 +35,10 @@ impl Tab {
 
 pub struct NowPlayingView {
     pub tab: Tab,
+    /// The root's presentation of this view: while it closes, the cover goes back to the bar.
+    presentation: Presentation,
+    /// The room the player was given: the artwork's size and whether it sits beside the panel.
+    layout: PlayerLayoutState,
     queue: ListState<usize>,
     /// The video whose topics this view watches.
     watching: Option<String>,
@@ -45,7 +49,7 @@ pub struct NowPlayingView {
 }
 
 impl NowPlayingView {
-    pub fn new(tab: Tab, cx: &mut Context<Self>) -> Self {
+    pub fn new(tab: Tab, presentation: Presentation, cx: &mut Context<Self>) -> Self {
         let id = cx.entity_id();
         for topic in [
             StoreEvent::NowPlaying,
@@ -61,6 +65,8 @@ impl NowPlayingView {
             .estimated_row_height(px(56.));
         Self {
             tab,
+            presentation,
+            layout: PlayerLayoutState::new(),
             queue,
             watching: None,
             related: None,
@@ -314,6 +320,7 @@ impl NowPlayingView {
         &self,
         track: &formalmusic_api::Track,
         mode: PlaybackMode,
+        side: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = cx.entity_id();
@@ -324,24 +331,33 @@ impl NowPlayingView {
                 .id("np.video")
                 .alt(track.title.clone())
                 .contain()
-                .w(px(640.))
-                .h(px(360.))
+                .size(px(side))
                 .rounded_lg()
                 .into_any_element();
         }
-        match crate::video::cover_frame(id, cx) {
-            Some(frame) => image(frame)
-                .id("np.cover")
-                .alt(track.title.clone())
-                .size(px(480.))
-                .rounded_lg()
-                .into_any_element(),
-            None => art::cover("np.cover", &track.thumbnails, 480., track.title.clone())
-                .rounded_lg()
-                .into_any_element(),
-        }
+        let cover = match crate::video::cover_frame(id, cx) {
+            Some(frame) => image(frame).id("np.cover").alt(track.title.clone()),
+            None => art::cover("np.cover", &track.thumbnails, side, track.title.clone()),
+        };
+        // The cover grows out of the bar's artwork as the player opens, and goes back into it.
+        div()
+            .size(px(side))
+            .flex_none()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size(px(side))
+                    .hero_from(BAR_ART, self.presentation.is_closing())
+                    .child(cover.size_full().rounded_lg()),
+            )
+            .into_any_element()
     }
 }
+
+/// The player bar's artwork, which the cover travels from.
+const BAR_ART: &str = "player.bar.art";
 
 /// The daemon's lyrics as nd's: an empty line only marks where the line before it ends.
 pub fn convert(source: &formalmusic_api::Lyrics) -> Lyrics {
@@ -399,50 +415,55 @@ impl Render for NowPlayingView {
         };
         let tab_index = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
         let body = self.body(cx);
-        h_flex()
-            .id("now-playing")
+        let wide = self.layout.is_wide();
+        let picture = self.picture(&track, mode, self.layout.art_side(), cx);
+        let details = v_flex()
+            .gap_2()
+            .when(wide, |d| d.items_center())
+            .reveal_with(&self.presentation)
+            .child(
+                label(track.title.clone())
+                    .text_style(if wide {
+                        TextStyle::Title2
+                    } else {
+                        TextStyle::Headline
+                    })
+                    .truncate(),
+            )
+            .child(
+                label(formalmusic_core::format::byline(&track))
+                    .secondary()
+                    .truncate(),
+            )
+            .when(track.counterpart.is_some(), |col| {
+                col.child(
+                    segmented("np.mode", ["Song", "Video"])
+                        .selected(usize::from(mode == PlaybackMode::Video))
+                        .on_change(|e: &SelectChanged, _, cx| {
+                            crate::store(cx).set_mode(if e.index == 1 {
+                                PlaybackMode::Video
+                            } else {
+                                PlaybackMode::Song
+                            })
+                        }),
+                )
+            });
+        let panel = v_flex()
             .size_full()
-            .p_6()
-            .gap_8()
+            .gap_3()
+            .reveal_with(&self.presentation)
             .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .items_center()
-                    .justify_center()
-                    .gap_4()
-                    .child(self.picture(&track, mode, cx))
-                    .child(label(track.title.clone()).text_style(TextStyle::Title2))
-                    .child(label(formalmusic_core::format::byline(&track)).secondary())
-                    .when(track.counterpart.is_some(), |col| {
-                        col.child(
-                            segmented("np.mode", ["Song", "Video"])
-                                .selected(usize::from(mode == PlaybackMode::Video))
-                                .on_change(|e: &SelectChanged, _, cx| {
-                                    crate::store(cx).set_mode(if e.index == 1 {
-                                        PlaybackMode::Video
-                                    } else {
-                                        PlaybackMode::Song
-                                    })
-                                }),
-                        )
-                    }),
+                segmented("np.tabs", Tab::ALL.map(Tab::title))
+                    .selected(tab_index)
+                    .on_change(cx.listener(|this, e: &SelectChanged, _, cx| {
+                        this.set_tab(Tab::ALL[e.index.min(2)], cx)
+                    })),
             )
-            .child(
-                v_flex()
-                    .w(px(440.))
-                    .h_full()
-                    .flex_none()
-                    .gap_3()
-                    .child(
-                        segmented("np.tabs", Tab::ALL.map(Tab::title))
-                            .selected(tab_index)
-                            .on_change(cx.listener(|this, e: &SelectChanged, _, cx| {
-                                this.set_tab(Tab::ALL[e.index.min(2)], cx)
-                            })),
-                    )
-                    .child(div().flex_1().min_h_0().w_full().child(body)),
-            )
+            .child(div().flex_1().min_h_0().w_full().child(body));
+        player_layout("now-playing", &self.layout)
+            .artwork(move |_| picture)
+            .details(details)
+            .panel(panel)
             .into_any_element()
     }
 }
