@@ -378,13 +378,17 @@ impl Root {
             );
             for item in state.library_playlists() {
                 if let Item::Playlist {
-                    playlist_id, title, ..
+                    playlist_id,
+                    title,
+                    thumbnails,
+                    ..
                 } = item
                 {
                     nodes.push(
                         source_node(format!("playlist:{playlist_id}"), title.clone())
                             .parent("playlists")
-                            .icon(Icon::ListMusic),
+                            .icon(Icon::ListMusic)
+                            .artwork(crate::art::source(thumbnails, SOURCE_ART)),
                     );
                 }
             }
