@@ -232,9 +232,13 @@ impl Shots {
 
 /// Puts the pointer at window point `(x, y)`. Hover comes from tracking areas on macOS, which a
 /// posted move never reaches, so there the real pointer moves.
+/// `ND_LOOK_NO_POINTER=1` leaves the real pointer alone on macOS, skipping the hover shots.
 fn point_at(app: &Session, shots: &Shots, x: f32, y: f32) {
     #[cfg(target_os = "macos")]
     {
+        if std::env::var_os("ND_LOOK_NO_POINTER").is_some() {
+            return;
+        }
         let _ = app;
         ndshell::input::activate(shots.pid);
         let window = ndshell::window_list::of_pid(shots.pid)
@@ -287,7 +291,13 @@ fn launch(signed_out: bool, run: impl FnOnce(&Session, &Shots)) {
     let shots = Shots { dir, pid: handle.pid() };
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let shots = Shots { dir };
-    run(&handle.with_timeout(Duration::from_secs(15)), &shots);
+    let session = handle.with_timeout(Duration::from_secs(15));
+    if let Err(panic) =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&session, &shots)))
+    {
+        eprintln!("app stderr:\n{}", handle.stderr_tail(40).join("\n"));
+        std::panic::resume_unwind(panic);
+    }
 }
 
 fn signed_in() {
@@ -400,6 +410,27 @@ fn signed_in() {
                 }
             }
         }
+        expect(&app.get_by_test_id("page"))
+            .to_be_visible()
+            .expect("the page shows again");
+        // Opened again from the bar's cover, which the cover travels out of and back into.
+        let cover = || {
+            tap(app, &app.get_by_test_id("player.bar.art"), "open the player from the cover");
+        };
+        match transitions {
+            Some(secs) => shots.record_while("4-opening-cover", secs, cover),
+            None => {
+                cover();
+                for i in 0..6 {
+                    shots.take(app, &format!("4-opening-cover-{i}"));
+                }
+            }
+        }
+        expect(&app.get_by_test_id("queue"))
+            .to_be_visible()
+            .expect("the cover opens the player");
+        std::thread::sleep(Duration::from_millis(800));
+        tap(app, &app.get_by_test_id(toggle), "close the player again");
         expect(&app.get_by_test_id("page"))
             .to_be_visible()
             .expect("the page shows again");
