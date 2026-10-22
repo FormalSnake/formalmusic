@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use nd_test::{LaunchOptions, Session, expect, launch_app};
+use nd_test::{LaunchOptions, Role, Session, expect, launch_app};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -207,6 +207,24 @@ fn signed_in() {
         expect(&app.get_by_test_id("page"))
             .to_be_visible()
             .expect("the page shows again");
+
+        // Home scrolled: content under the toolbar, a shelf scrolled out to the content's edge,
+        // then the end of the page resting clear of the player bar.
+        app.keyboard().press("g h").expect("open Home");
+        expect(&app.get_by_test_id("chips"))
+            .to_be_visible()
+            .expect("Home shows");
+        let page = app.get_by_test_id("page");
+        page.scroll(0., 240.).expect("scroll Home down");
+        app.get_by_role(Role::ScrollArea)
+            .name("Listen again")
+            .scroll(400., 0.)
+            .expect("scroll a shelf sideways");
+        std::thread::sleep(Duration::from_millis(500));
+        shots.take(app, "6-scrolled");
+        page.scroll(0., 100_000.).expect("scroll to the end");
+        std::thread::sleep(Duration::from_millis(500));
+        shots.take(app, "7-end");
     });
 }
 

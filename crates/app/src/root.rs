@@ -772,6 +772,10 @@ impl Render for Root {
         });
         self.handlers(root, cx).child(
             scaffold()
+                // Pages are lists that scroll under the toolbar; the expanded player's tabs sit
+                // still at its top, so it keeps clear of the bar.
+                .when(!self.expanded, |s| s.content_under_toolbar())
+                .content_bottom_bar(bottom_accessory_clearance())
                 .toolbar(
                     titled(toolbar().title("FormalMusic"))
                         .sidebar_toggle()

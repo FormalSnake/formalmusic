@@ -453,7 +453,7 @@ impl PageView {
                     loading_row()
                 } else {
                     div()
-                        .h(px(32. + bottom_accessory_clearance()))
+                        .h(px(32.))
                         .into_any_element()
                 }
             }
@@ -592,7 +592,7 @@ impl PageView {
 }
 
 /// The page's side margin, as the old FormalMusic and Music keep it.
-const PAGE_INSET: f32 = 32.;
+pub(crate) const PAGE_INSET: f32 = 32.;
 /// How far a list row's own padding reaches in from its hover wash.
 const ROW_INSET: f32 = 12.;
 

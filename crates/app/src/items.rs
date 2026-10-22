@@ -427,6 +427,7 @@ pub fn track_grid(
         })
         .collect();
     shelf(id, handle)
+        .bleed(crate::page::PAGE_INSET)
         .label(section.title.clone().unwrap_or_default())
         .gap_4()
         .h(px(4. * 52. + 3. * 4. + 8.))
@@ -438,6 +439,7 @@ pub fn track_grid(
 /// A carousel of cards scrolled sideways.
 pub fn carousel(id: String, section: &Section, handle: &ShelfHandle, cx: &App) -> AnyElement {
     shelf(id.clone(), handle)
+        .bleed(crate::page::PAGE_INSET)
         .label(section.title.clone().unwrap_or_default())
         .gap_4()
         .h(px(CARD_ART + 60.))
@@ -546,6 +548,7 @@ pub type OnChip = Rc<dyn Fn(&Chip, &mut Window, &mut App)>;
 /// Chips under the header: Home's moods, Library's tabs, a search's filters.
 pub fn chips(id: &str, chips: &[Chip], handle: &ShelfHandle, on_select: OnChip) -> AnyElement {
     shelf(id.to_owned(), handle)
+        .bleed(crate::page::PAGE_INSET)
         .label("Filters")
         .gap_2()
         .h(px(36.))
