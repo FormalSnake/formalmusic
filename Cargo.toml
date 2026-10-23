@@ -38,6 +38,8 @@ strip = true
 # images unoptimised makes debug builds unusable for judging speed.
 [profile.dev.package."*"]
 opt-level = 2
+# File and line in backtraces, no variable info: most of a debug build's size and link time.
+debug = "line-tables-only"
 
 # nd's GPUI patch queue (its vendored gpui-pre crates); an app outside nd's workspace has to
 # name it, or cargo resolves the unpatched crates.io releases.
