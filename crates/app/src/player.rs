@@ -230,7 +230,7 @@ impl Render for Player {
                 .trailing(repeat_button.into_any_element())
                 .trailing(shuffle_button.into_any_element())
                 .trailing(queue.into_any_element())
-                .trailing(expand.into_any_element())
+                .open_button(expand.into_any_element())
         }
         .w_full();
         let docked = layout != TransportLayout::Pill;
