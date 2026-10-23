@@ -298,4 +298,23 @@ mod nix {
             "{path} is out of date; run with FORMALMUSIC_REGEN=1"
         );
     }
+
+    /// `fspec.star`, the fspec module, comes from the same schema; `FORMALMUSIC_REGEN=1` rewrites it.
+    #[test]
+    fn fspec_module_is_current() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fspec.star");
+        // symphonia-adapter-libopus links the system libopus.
+        let app = nd_settings::fspec::App::new("formalmusic", "https://github.com/FormalStudio/formalmusic")
+            .display_name("FormalMusic")
+            .build_deps(&["libopus-devel"]);
+        let module = nd_settings::fspec::star_module(&app, &super::schema_json());
+        if std::env::var("FORMALMUSIC_REGEN").as_deref() == Ok("1") {
+            std::fs::write(path, &module).unwrap();
+        }
+        let current = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            current == module,
+            "{path} is out of date; run with FORMALMUSIC_REGEN=1"
+        );
+    }
 }
