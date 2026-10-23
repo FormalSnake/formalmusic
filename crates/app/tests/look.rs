@@ -26,7 +26,8 @@ fn main() {
 
 /// Where the screenshots go, and what takes them. The GPUI backend renders to no image on Linux,
 /// so grim reads the headless output; AppKit's layer render leaves out the sidebar's vibrancy and
-/// the toolbar, so on macOS the window server composites the app's window.
+/// the toolbar, so on macOS the window server composites the app's window; on Windows ffmpeg grabs
+/// the desktop.
 struct Shots {
     dir: Option<std::path::PathBuf>,
     #[cfg(target_os = "linux")]
@@ -64,7 +65,19 @@ impl Shots {
                 eprintln!("screenshot {name}: {e}");
             }
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(target_os = "windows")]
+        {
+            let _ = app;
+            let status = std::process::Command::new("ffmpeg")
+                .args(["-loglevel", "error", "-y", "-f", "gdigrab", "-i", "desktop"])
+                .args(["-frames:v", "1"])
+                .arg(&path)
+                .status();
+            if !matches!(status, Ok(s) if s.success()) {
+                eprintln!("screenshot {name}: ffmpeg {status:?}");
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         if let Err(e) = app.screenshot(&path, None) {
             eprintln!("screenshot {name}: {e}");
         }
@@ -84,7 +97,8 @@ impl Shots {
 
     /// Records the window for `secs` seconds as `<name>.mp4`/`.mov`, at the display's rate: for
     /// checking motion artwork frame by frame (`ND_RECORD=<secs>`; on Linux `ND_RECORDER` names
-    /// the wf-recorder binary when it is not on the PATH).
+    /// the wf-recorder binary when it is not on the PATH; Windows records the desktop with ffmpeg
+    /// from the PATH).
     fn record(&self, name: &str, secs: u64) {
         self.record_while(name, secs, || {});
     }
@@ -117,7 +131,15 @@ impl Shots {
             .arg("-f")
             .arg(dir.join(format!("{name}.mp4")))
             .spawn();
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        // gdigrab stops itself after `-t`, as screencapture does after `-V`.
+        #[cfg(target_os = "windows")]
+        let child = std::process::Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y", "-f", "gdigrab", "-framerate", "60"])
+            .args(["-t", &(secs as f64 + 1.5).to_string(), "-i", "desktop"])
+            .args(["-pix_fmt", "yuv420p"])
+            .arg(dir.join(format!("{name}.mp4")))
+            .spawn();
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let child: std::io::Result<std::process::Child> = {
             let _ = (dir, secs);
             Err(std::io::ErrorKind::Unsupported.into())
@@ -127,7 +149,7 @@ impl Shots {
             act();
             return;
         };
-        // Both recorders take a moment to deliver their first frame.
+        // The recorders take a moment to deliver their first frame.
         std::thread::sleep(Duration::from_millis(1500));
         let started = std::time::Instant::now();
         act();
@@ -402,6 +424,15 @@ fn signed_in() {
             .expect("pick the Lyrics tab");
         std::thread::sleep(Duration::from_millis(1500));
         shots.take(app, "4-lyrics");
+        // Lines gliding from one to the next with the pointer resting on a line below the sung
+        // one, which draws sharp.
+        if let Some(secs) = transitions {
+            let lyrics = app.get_by_test_id("lyrics");
+            if let Ok(Some(b)) = lyrics.bounding_box() {
+                point_at(app, shots, b.x + b.width / 3., b.y + b.height * 0.75);
+            }
+            shots.record("4-lyrics-glide", secs);
+        }
         // The player's layout from the narrowest window up: the artwork keeps to its column.
         for width in shots.widths() {
             shots.resize(width);
