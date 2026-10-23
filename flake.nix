@@ -64,13 +64,15 @@
             # kopuzd for a dev box with no service running it; the app starts it when
             # nothing answers on the socket. grpcurl reads the daemon by hand.
             packages = [ pkgs.kopuz pkgs.grpcurl pkgs.pkg-config pkgs.ffmpeg-headless ]
-              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.fontconfig pkgs.fontconfig.dev pkgs.grim pkgs.labwc pkgs.dbus ] ++ linuxLibs);
+              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.mold pkgs.fontconfig pkgs.fontconfig.dev pkgs.grim pkgs.labwc pkgs.dbus ] ++ linuxLibs);
             # labwc lends the tier 3 tests' headless Hyprland a render node (Hyprland itself
             # is the system's).
             # The binary is built outside the Nix sandbox, so the dlopened
             # libraries go on LD_LIBRARY_PATH for both linking and running.
             shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               export LD_LIBRARY_PATH=/run/opengl-driver/lib:${pkgs.lib.makeLibraryPath linuxLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+              # mold, as in nd's shell: the GPUI binary is large and bfd links it slowly.
+              export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="''${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:+$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS }-C link-arg=-fuse-ld=mold"
             '';
           };
         });
