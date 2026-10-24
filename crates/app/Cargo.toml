@@ -53,3 +53,7 @@ harness = false
 [[test]]
 name = "tray"
 harness = false
+
+[[test]]
+name = "collapse"
+harness = false
