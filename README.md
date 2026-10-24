@@ -93,7 +93,15 @@ cd formalmusic
 cargo build --release -p formalmusic
 ```
 
-The app starts `kopuzd` from `PATH` when nothing answers on Kopuz's socket.
+The app starts `kopuzd` from beside its executable, else from `PATH`, when
+nothing answers on Kopuz's socket.
+
+### Windows
+
+`scripts/package-windows.ps1` builds kopuzd at the pinned Kopuz tag into
+`target/kopuzd`, then runs `nd package windows`, which ships it beside
+`formalmusic.exe` in a Velopack `Setup.exe` under `target/nd/releases`. Needs
+the `nd` CLI and the .NET SDK (for Velopack's `vpk`).
 
 ## Signing in
 

@@ -10,3 +10,9 @@ minimum_system_version = "14.0"
 
 [linux]
 formats = ["appimage"]
+
+[windows]
+publisher = "FormalSnake"
+installer = { shortcuts = ["start"] }
+# scripts/package-windows.ps1 builds kopuzd there; the window starts the copy beside it.
+files = ["../../target/kopuzd/bin/kopuzd.exe", "../../packaging/windows/formalmusic.ico"]

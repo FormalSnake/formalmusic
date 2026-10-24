@@ -1401,8 +1401,9 @@ async fn attached(shared: &Arc<Shared>, events: &mpsc::UnboundedSender<Transport
 /// The desktop file and AppUserModelID kopuzd presents its media controls under.
 const APP_ID: &str = "dev.formalsnake.formalmusic";
 
-/// Starts `kopuzd` from `PATH` in its own process group, so it outlives the window. A
-/// daemon run by a service manager or the Kopuz app is found on the socket first.
+/// Starts `kopuzd` in its own process group, so it outlives the window: the copy beside the
+/// executable (the Windows package ships one), else the one on `PATH`. A daemon run by a
+/// service manager or the Kopuz app is found on the socket first.
 fn maybe_spawn(shared: &Shared) {
     {
         let mut last = shared.last_spawn.lock();
@@ -1411,11 +1412,21 @@ fn maybe_spawn(shared: &Shared) {
         }
         *last = Some(Instant::now());
     }
-    let mut command = formalmusic_api::process::command("kopuzd");
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.to_owned()))
+        .filter(|dir| dir.join(format!("kopuzd{}", std::env::consts::EXE_SUFFIX)).is_file());
+    let mut command = formalmusic_api::process::command(match &beside {
+        Some(dir) => dir.join(format!("kopuzd{}", std::env::consts::EXE_SUFFIX)),
+        None => "kopuzd".into(),
+    });
     command.arg("--socket").arg(&shared.socket);
     // The daemon outlives the window, and its MPRIS entry is then the only control left: named
     // after FormalMusic and its desktop file, the shell shows it as this app, with its icon.
     command.args(["--app-id", APP_ID, "--app-name", "FormalMusic"]);
+    if let Some(icon) = beside.map(|dir| dir.join("formalmusic.ico")).filter(|icon| icon.is_file()) {
+        command.arg("--app-icon").arg(icon);
+    }
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
