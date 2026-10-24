@@ -50,3 +50,5 @@ gpui-pre-linux = { git = "https://github.com/FormalStudio/NativeDesktop", branch
 gpui-fast-linux = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 gpui-pre-wgpu = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 gpui-fast-wgpu = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-pre-windows = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+gpui-fast-windows = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
