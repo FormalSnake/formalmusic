@@ -5,7 +5,7 @@ members = ["crates/api", "crates/core", "crates/app", "crates/extras"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.1.0"
+version = "0.1.1"
 
 [workspace.dependencies]
 formalmusic-api = { path = "crates/api" }
@@ -13,9 +13,9 @@ formalmusic-core = { path = "crates/core" }
 formalmusic-extras = { path = "crates/extras" }
 # The daemon's client, pinned to the same Kopuz release the flake runs as the daemon: the
 # wire is not a stable API and changes with the app.
-kopuz-api = { package = "kopuz-api", git = "https://github.com/Kopuz-org/kopuz", tag = "v0.22.0" }
-kopuz-client = { package = "kopuz-client", git = "https://github.com/Kopuz-org/kopuz", tag = "v0.22.0" }
-kopuz-config = { package = "kopuz-config", git = "https://github.com/Kopuz-org/kopuz", tag = "v0.22.0" }
+kopuz-api = { package = "kopuz-api", git = "https://github.com/Kopuz-org/kopuz", rev = "0a316dc257876aa4c2c4031f4a65113f20cd21ca" }
+kopuz-client = { package = "kopuz-client", git = "https://github.com/Kopuz-org/kopuz", rev = "0a316dc257876aa4c2c4031f4a65113f20cd21ca" }
+kopuz-config = { package = "kopuz-config", git = "https://github.com/Kopuz-org/kopuz", rev = "0a316dc257876aa4c2c4031f4a65113f20cd21ca" }
 gpui-kit = "0.6.6"
 gpui-base = "0.6.6"
 anyhow = "1"
